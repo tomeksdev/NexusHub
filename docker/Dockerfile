@@ -1,5 +1,5 @@
 # Stage 1: Build Go backend
-FROM golang:1.22-bookworm AS go-builder
+FROM golang:1.26-bookworm AS go-builder
 WORKDIR /build
 COPY backend/go.mod backend/go.sum ./backend/
 RUN cd backend && go mod download
