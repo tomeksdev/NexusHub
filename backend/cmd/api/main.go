@@ -18,6 +18,7 @@ import (
 	"github.com/tomeksdev/wireguard-install-with-gui/backend/internal/config"
 	"github.com/tomeksdev/wireguard-install-with-gui/backend/internal/db"
 	"github.com/tomeksdev/wireguard-install-with-gui/backend/internal/handler"
+	"github.com/tomeksdev/wireguard-install-with-gui/backend/internal/middleware"
 	"github.com/tomeksdev/wireguard-install-with-gui/backend/internal/repository"
 )
 
@@ -59,6 +60,16 @@ func run() error {
 		Sessions:   repository.NewSessionRepo(pool),
 		Audit:      repository.NewAuditRepo(pool),
 		RefreshTTL: cfg.JWTRefreshExpiry,
+		LoginLimit: middleware.RateLimitConfig{
+			Name:      "login",
+			PerMinute: cfg.RateLimitLoginPerMinute,
+			Burst:     cfg.RateLimitLoginBurst,
+		},
+		RefreshLimit: middleware.RateLimitConfig{
+			Name:      "refresh",
+			PerMinute: cfg.RateLimitRefreshPerMinute,
+			Burst:     cfg.RateLimitRefreshBurst,
+		},
 	})
 
 	srv := &http.Server{

@@ -18,6 +18,14 @@ type Config struct {
 	JWTAccessExpiry  time.Duration `envconfig:"JWT_ACCESS_EXPIRY" default:"15m"`
 	JWTRefreshExpiry time.Duration `envconfig:"JWT_REFRESH_EXPIRY" default:"168h"`
 
+	// Rate limits are per client IP per minute, with a burst matching the
+	// typical cluster of retries a reasonable client makes. Set to 0 to
+	// disable (tests + operators troubleshooting lockouts).
+	RateLimitLoginPerMinute   int `envconfig:"RATELIMIT_LOGIN_PER_MINUTE"   default:"10"`
+	RateLimitLoginBurst       int `envconfig:"RATELIMIT_LOGIN_BURST"        default:"5"`
+	RateLimitRefreshPerMinute int `envconfig:"RATELIMIT_REFRESH_PER_MINUTE" default:"60"`
+	RateLimitRefreshBurst     int `envconfig:"RATELIMIT_REFRESH_BURST"      default:"20"`
+
 	SMTPHost string `envconfig:"SMTP_HOST"`
 	SMTPPort int    `envconfig:"SMTP_PORT" default:"587"`
 	SMTPUser string `envconfig:"SMTP_USER"`
