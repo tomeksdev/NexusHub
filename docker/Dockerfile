@@ -7,7 +7,7 @@ COPY backend/ ./backend/
 RUN cd backend && CGO_ENABLED=0 go build -ldflags="-s -w" -o /nexushub ./cmd/api/
 
 # Stage 2: Build frontend
-FROM node:20-bookworm-slim AS node-builder
+FROM node:25-bookworm-slim AS node-builder
 WORKDIR /build
 COPY frontend/package*.json ./
 RUN npm ci
