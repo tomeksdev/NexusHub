@@ -51,15 +51,18 @@ Phases are sequential in priority but work can overlap where dependencies allow.
 
 ## Phase 3 — Auth, sessions, RBAC
 
-- [ ] Argon2id password hashing helper
-- [ ] JWT access token + rotating refresh token flow
-- [ ] Login, logout, refresh, password change endpoints
-- [ ] Roles: `admin`, `operator`, `viewer`
-- [ ] Middleware: `RequireAuth`, `RequireRole`
+- [x] Argon2id password hashing helper (2026-04-17) <!-- completed 2026-04-17: internal/auth/password.go -->
+- [x] JWT access token + rotating refresh token flow (2026-04-17) <!-- completed 2026-04-17: internal/auth/jwt.go + RotateRefreshToken with reuse detection -->
+- [x] Login, logout, refresh, password change endpoints (2026-04-17) <!-- completed 2026-04-17: POST /api/v1/auth/{login,refresh,logout,password} -->
+- [x] Roles: `super_admin`, `admin`, `user` (2026-04-17) <!-- completed 2026-04-17: aligned with user_role enum from migration 001; ADR to follow if we re-introduce operator/viewer -->
+- [x] Middleware: `RequireAuth`, `RequireRole` (2026-04-17) <!-- completed 2026-04-17: internal/middleware/auth.go -->
 - [ ] Rate limiting on auth endpoints
-- [ ] Audit-log entries for auth events
+- [x] Audit-log entries for auth events (2026-04-17) <!-- completed 2026-04-17: internal/repository/audit.go; login/refresh/logout/password_change rows -->
 - [ ] Optional: TOTP second factor
 - [ ] Optional: SSO/OIDC hook point (not implemented, just planned)
+- [x] ADR 0002 — HTTP router (Gin) (2026-04-17) <!-- completed 2026-04-17: docs/architecture/0002-http-router.md -->
+
+> Note: TODO originally listed roles `admin/operator/viewer`; schema uses `super_admin/admin/user`. Phase 3 aligns with schema. Re-evaluate if a three-tier non-admin split is ever needed.
 
 ---
 
