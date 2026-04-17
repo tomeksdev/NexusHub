@@ -35,15 +35,16 @@ Phases are sequential in priority but work can overlap where dependencies allow.
 
 ## Phase 2 — Database & migrations
 
-- [ ] Choose ORM/query layer (sqlc vs. pgx+scan vs. ent) and document decision
-- [ ] Wire `github.com/golang-migrate/migrate/v4` into `backend/cmd/migrate`
-- [ ] Schema: `users`, `sessions`, `refresh_tokens`
-- [ ] Schema: `wg_interfaces`, `wg_peers`, `wg_peer_preshared_keys`
-- [ ] Schema: `ebpf_rules`, `ebpf_rule_bindings` (per-peer attachment)
-- [ ] Schema: `audit_log`
-- [ ] Schema: `api_keys` (optional, for CLI/automation)
-- [ ] Seed script: initial admin user, default interface
-- [ ] Connection pooling via `pgxpool`
+- [x] Choose ORM/query layer (sqlc vs. pgx+scan vs. ent) and document decision (2026-04-17) <!-- completed 2026-04-17: ADR 0001 — sqlc + pgx v5 + golang-migrate -->
+- [x] Wire `github.com/golang-migrate/migrate/v4` into `backend/cmd/migrate` (2026-04-17) <!-- completed 2026-04-17: up/down/goto/version/force/drop/create subcommands -->
+- [x] Schema: `users`, `sessions`, `refresh_tokens` (2026-04-17) <!-- completed 2026-04-17: migration 001 -->
+- [x] Schema: `wg_interfaces`, `wg_peers`, `wg_peer_preshared_keys` (2026-04-17) <!-- completed 2026-04-17: migration 002 -->
+- [x] Schema: `ebpf_rules`, `ebpf_rule_bindings` (per-peer attachment) (2026-04-17) <!-- completed 2026-04-17: migration 003 -->
+- [x] Schema: `audit_log` (2026-04-17) <!-- completed 2026-04-17: migration 004 -->
+- [x] Schema: `api_keys` (optional, for CLI/automation) (2026-04-17) <!-- completed 2026-04-17: migration 005 -->
+- [x] Schema: `connection_logs` partitioned by month (2026-04-17) <!-- completed 2026-04-17: migration 006 -->
+- [x] Seed script: initial admin user, default interface (2026-04-17) <!-- completed 2026-04-17: backend/cmd/seed -->
+- [x] Connection pooling via `pgxpool` (2026-04-17) <!-- completed 2026-04-17: internal/db/pool.go, MaxConns=25 -->
 - [ ] Unit tests using a real Postgres (no mocks) via testcontainers or compose
 
 ---
