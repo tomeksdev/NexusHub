@@ -1,0 +1,40 @@
+# Go
+backend/tmp/
+cli/tmp/
+*.exe
+*.test
+*.out
+vendor/
+
+# Node
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+
+# eBPF
+ebpf/**/*.o
+ebpf/**/*_bpfe*.go
+ebpf/**/*_bpfe*.o
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Docker
+docker/.env
+
+# Coverage
+coverage/
+*.coverprofile

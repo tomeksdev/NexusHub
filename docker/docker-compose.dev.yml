@@ -1,0 +1,35 @@
+services:
+  api:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.dev
+    ports:
+      - "8080:8080"
+    volumes:
+      - ../backend:/app
+    environment:
+      - DATABASE_URL=postgres://nexushub:nexushub@postgres:5432/nexushub_dev?sslmode=disable
+    depends_on:
+      postgres:
+        condition: service_healthy
+    cap_add:
+      - NET_ADMIN
+
+  postgres:
+    image: postgres:16-bookworm
+    environment:
+      POSTGRES_USER: nexushub
+      POSTGRES_PASSWORD: nexushub
+      POSTGRES_DB: nexushub_dev
+    volumes:
+      - pgdata_dev:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U nexushub"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+volumes:
+  pgdata_dev:

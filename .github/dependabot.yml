@@ -1,0 +1,53 @@
+version: 2
+updates:
+  # Go modules
+  - package-ecosystem: gomod
+    directory: /backend
+    schedule:
+      interval: weekly
+    labels:
+      - dependencies
+      - backend
+
+  - package-ecosystem: gomod
+    directory: /cli
+    schedule:
+      interval: weekly
+    labels:
+      - dependencies
+      - cli
+
+  - package-ecosystem: gomod
+    directory: /ebpf
+    schedule:
+      interval: weekly
+    labels:
+      - dependencies
+      - ebpf
+
+  # npm (frontend)
+  - package-ecosystem: npm
+    directory: /frontend
+    schedule:
+      interval: weekly
+    labels:
+      - dependencies
+      - frontend
+
+  # Docker base images
+  - package-ecosystem: docker
+    directory: /docker
+    schedule:
+      interval: weekly
+    labels:
+      - dependencies
+      - docker
+
+  # GitHub Actions
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    labels:
+      - dependencies
+      - ci

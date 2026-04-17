@@ -1,0 +1,10 @@
+FROM golang:1.22-bookworm
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    wireguard-tools iproute2 iptables clang llvm libbpf-dev \
+    && rm -rf /var/lib/apt/lists/*
+RUN go install github.com/air-verse/air@latest
+WORKDIR /app
+COPY backend/go.mod backend/go.sum ./
+RUN go mod download
+EXPOSE 8080
+CMD ["air", "-c", ".air.toml"]

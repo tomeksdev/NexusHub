@@ -1,0 +1,4 @@
+# Default owner for everything in the repo.
+# Order matters — the last matching pattern takes precedence.
+
+*                           @tomeksdev
