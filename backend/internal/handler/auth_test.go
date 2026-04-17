@@ -62,6 +62,8 @@ func setup(t *testing.T) *env {
 		Sessions:   repository.NewSessionRepo(pool),
 		Audit:      repository.NewAuditRepo(pool),
 		RefreshTTL: refreshTTL,
+		// Default: limits disabled so existing auth tests aren't flaky
+		// under bursts. TestLoginRateLimit builds its own router with limits on.
 	})
 	return e
 }
@@ -374,6 +376,69 @@ func bearerCall(t *testing.T, e *env, bearer string) *httptest.ResponseRecorder 
 		"current_password": "ignored", "new_password": "ignored-long-pass-0",
 	}, bearer)
 	return w
+}
+
+func TestLoginRateLimitRejectsBurst(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	pool := dbtest.Fresh(t)
+
+	issuer, err := auth.NewJWTIssuer(jwtSecret, accessTTL)
+	if err != nil {
+		t.Fatalf("issuer: %v", err)
+	}
+	email := "rl@example.com"
+	pw := "rate-limit-password-123"
+	createUser(t, pool, email, "rl", pw, "admin")
+
+	router := handler.NewRouter(handler.Deps{
+		JWTIssuer:  issuer,
+		Users:      repository.NewUserRepo(pool),
+		Sessions:   repository.NewSessionRepo(pool),
+		Audit:      repository.NewAuditRepo(pool),
+		RefreshTTL: refreshTTL,
+		LoginLimit: mw.RateLimitConfig{
+			Name:      "login",
+			PerMinute: 60,
+			Burst:     2,
+		},
+	})
+
+	postLogin := func(payload any) *httptest.ResponseRecorder {
+		b, _ := json.Marshal(payload)
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/login", bytes.NewReader(b))
+		req.Header.Set("Content-Type", "application/json")
+		req.RemoteAddr = "192.0.2.1:4444"
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, req)
+		return w
+	}
+
+	// Two bad attempts consume the burst.
+	for i := 0; i < 2; i++ {
+		w := postLogin(gin.H{"email": email, "password": "bad"})
+		if w.Code != http.StatusUnauthorized {
+			t.Fatalf("burst #%d: got %d, want 401", i+1, w.Code)
+		}
+	}
+	// Third must be rate-limited even if the credentials are valid.
+	w := postLogin(gin.H{"email": email, "password": pw})
+	if w.Code != http.StatusTooManyRequests {
+		t.Fatalf("expected 429 after burst, got %d body=%s", w.Code, w.Body.String())
+	}
+	if ra := w.Header().Get("Retry-After"); ra == "" {
+		t.Error("missing Retry-After on 429")
+	}
+
+	// Rate-limit denial is in the audit log.
+	var count int
+	if err := pool.QueryRow(context.Background(),
+		`SELECT count(*) FROM audit_log WHERE action = 'auth.login' AND result = 'denied'`,
+	).Scan(&count); err != nil {
+		t.Fatalf("audit query: %v", err)
+	}
+	if count < 1 {
+		t.Error("expected a rate-limit denial row in audit_log")
+	}
 }
 
 func mwRequireAuth(j *auth.JWTIssuer, s *repository.SessionRepo) gin.HandlerFunc {

@@ -56,7 +56,7 @@ Phases are sequential in priority but work can overlap where dependencies allow.
 - [x] Login, logout, refresh, password change endpoints (2026-04-17) <!-- completed 2026-04-17: POST /api/v1/auth/{login,refresh,logout,password} -->
 - [x] Roles: `super_admin`, `admin`, `user` (2026-04-17) <!-- completed 2026-04-17: aligned with user_role enum from migration 001; ADR to follow if we re-introduce operator/viewer -->
 - [x] Middleware: `RequireAuth`, `RequireRole` (2026-04-17) <!-- completed 2026-04-17: internal/middleware/auth.go -->
-- [ ] Rate limiting on auth endpoints
+- [x] Rate limiting on auth endpoints (2026-04-17) <!-- completed 2026-04-17: internal/middleware/ratelimit.go token-bucket + OnDeny audit hook; wired to /auth/login and /auth/refresh -->)
 - [x] Audit-log entries for auth events (2026-04-17) <!-- completed 2026-04-17: internal/repository/audit.go; login/refresh/logout/password_change rows -->
 - [ ] Optional: TOTP second factor
 - [ ] Optional: SSO/OIDC hook point (not implemented, just planned)

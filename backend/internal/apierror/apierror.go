@@ -21,6 +21,7 @@ const (
 	CodeForbidden          = "FORBIDDEN"
 	CodeRefreshInvalid     = "REFRESH_INVALID"
 	CodeRefreshReused      = "REFRESH_REUSED"
+	CodeRateLimited        = "RATE_LIMITED"
 	CodeInternal           = "INTERNAL"
 )
 

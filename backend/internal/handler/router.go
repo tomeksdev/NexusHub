@@ -2,6 +2,7 @@ package handler
 
 import (
 	"log/slog"
+	"net"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -19,6 +20,11 @@ type Deps struct {
 	Sessions   *repository.SessionRepo
 	Audit      *repository.AuditRepo
 	RefreshTTL time.Duration
+
+	// Rate-limit configs. Pass zero-value RateLimitConfig to disable a given
+	// limiter; the middleware itself decides this based on PerMinute == 0.
+	LoginLimit   middleware.RateLimitConfig
+	RefreshLimit middleware.RateLimitConfig
 }
 
 // NewRouter builds the Gin engine with all middleware and routes registered.
@@ -36,10 +42,26 @@ func NewRouter(deps Deps) *gin.Engine {
 	v1 := r.Group("/api/v1")
 	v1.GET("/health", Health)
 
-	// Public auth endpoints.
+	// Public auth endpoints. Login and refresh are the only attackable surface
+	// before authentication, so they get per-IP rate limiting.
+	loginCfg := deps.LoginLimit
+	if loginCfg.Name == "" {
+		loginCfg.Name = "login"
+	}
+	refreshCfg := deps.RefreshLimit
+	if refreshCfg.Name == "" {
+		refreshCfg.Name = "refresh"
+	}
+	if deps.Audit != nil {
+		loginCfg.OnDeny = auditDeny(deps.Audit, "auth.login")
+		refreshCfg.OnDeny = auditDeny(deps.Audit, "auth.refresh")
+	}
+	loginLimiter := middleware.NewRateLimiter(loginCfg)
+	refreshLimiter := middleware.NewRateLimiter(refreshCfg)
+
 	authGrp := v1.Group("/auth")
-	authGrp.POST("/login", authH.Login)
-	authGrp.POST("/refresh", authH.Refresh)
+	authGrp.POST("/login", loginLimiter.Middleware(), authH.Login)
+	authGrp.POST("/refresh", refreshLimiter.Middleware(), authH.Refresh)
 	authGrp.POST("/logout", authH.Logout)
 
 	// Authenticated auth endpoints.
@@ -48,6 +70,22 @@ func NewRouter(deps Deps) *gin.Engine {
 	authed.POST("/auth/password", authH.ChangePassword)
 
 	return r
+}
+
+// auditDeny returns an OnDeny callback that emits a rate-limit denial to
+// the audit log. We deliberately use the request context (not Background)
+// so a cancelled request also cancels the audit write — a per-request
+// limiter denial is not worth keeping the DB connection alive past the
+// client disconnect.
+func auditDeny(a *repository.AuditRepo, action string) func(*gin.Context) {
+	return func(c *gin.Context) {
+		ip := net.ParseIP(c.ClientIP())
+		a.Log(c.Request.Context(), repository.AuditEntry{
+			ActorIP: ip, ActorUA: c.Request.UserAgent(),
+			Action: action, TargetType: "rate_limit",
+			Result: repository.AuditResultDenied, ErrorMessage: "rate limit exceeded",
+		})
+	}
 }
 
 func accessLog() gin.HandlerFunc {
