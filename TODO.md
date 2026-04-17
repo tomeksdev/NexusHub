@@ -45,7 +45,7 @@ Phases are sequential in priority but work can overlap where dependencies allow.
 - [x] Schema: `connection_logs` partitioned by month (2026-04-17) <!-- completed 2026-04-17: migration 006 -->
 - [x] Seed script: initial admin user, default interface (2026-04-17) <!-- completed 2026-04-17: backend/cmd/seed -->
 - [x] Connection pooling via `pgxpool` (2026-04-17) <!-- completed 2026-04-17: internal/db/pool.go, MaxConns=25 -->
-- [ ] Unit tests using a real Postgres (no mocks) via testcontainers or compose
+- [x] Unit tests using a real Postgres (no mocks) via testcontainers or compose (2026-04-17) <!-- completed 2026-04-17: backend/internal/dbtest harness + migrations round-trip, schema constraints, seed tests under -tags=integration -->)
 
 ---
 
