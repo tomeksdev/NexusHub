@@ -1,9 +1,10 @@
 import { useEffect, useState } from 'react'
-import { useQuery } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 
 import { api, type PageEnvelope } from '../lib/api'
 import { sseStream } from '../lib/sse'
 import { PeerConfigModal } from './PeerConfigModal'
+import { PeerCreateModal } from './PeerCreateModal'
 
 interface Peer {
   id: string
@@ -27,26 +28,38 @@ interface LivePeer {
 }
 
 export function PeersPage() {
+  const qc = useQueryClient()
   const { data, isLoading, isError, error } = useQuery({
     queryKey: ['peers'],
     queryFn: async () => {
       // The /peers list endpoint requires interface_id. For the scaffold
       // we fetch interfaces first and display peers for the first one;
       // a real multi-interface UI would render a dropdown here.
-      const ifaces = await api<PageEnvelope<{ id: string; name: string }>>(
+      const ifaces = await api<PageEnvelope<{ id: string; interface_id?: string; name: string }>>(
         '/api/v1/interfaces?limit=1',
       )
-      if (ifaces.items.length === 0) return { items: [], total: 0, ifaceName: null }
+      if (ifaces.items.length === 0) return { items: [], total: 0, ifaceID: null, ifaceName: null }
       const iface = ifaces.items[0]
       const peers = await api<PageEnvelope<Peer>>(
         `/api/v1/peers?interface_id=${iface.id}&limit=100`,
       )
-      return { items: peers.items, total: peers.total, ifaceName: iface.name }
+      return { items: peers.items, total: peers.total, ifaceID: iface.id, ifaceName: iface.name }
     },
   })
 
   const [live, setLive] = useState<Record<string, LivePeer>>({})
   const [configPeer, setConfigPeer] = useState<{ id: string; name: string } | null>(null)
+  const [showCreate, setShowCreate] = useState(false)
+
+  const deleteMut = useMutation({
+    mutationFn: (id: string) => api(`/api/v1/peers/${id}`, { method: 'DELETE' }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['peers'] }),
+  })
+
+  function onDelete(p: Peer) {
+    if (!confirm(`Delete peer "${p.name}"? This revokes the VPN credentials.`)) return
+    deleteMut.mutate(p.id)
+  }
 
   // Open the SSE stream once. The stream multiplexes every interface's
   // peers, so we don't need to re-open it when the user switches views.
@@ -99,9 +112,19 @@ export function PeersPage() {
     <div className="p-6 space-y-4">
       <header className="flex items-baseline justify-between">
         <h1 className="text-xl font-semibold">Peers</h1>
-        {data?.ifaceName && (
-          <span className="text-sm text-slate-400">interface: {data.ifaceName}</span>
-        )}
+        <div className="flex items-center gap-3">
+          {data?.ifaceName && (
+            <span className="text-sm text-slate-400">interface: {data.ifaceName}</span>
+          )}
+          {data?.ifaceID && (
+            <button
+              onClick={() => setShowCreate(true)}
+              className="px-3 py-1.5 rounded-md bg-sky-600 hover:bg-sky-500 text-sm font-medium"
+            >
+              + New peer
+            </button>
+          )}
+        </div>
       </header>
       {data?.items.length === 0 ? (
         <p className="text-slate-400 text-sm">No peers yet.</p>
@@ -155,12 +178,21 @@ export function PeersPage() {
                       {formatBytes(rx)} / {formatBytes(tx)}
                     </td>
                     <td className="px-4 py-2 text-right">
-                      <button
-                        onClick={() => setConfigPeer({ id: p.id, name: p.name })}
-                        className="px-2.5 py-1 rounded-md bg-slate-800 hover:bg-slate-700 text-xs"
-                      >
-                        Config
-                      </button>
+                      <div className="inline-flex gap-1">
+                        <button
+                          onClick={() => setConfigPeer({ id: p.id, name: p.name })}
+                          className="px-2.5 py-1 rounded-md bg-slate-800 hover:bg-slate-700 text-xs"
+                        >
+                          Config
+                        </button>
+                        <button
+                          onClick={() => onDelete(p)}
+                          disabled={deleteMut.isPending}
+                          className="px-2.5 py-1 rounded-md text-rose-300 hover:bg-rose-900/30 disabled:opacity-50 text-xs"
+                        >
+                          Delete
+                        </button>
+                      </div>
                     </td>
                   </tr>
                 )
@@ -174,6 +206,18 @@ export function PeersPage() {
           peerId={configPeer.id}
           peerName={configPeer.name}
           onClose={() => setConfigPeer(null)}
+        />
+      )}
+      {showCreate && data?.ifaceID && (
+        <PeerCreateModal
+          interfaceID={data.ifaceID}
+          onClose={() => setShowCreate(false)}
+          onCreated={(peer) => {
+            // Straight into the config modal — that's where the user gets
+            // the QR/.conf they just came here to generate.
+            setShowCreate(false)
+            setConfigPeer({ id: peer.id, name: peer.name })
+          }}
         />
       )}
     </div>

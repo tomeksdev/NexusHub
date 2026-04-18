@@ -4,14 +4,16 @@ import { useAuth } from './lib/auth'
 import { AuditPage } from './pages/AuditPage'
 import { InterfacesPage } from './pages/InterfacesPage'
 import { LoginPage } from './pages/LoginPage'
+import { MetricsPage } from './pages/MetricsPage'
 import { PeersPage } from './pages/PeersPage'
 import { UsersPage } from './pages/UsersPage'
 
-type Page = 'peers' | 'interfaces' | 'users' | 'audit'
+type Page = 'peers' | 'interfaces' | 'users' | 'audit' | 'metrics'
 
 const NAV: { id: Page; label: string }[] = [
   { id: 'peers', label: 'Peers' },
   { id: 'interfaces', label: 'Interfaces' },
+  { id: 'metrics', label: 'Metrics' },
   { id: 'users', label: 'Users' },
   { id: 'audit', label: 'Audit log' },
 ]
@@ -61,6 +63,7 @@ function App() {
       <main className="flex-1 overflow-y-auto">
         {page === 'peers' && <PeersPage />}
         {page === 'interfaces' && <InterfacesPage />}
+        {page === 'metrics' && <MetricsPage />}
         {page === 'users' && <UsersPage />}
         {page === 'audit' && <AuditPage />}
       </main>

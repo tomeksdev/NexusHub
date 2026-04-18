@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 
-import { apiBlob, apiText } from '../lib/api'
+import { api, apiBlob, apiText } from '../lib/api'
 
 interface Props {
   peerId: string
@@ -13,6 +13,8 @@ export function PeerConfigModal({ peerId, peerName, onClose }: Props) {
   const [qrUrl, setQrUrl] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [copied, setCopied] = useState(false)
+  const [rotating, setRotating] = useState(false)
+  const [reloadNonce, setReloadNonce] = useState(0)
 
   useEffect(() => {
     let objUrl: string | null = null
@@ -38,7 +40,24 @@ export function PeerConfigModal({ peerId, peerName, onClose }: Props) {
       // underlying Blob alive as long as any object URL points at it.
       if (objUrl) URL.revokeObjectURL(objUrl)
     }
-  }, [peerId])
+  }, [peerId, reloadNonce])
+
+  async function rotatePSK() {
+    if (!confirm('Rotate the pre-shared key? The peer will need the new config.')) return
+    setRotating(true)
+    try {
+      await api(`/api/v1/peers/${peerId}/rotate-psk`, { method: 'POST' })
+      // Clear the rendered config so the old QR isn't briefly visible
+      // while the new fetch is in flight.
+      setConf(null)
+      setQrUrl(null)
+      setReloadNonce((n) => n + 1)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setRotating(false)
+    }
+  }
 
   async function copy() {
     if (!conf) return
@@ -103,6 +122,13 @@ export function PeerConfigModal({ peerId, peerName, onClose }: Props) {
                   className="px-3 py-1.5 rounded-md bg-slate-800 hover:bg-slate-700 text-sm"
                 >
                   Download .conf
+                </button>
+                <button
+                  onClick={rotatePSK}
+                  disabled={rotating}
+                  className="px-3 py-1.5 rounded-md bg-amber-900/40 text-amber-300 hover:bg-amber-900/60 disabled:opacity-50 text-sm ml-auto"
+                >
+                  {rotating ? 'Rotating…' : 'Rotate PSK'}
                 </button>
               </div>
             </div>
