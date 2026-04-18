@@ -116,6 +116,62 @@ func (r *PeerRepo) ListByInterface(ctx context.Context, ifaceID uuid.UUID) ([]Pe
 	return out, rows.Err()
 }
 
+// PeerSortField is the allow-list of columns exposed to ?sort=. Kept here
+// (alongside the query builder) rather than in the handler so tests and
+// SDK-gen consumers have a single source of truth.
+var PeerSortFields = []string{"name", "assigned_ip", "created_at", "last_handshake"}
+
+// ListPage is the paginated + sortable list. The ORDER BY clause is
+// built from a whitelist (see PeerSortFields) so no caller string ever
+// reaches SQL directly. Returns (items, total) so callers can emit the
+// response envelope in one shot.
+func (r *PeerRepo) ListPage(ctx context.Context, ifaceID uuid.UUID, limit, offset int, sortField string, sortDesc bool) ([]Peer, int, error) {
+	if !contains(PeerSortFields, sortField) {
+		sortField = "name"
+	}
+	dir := "ASC"
+	if sortDesc {
+		dir = "DESC"
+	}
+	query := fmt.Sprintf("%s WHERE interface_id = $1 ORDER BY %s %s NULLS LAST LIMIT $2 OFFSET $3",
+		selectPeer, sortField, dir)
+
+	rows, err := r.pool.Query(ctx, query, ifaceID, limit, offset)
+	if err != nil {
+		return nil, 0, fmt.Errorf("list peers page: %w", err)
+	}
+	defer rows.Close()
+
+	var items []Peer
+	for rows.Next() {
+		p, err := scanPeer(rows)
+		if err != nil {
+			return nil, 0, err
+		}
+		items = append(items, *p)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, 0, err
+	}
+
+	var total int
+	if err := r.pool.QueryRow(ctx,
+		`SELECT count(*) FROM wg_peers WHERE interface_id = $1`, ifaceID,
+	).Scan(&total); err != nil {
+		return nil, 0, fmt.Errorf("count peers: %w", err)
+	}
+	return items, total, nil
+}
+
+func contains(list []string, s string) bool {
+	for _, v := range list {
+		if v == s {
+			return true
+		}
+	}
+	return false
+}
+
 // AssignedIPsByInterface returns just the assigned IPs — feeds the
 // IP-pool allocator without dragging the rest of every peer row.
 func (r *PeerRepo) AssignedIPsByInterface(ctx context.Context, ifaceID uuid.UUID) ([]netip.Addr, error) {

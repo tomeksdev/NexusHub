@@ -16,6 +16,7 @@ import (
 
 	"github.com/tomeksdev/wireguard-install-with-gui/backend/internal/apierror"
 	"github.com/tomeksdev/wireguard-install-with-gui/backend/internal/crypto"
+	"github.com/tomeksdev/wireguard-install-with-gui/backend/internal/httppage"
 	"github.com/tomeksdev/wireguard-install-with-gui/backend/internal/repository"
 	"github.com/tomeksdev/wireguard-install-with-gui/backend/internal/wg"
 )
@@ -272,7 +273,10 @@ func (h *PeerHandler) List(c *gin.Context) {
 		writeError(c, http.StatusBadRequest, apierror.CodeInvalidRequest, "interface_id must be uuid")
 		return
 	}
-	peers, err := h.Peers.ListByInterface(c.Request.Context(), ifaceID)
+	pg := httppage.Parse(c)
+	sortField, sortDesc := pg.ResolveSort(repository.PeerSortFields, "name")
+	peers, total, err := h.Peers.ListPage(c.Request.Context(), ifaceID,
+		pg.Limit, pg.Offset, sortField, sortDesc)
 	if err != nil {
 		slog.ErrorContext(c, "list peers", "err", err)
 		writeError(c, http.StatusInternalServerError, apierror.CodeInternal, "internal error")
@@ -282,7 +286,7 @@ func (h *PeerHandler) List(c *gin.Context) {
 	for i := range peers {
 		out = append(out, toPeerResponse(&peers[i]))
 	}
-	c.JSON(http.StatusOK, gin.H{"items": out})
+	c.JSON(http.StatusOK, httppage.Wrap(out, total, pg, sortField, sortDesc))
 }
 
 func (h *PeerHandler) Get(c *gin.Context) {

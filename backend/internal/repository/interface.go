@@ -107,6 +107,51 @@ func (r *InterfaceRepo) List(ctx context.Context) ([]Interface, error) {
 	return out, rows.Err()
 }
 
+// InterfaceSortFields exposes the columns a client may request via ?sort=.
+var InterfaceSortFields = []string{"name", "listen_port", "created_at"}
+
+// ListPage is the paginated variant. See PeerRepo.ListPage for rationale.
+func (r *InterfaceRepo) ListPage(ctx context.Context, limit, offset int, sortField string, sortDesc bool) ([]Interface, int, error) {
+	allowed := false
+	for _, s := range InterfaceSortFields {
+		if s == sortField {
+			allowed = true
+			break
+		}
+	}
+	if !allowed {
+		sortField = "name"
+	}
+	dir := "ASC"
+	if sortDesc {
+		dir = "DESC"
+	}
+	query := fmt.Sprintf("%s ORDER BY %s %s LIMIT $1 OFFSET $2", selectInterface, sortField, dir)
+	rows, err := r.pool.Query(ctx, query, limit, offset)
+	if err != nil {
+		return nil, 0, fmt.Errorf("list interfaces page: %w", err)
+	}
+	defer rows.Close()
+
+	var items []Interface
+	for rows.Next() {
+		i, err := scanInterface(rows)
+		if err != nil {
+			return nil, 0, err
+		}
+		items = append(items, *i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, 0, err
+	}
+
+	var total int
+	if err := r.pool.QueryRow(ctx, `SELECT count(*) FROM wg_interfaces`).Scan(&total); err != nil {
+		return nil, 0, fmt.Errorf("count interfaces: %w", err)
+	}
+	return items, total, nil
+}
+
 func (r *InterfaceRepo) Delete(ctx context.Context, id uuid.UUID) error {
 	cmd, err := r.pool.Exec(ctx, `DELETE FROM wg_interfaces WHERE id = $1`, id)
 	if err != nil {

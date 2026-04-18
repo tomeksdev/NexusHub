@@ -19,9 +19,17 @@ import (
 	"github.com/tomeksdev/wireguard-install-with-gui/backend/internal/crypto"
 	"github.com/tomeksdev/wireguard-install-with-gui/backend/internal/db"
 	"github.com/tomeksdev/wireguard-install-with-gui/backend/internal/handler"
+	"github.com/tomeksdev/wireguard-install-with-gui/backend/internal/metrics"
 	"github.com/tomeksdev/wireguard-install-with-gui/backend/internal/middleware"
 	"github.com/tomeksdev/wireguard-install-with-gui/backend/internal/repository"
 	"github.com/tomeksdev/wireguard-install-with-gui/backend/internal/wg"
+)
+
+// Populated via -ldflags -X at build time. Falling back to "dev" keeps
+// `go run ./cmd/api` readable in development.
+var (
+	buildVersion = "dev"
+	buildCommit  = "unknown"
 )
 
 func main() {
@@ -50,6 +58,9 @@ func run() error {
 		return err
 	}
 	defer pool.Close()
+
+	metrics.SetBuildInfo(buildVersion, buildCommit)
+	metrics.RegisterPoolCollector(pool)
 
 	jwtIssuer, err := auth.NewJWTIssuer(cfg.JWTSecret, cfg.JWTAccessExpiry)
 	if err != nil {

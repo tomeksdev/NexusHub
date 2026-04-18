@@ -9,6 +9,7 @@ import (
 
 	"github.com/tomeksdev/wireguard-install-with-gui/backend/internal/auth"
 	"github.com/tomeksdev/wireguard-install-with-gui/backend/internal/crypto"
+	"github.com/tomeksdev/wireguard-install-with-gui/backend/internal/metrics"
 	"github.com/tomeksdev/wireguard-install-with-gui/backend/internal/middleware"
 	"github.com/tomeksdev/wireguard-install-with-gui/backend/internal/repository"
 	"github.com/tomeksdev/wireguard-install-with-gui/backend/internal/wg"
@@ -47,7 +48,7 @@ type Deps struct {
 // which we replace with a slog-backed one.
 func NewRouter(deps Deps) *gin.Engine {
 	r := gin.New()
-	r.Use(gin.Recovery(), accessLog())
+	r.Use(gin.Recovery(), middleware.RequestID(), metrics.Middleware(), accessLog())
 
 	authH := &AuthHandler{
 		Users: deps.Users, Sessions: deps.Sessions, Audit: deps.Audit,
@@ -115,6 +116,7 @@ func NewRouter(deps Deps) *gin.Engine {
 		admin.GET("/peers/:id/config.png", peerH.ConfigQR)
 
 		admin.GET("/wg/status", statusH.Status)
+		admin.GET("/metrics", metrics.Handler())
 	}
 
 	return r
@@ -140,12 +142,17 @@ func accessLog() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		start := time.Now()
 		c.Next()
-		slog.Info("http",
+		attrs := []any{
 			"method", c.Request.Method,
 			"path", c.FullPath(),
 			"status", c.Writer.Status(),
 			"dur_ms", time.Since(start).Milliseconds(),
 			"ip", c.ClientIP(),
-		)
+			"request_id", middleware.RequestIDFromGin(c),
+		}
+		if corr := middleware.CorrelationIDFromContext(c.Request.Context()); corr != "" {
+			attrs = append(attrs, "correlation_id", corr)
+		}
+		slog.Info("http", attrs...)
 	}
 }

@@ -96,15 +96,17 @@ Phases are sequential in priority but work can overlap where dependencies allow.
 
 ## Phase 6 — Backend HTTP API (v1)
 
-- [ ] Router: `chi` or `gin` (decide & document)
-- [ ] Structured logging via `slog`
-- [ ] Request ID + correlation ID middleware
-- [ ] Standardized error envelope + problem+json
+- [x] Router: `chi` or `gin` (decide & document) (2026-04-17) <!-- completed 2026-04-17: Gin, ADR 0002 -->
+- [x] Structured logging via `slog` (2026-04-17) <!-- completed 2026-04-17: slog default + accessLog middleware -->
+- [x] Request ID + correlation ID middleware (2026-04-18) <!-- completed 2026-04-18: internal/middleware/requestid.go, echoed in X-Request-ID and log lines -->
+- [x] Standardized error envelope + problem+json (2026-04-17) <!-- completed 2026-04-17: internal/apierror + handler.writeError -->
 - [ ] OpenAPI 3.1 spec under `docs/api/`
-- [ ] Endpoints: peers, interfaces, rules, users, audit log, health, metrics
-- [ ] Pagination, filtering, sorting conventions
+- [ ] Endpoints: peers, interfaces, rules, users, audit log, health, metrics <!-- peers/interfaces/health/metrics done 2026-04-18; users/audit log open; rules blocked by Phase 5 -->
+- [x] Pagination, filtering, sorting conventions (2026-04-18) <!-- completed 2026-04-18: internal/httppage package with {items,total,limit,offset,sort} envelope; applied to /peers and /interfaces -->
 - [ ] Server-Sent Events or WebSocket for live peer/rule state
-- [ ] Graceful shutdown
+- [x] Graceful shutdown (2026-04-17) <!-- completed 2026-04-17: srv.Shutdown with 15s timeout, SIGINT/SIGTERM via signal.NotifyContext -->
+
+> Phase 6 partial: request ID, pagination, Prometheus /metrics landed 2026-04-18. Remaining: OpenAPI 3.1 spec, users+audit-log list endpoints, SSE for live peer state (all independent of each other).
 
 ---
 

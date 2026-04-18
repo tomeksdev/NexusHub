@@ -13,6 +13,7 @@ import (
 
 	"github.com/tomeksdev/wireguard-install-with-gui/backend/internal/apierror"
 	"github.com/tomeksdev/wireguard-install-with-gui/backend/internal/crypto"
+	"github.com/tomeksdev/wireguard-install-with-gui/backend/internal/httppage"
 	"github.com/tomeksdev/wireguard-install-with-gui/backend/internal/repository"
 	"github.com/tomeksdev/wireguard-install-with-gui/backend/internal/wg"
 )
@@ -132,7 +133,10 @@ func (h *InterfaceHandler) Create(c *gin.Context) {
 }
 
 func (h *InterfaceHandler) List(c *gin.Context) {
-	items, err := h.Interfaces.List(c.Request.Context())
+	pg := httppage.Parse(c)
+	sortField, sortDesc := pg.ResolveSort(repository.InterfaceSortFields, "name")
+	items, total, err := h.Interfaces.ListPage(c.Request.Context(),
+		pg.Limit, pg.Offset, sortField, sortDesc)
 	if err != nil {
 		slog.ErrorContext(c, "list interfaces", "err", err)
 		writeError(c, http.StatusInternalServerError, apierror.CodeInternal, "internal error")
@@ -142,7 +146,7 @@ func (h *InterfaceHandler) List(c *gin.Context) {
 	for i := range items {
 		out = append(out, toInterfaceResponse(&items[i]))
 	}
-	c.JSON(http.StatusOK, gin.H{"items": out})
+	c.JSON(http.StatusOK, httppage.Wrap(out, total, pg, sortField, sortDesc))
 }
 
 func (h *InterfaceHandler) Get(c *gin.Context) {
