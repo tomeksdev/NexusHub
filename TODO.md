@@ -102,12 +102,12 @@ Phases are sequential in priority but work can overlap where dependencies allow.
 - [x] Standardized error envelope + problem+json (2026-04-17) <!-- completed 2026-04-17: internal/apierror + handler.writeError -->
 - [x] OpenAPI 3.1 spec under `docs/api/` (2026-04-18) <!-- completed 2026-04-18: spec at backend/internal/openapi/openapi.yaml, embedded via go:embed, served at GET /api/v1/openapi.yaml (public). docs/api/README.md points to it. -->
 
-- [ ] Endpoints: peers, interfaces, rules, users, audit log, health, metrics <!-- peers/interfaces/health/metrics done 2026-04-18; users/audit log open; rules blocked by Phase 5 -->
-- [x] Pagination, filtering, sorting conventions (2026-04-18) <!-- completed 2026-04-18: internal/httppage package with {items,total,limit,offset,sort} envelope; applied to /peers and /interfaces -->
-- [ ] Server-Sent Events or WebSocket for live peer/rule state
+- [ ] Endpoints: peers, interfaces, rules, users, audit log, health, metrics <!-- peers/interfaces/health/metrics/users/audit-log done 2026-04-18; rules blocked by Phase 5 -->
+- [x] Pagination, filtering, sorting conventions (2026-04-18) <!-- completed 2026-04-18: internal/httppage package with {items,total,limit,offset,sort} envelope; applied to /peers, /interfaces, /users, /audit-log -->
+- [x] Server-Sent Events or WebSocket for live peer/rule state (2026-04-18) <!-- completed 2026-04-18: GET /api/v1/peers/events — SSE, 5s kernel poll diff, `snapshot` + `peer` + `ping` event types -->
 - [x] Graceful shutdown (2026-04-17) <!-- completed 2026-04-17: srv.Shutdown with 15s timeout, SIGINT/SIGTERM via signal.NotifyContext -->
 
-> Phase 6 partial: request ID, pagination, Prometheus /metrics landed 2026-04-18. Remaining: OpenAPI 3.1 spec, users+audit-log list endpoints, SSE for live peer state (all independent of each other).
+> Phase 6 complete as far as the backend can go without Phase 5 (rules endpoints are blocked on the eBPF rule loader). Users + audit-log list endpoints (GET /users, GET /audit-log) and the SSE peer stream landed 2026-04-18.
 
 ---
 

@@ -401,6 +401,103 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
 
+  /peers/events:
+    get:
+      tags: [WireGuard]
+      summary: Server-Sent Events stream of live peer state
+      description: >
+        Emits one `snapshot` event on connect with the full peer list, then
+        one `peer` event per poll tick per peer whose handshake time or byte
+        counters changed, plus a `ping` event every ~15s as a keepalive.
+        The server polls the kernel every 5s by default; each SSE event's
+        `data:` line is a JSON object matching `PeerEvent`.
+      responses:
+        '200':
+          description: SSE stream (text/event-stream)
+          content:
+            text/event-stream:
+              schema: { type: string }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '503':
+          description: Live state unavailable (no kernel client configured)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /users:
+    get:
+      tags: [Users]
+      summary: List users (admin)
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Offset'
+        - in: query
+          name: sort
+          schema:
+            type: string
+            enum: [email, -email, username, -username, role, -role, last_login_at, -last_login_at, created_at, -created_at]
+      responses:
+        '200':
+          description: Paginated users list. `password_hash` and `totp_secret` are never included.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/PageEnvelope'
+                  - type: object
+                    properties:
+                      items:
+                        type: array
+                        items: { $ref: '#/components/schemas/User' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /audit-log:
+    get:
+      tags: [Audit]
+      summary: List audit-log entries (admin)
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Offset'
+        - in: query
+          name: sort
+          schema:
+            type: string
+            enum: [occurred_at, -occurred_at, action, -action, result, -result]
+        - in: query
+          name: actor_user_id
+          schema: { type: string, format: uuid }
+        - in: query
+          name: action
+          description: Exact-match filter on `action` (e.g. `auth.login`, `peer.create`).
+          schema: { type: string }
+        - in: query
+          name: result
+          schema:
+            type: string
+            enum: [success, failure, denied]
+        - in: query
+          name: since
+          description: RFC3339 timestamp; only entries at or after this time are returned.
+          schema: { type: string, format: date-time }
+      responses:
+        '200':
+          description: Paginated audit-log entries, newest first by default.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/PageEnvelope'
+                  - type: object
+                    properties:
+                      items:
+                        type: array
+                        items: { $ref: '#/components/schemas/AuditEntry' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
 components:
   securitySchemes:
     bearerAuth:
@@ -669,3 +766,56 @@ components:
         peer_count:
           type: integer
           description: Number of live peers on the kernel device. `-1` when the DB row has no corresponding live device.
+
+    User:
+      type: object
+      description: Admin-facing user projection. Never includes credentials.
+      required: [id, email, username, role, is_active, totp_enabled, failed_logins, created_at, updated_at]
+      properties:
+        id:            { type: string, format: uuid }
+        email:         { type: string, format: email }
+        username:      { type: string }
+        role:
+          type: string
+          enum: [super_admin, admin, user]
+        is_active:     { type: boolean }
+        totp_enabled:  { type: boolean }
+        last_login_at: { type: string, format: date-time, nullable: true }
+        failed_logins: { type: integer }
+        locked_until:  { type: string, format: date-time, nullable: true }
+        created_at:    { type: string, format: date-time }
+        updated_at:    { type: string, format: date-time }
+
+    AuditEntry:
+      type: object
+      required: [id, occurred_at, action, target_type, result]
+      properties:
+        id:             { type: integer, format: int64 }
+        occurred_at:    { type: string, format: date-time }
+        actor_user_id:  { type: string, format: uuid, nullable: true }
+        actor_ip:       { type: string, nullable: true }
+        actor_ua:       { type: string, nullable: true }
+        action:
+          type: string
+          description: Dotted action identifier (e.g. `auth.login`, `peer.create`).
+        target_type:    { type: string }
+        target_id:      { type: string, nullable: true }
+        metadata:
+          type: object
+          additionalProperties: true
+        result:
+          type: string
+          enum: [success, failure, denied]
+        error_message:  { type: string, nullable: true }
+
+    PeerEvent:
+      type: object
+      description: Payload inside the `data:` line of a `peer` SSE event.
+      required: [interface, public_key, last_handshake, rx_bytes, tx_bytes]
+      properties:
+        interface:      { type: string }
+        public_key:     { type: string }
+        last_handshake: { type: string, format: date-time }
+        rx_bytes:       { type: integer, format: int64 }
+        tx_bytes:       { type: integer, format: int64 }
+        endpoint:       { type: string }

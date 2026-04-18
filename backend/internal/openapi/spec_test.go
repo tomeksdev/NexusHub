@@ -14,7 +14,11 @@ func TestSpecEmbedded(t *testing.T) {
 		t.Fatal("embedded spec is empty — openapi.yaml missing from embed")
 	}
 	s := string(Spec)
-	for _, want := range []string{"openapi: 3.1.0", "NexusHub API", "/peers/{id}/rotate-psk"} {
+	for _, want := range []string{
+		"openapi: 3.1.0", "NexusHub API",
+		"/peers/{id}/rotate-psk",
+		"/peers/events", "/users:", "/audit-log:",
+	} {
 		if !strings.Contains(s, want) {
 			t.Errorf("spec missing %q", want)
 		}

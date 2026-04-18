@@ -11,6 +11,79 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
+// UserListItem is the admin-facing projection of a user row. Intentionally
+// omits password_hash and totp_secret — those never leave the repo layer.
+type UserListItem struct {
+	ID           uuid.UUID
+	Email        string
+	Username     string
+	Role         string
+	IsActive     bool
+	TOTPEnabled  bool
+	LastLoginAt  *time.Time
+	FailedLogins int
+	LockedUntil  *time.Time
+	CreatedAt    time.Time
+	UpdatedAt    time.Time
+}
+
+// UserSortFields is the allow-list of sortable columns for the admin users
+// list. Kept next to ListPage so the whitelist lives with the SQL.
+var UserSortFields = []string{"email", "username", "role", "last_login_at", "created_at"}
+
+// ListPage returns the paginated users slice plus the total count. ORDER BY
+// is built from UserSortFields only — no caller string reaches SQL.
+func (r *UserRepo) ListPage(ctx context.Context, limit, offset int, sortField string, sortDesc bool) ([]UserListItem, int, error) {
+	if !containsString(UserSortFields, sortField) {
+		sortField = "email"
+	}
+	dir := "ASC"
+	if sortDesc {
+		dir = "DESC"
+	}
+	q := fmt.Sprintf(`
+		SELECT id, email::text, username, role::text, is_active, totp_enabled,
+		       last_login_at, failed_logins, locked_until, created_at, updated_at
+		  FROM users
+		 ORDER BY %s %s NULLS LAST, id ASC
+		 LIMIT $1 OFFSET $2`, sortField, dir)
+
+	rows, err := r.pool.Query(ctx, q, limit, offset)
+	if err != nil {
+		return nil, 0, fmt.Errorf("list users: %w", err)
+	}
+	defer rows.Close()
+
+	var items []UserListItem
+	for rows.Next() {
+		var u UserListItem
+		if err := rows.Scan(&u.ID, &u.Email, &u.Username, &u.Role, &u.IsActive,
+			&u.TOTPEnabled, &u.LastLoginAt, &u.FailedLogins, &u.LockedUntil,
+			&u.CreatedAt, &u.UpdatedAt); err != nil {
+			return nil, 0, fmt.Errorf("scan user: %w", err)
+		}
+		items = append(items, u)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, 0, err
+	}
+
+	var total int
+	if err := r.pool.QueryRow(ctx, `SELECT count(*) FROM users`).Scan(&total); err != nil {
+		return nil, 0, fmt.Errorf("count users: %w", err)
+	}
+	return items, total, nil
+}
+
+func containsString(list []string, s string) bool {
+	for _, v := range list {
+		if v == s {
+			return true
+		}
+	}
+	return false
+}
+
 // ErrUserNotFound is returned by user lookups that match no row. Handlers
 // must treat this identically to a password mismatch to avoid user
 // enumeration via timing or error codes.

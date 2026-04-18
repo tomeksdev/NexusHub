@@ -124,6 +124,25 @@ func NewRouter(deps Deps) *gin.Engine {
 
 		admin.GET("/wg/status", statusH.Status)
 		admin.GET("/metrics", metrics.Handler())
+
+		// Live peer state — same admin gate as wg/status; leaks handshake
+		// times and byte counters that should stay behind auth.
+		eventsH := &PeerEventsHandler{Client: deps.WG, Interfaces: deps.Interfaces}
+		admin.GET("/peers/events", eventsH.Events)
+	}
+
+	// Users + audit-log list endpoints. Behind the same role gate as
+	// WireGuard CRUD so a regular user with a valid JWT can't enumerate
+	// accounts or scrape the action history.
+	admin := authed.Group("")
+	admin.Use(middleware.RequireRole("super_admin", "admin"))
+	if deps.Users != nil {
+		userH := &UserHandler{Users: deps.Users}
+		admin.GET("/users", userH.List)
+	}
+	if deps.Audit != nil {
+		auditH := &AuditHandler{Audit: deps.Audit}
+		admin.GET("/audit-log", auditH.List)
 	}
 
 	return r
