@@ -68,14 +68,16 @@ Phases are sequential in priority but work can overlap where dependencies allow.
 
 ## Phase 4 — WireGuard core
 
-- [ ] Abstraction layer over `wgctrl-go` for interface and peer CRUD
-- [ ] Key pair generation (server + per-peer), pre-shared key rotation
-- [ ] Peer config export (plain text + QR code PNG)
-- [ ] Allowed-IPs validation & IP pool management
-- [ ] DNS push options per peer
-- [ ] Endpoint handling behind NAT
-- [ ] Kernel vs. `boringtun` userspace mode detection
-- [ ] Startup: reconcile DB state with live kernel state
+- [x] Abstraction layer over `wgctrl-go` for interface and peer CRUD (2026-04-18) <!-- completed 2026-04-18: internal/wg/client.go Client iface + KernelClient/FakeClient -->
+- [x] Key pair generation (server + per-peer), pre-shared key rotation (2026-04-18) <!-- completed 2026-04-18: internal/wg/keys.go + POST /peers/:id/rotate-psk with wg_peer_preshared_keys history -->
+- [x] Peer config export (plain text + QR code PNG) (2026-04-18) <!-- completed 2026-04-18: GET /peers/:id/config and /config.png via skip2/go-qrcode -->
+- [x] Allowed-IPs validation & IP pool management (2026-04-18) <!-- completed 2026-04-18: internal/wg/ippool.go AllocateIP with network/broadcast/interface-addr reservation -->
+- [x] DNS push options per peer (2026-04-18) <!-- completed 2026-04-18: peer.DNS column + render fallback peer → interface → default -->
+- [x] Endpoint handling behind NAT (2026-04-18) <!-- completed 2026-04-18: render fallback peer.Endpoint → iface.Endpoint → WG_ENDPOINT -->
+- [x] Kernel vs. `boringtun` userspace mode detection (2026-04-18) <!-- completed 2026-04-18: internal/wg/mode.go + GET /wg/status surfaces wgtypes.DeviceType -->
+- [x] Startup: reconcile DB state with live kernel state (2026-04-18) <!-- completed 2026-04-18: internal/wg/reconcile.go + cmd/api/main.go loadDBInterfaces -->
+
+> Note: kernel apply on peer/interface CRUD is best-effort (log + continue) — the reconciler converges on next restart if a live netlink call fails. This matches the invariant that the DB is source of truth.
 
 ---
 

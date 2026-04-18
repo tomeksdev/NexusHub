@@ -22,6 +22,9 @@ const (
 	CodeRefreshInvalid     = "REFRESH_INVALID"
 	CodeRefreshReused      = "REFRESH_REUSED"
 	CodeRateLimited        = "RATE_LIMITED"
+	CodeNotFound           = "NOT_FOUND"
+	CodeConflict           = "CONFLICT"
+	CodePoolExhausted      = "IP_POOL_EXHAUSTED"
 	CodeInternal           = "INTERNAL"
 )
 
