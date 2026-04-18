@@ -1,6 +1,9 @@
+import { useEffect, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 
 import { api, type PageEnvelope } from '../lib/api'
+import { sseStream } from '../lib/sse'
+import { PeerConfigModal } from './PeerConfigModal'
 
 interface Peer {
   id: string
@@ -13,6 +16,14 @@ interface Peer {
   rx_bytes: number
   tx_bytes: number
   created_at: string
+}
+
+// Live state keyed by public key. We merge this over the DB-sourced peer
+// list so the table reflects real handshakes/traffic without refetching.
+interface LivePeer {
+  last_handshake: string
+  rx_bytes: number
+  tx_bytes: number
 }
 
 export function PeersPage() {
@@ -33,6 +44,53 @@ export function PeersPage() {
       return { items: peers.items, total: peers.total, ifaceName: iface.name }
     },
   })
+
+  const [live, setLive] = useState<Record<string, LivePeer>>({})
+  const [configPeer, setConfigPeer] = useState<{ id: string; name: string } | null>(null)
+
+  // Open the SSE stream once. The stream multiplexes every interface's
+  // peers, so we don't need to re-open it when the user switches views.
+  useEffect(() => {
+    const ctrl = new AbortController()
+    sseStream('/api/v1/peers/events', {
+      signal: ctrl.signal,
+      onEvent: (event, raw) => {
+        if (event === 'ping') return
+        try {
+          const payload = JSON.parse(raw) as
+            | {
+                interface: string
+                public_key: string
+                last_handshake: string
+                rx_bytes: number
+                tx_bytes: number
+              }
+            | Array<{
+                interface: string
+                public_key: string
+                last_handshake: string
+                rx_bytes: number
+                tx_bytes: number
+              }>
+          const list = Array.isArray(payload) ? payload : [payload]
+          setLive((prev) => {
+            const next = { ...prev }
+            for (const p of list) {
+              next[p.public_key] = {
+                last_handshake: p.last_handshake,
+                rx_bytes: p.rx_bytes,
+                tx_bytes: p.tx_bytes,
+              }
+            }
+            return next
+          })
+        } catch {
+          // Malformed frame — ignore rather than tear down the stream.
+        }
+      },
+    })
+    return () => ctrl.abort()
+  }, [])
 
   if (isLoading) return <div className="p-6 text-slate-400">Loading peers…</div>
   if (isError) return <div className="p-6 text-rose-400">Failed to load: {(error as Error).message}</div>
@@ -57,27 +115,66 @@ export function PeersPage() {
                 <th className="px-4 py-2 font-medium">Status</th>
                 <th className="px-4 py-2 font-medium">Last handshake</th>
                 <th className="px-4 py-2 font-medium">RX / TX</th>
+                <th className="px-4 py-2 font-medium"></th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-800">
-              {data?.items.map((p) => (
-                <tr key={p.id} className="hover:bg-slate-900/50">
-                  <td className="px-4 py-2 font-medium">{p.name}</td>
-                  <td className="px-4 py-2 font-mono text-slate-300">{p.assigned_ip}</td>
-                  <td className="px-4 py-2">
-                    <span className={statusClass(p.status)}>{p.status}</span>
-                  </td>
-                  <td className="px-4 py-2 text-slate-400">
-                    {p.last_handshake ? new Date(p.last_handshake).toLocaleString() : '—'}
-                  </td>
-                  <td className="px-4 py-2 text-slate-400 font-mono text-xs">
-                    {formatBytes(p.rx_bytes)} / {formatBytes(p.tx_bytes)}
-                  </td>
-                </tr>
-              ))}
+              {data?.items.map((p) => {
+                const l = live[p.public_key]
+                const handshake = l?.last_handshake ?? p.last_handshake
+                const rx = l?.rx_bytes ?? p.rx_bytes
+                const tx = l?.tx_bytes ?? p.tx_bytes
+                const recentMs = handshake
+                  ? Date.now() - new Date(handshake).getTime()
+                  : Number.POSITIVE_INFINITY
+                const isLive = recentMs < 3 * 60_000
+                return (
+                  <tr key={p.id} className="hover:bg-slate-900/50">
+                    <td className="px-4 py-2 font-medium">
+                      <span className="inline-flex items-center gap-2">
+                        <span
+                          className={
+                            'inline-block w-1.5 h-1.5 rounded-full ' +
+                            (isLive ? 'bg-emerald-400' : 'bg-slate-600')
+                          }
+                          aria-hidden
+                        />
+                        {p.name}
+                      </span>
+                    </td>
+                    <td className="px-4 py-2 font-mono text-slate-300">{p.assigned_ip}</td>
+                    <td className="px-4 py-2">
+                      <span className={statusClass(p.status)}>{p.status}</span>
+                    </td>
+                    <td className="px-4 py-2 text-slate-400">
+                      {handshake && !isZeroTime(handshake)
+                        ? new Date(handshake).toLocaleString()
+                        : '—'}
+                    </td>
+                    <td className="px-4 py-2 text-slate-400 font-mono text-xs">
+                      {formatBytes(rx)} / {formatBytes(tx)}
+                    </td>
+                    <td className="px-4 py-2 text-right">
+                      <button
+                        onClick={() => setConfigPeer({ id: p.id, name: p.name })}
+                        className="px-2.5 py-1 rounded-md bg-slate-800 hover:bg-slate-700 text-xs"
+                      >
+                        Config
+                      </button>
+                    </td>
+                  </tr>
+                )
+              })}
             </tbody>
           </table>
         </div>
+      )}
+      {configPeer && (
+        <PeerConfigModal
+          peerId={configPeer.id}
+          peerName={configPeer.name}
+          onClose={() => setConfigPeer(null)}
+        />
       )}
     </div>
   )
@@ -92,6 +189,13 @@ function statusClass(s: string): string {
     default:
       return 'inline-flex px-2 py-0.5 rounded-full bg-slate-800 text-slate-400 text-xs'
   }
+}
+
+// The backend emits Go's zero time (0001-01-01T00:00:00Z) for peers that
+// never completed a handshake. Render those as '—' instead of "1/1/1" or
+// similar browser-locale nonsense.
+function isZeroTime(s: string): boolean {
+  return s.startsWith('0001-')
 }
 
 function formatBytes(n: number): string {

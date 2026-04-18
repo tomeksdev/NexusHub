@@ -1,8 +1,11 @@
 import { useState } from 'react'
 
 import { useAuth } from './lib/auth'
+import { AuditPage } from './pages/AuditPage'
+import { InterfacesPage } from './pages/InterfacesPage'
 import { LoginPage } from './pages/LoginPage'
 import { PeersPage } from './pages/PeersPage'
+import { UsersPage } from './pages/UsersPage'
 
 type Page = 'peers' | 'interfaces' | 'users' | 'audit'
 
@@ -57,19 +60,10 @@ function App() {
 
       <main className="flex-1 overflow-y-auto">
         {page === 'peers' && <PeersPage />}
-        {page === 'interfaces' && <Placeholder title="Interfaces" />}
-        {page === 'users' && <Placeholder title="Users" />}
-        {page === 'audit' && <Placeholder title="Audit log" />}
+        {page === 'interfaces' && <InterfacesPage />}
+        {page === 'users' && <UsersPage />}
+        {page === 'audit' && <AuditPage />}
       </main>
-    </div>
-  )
-}
-
-function Placeholder({ title }: { title: string }) {
-  return (
-    <div className="p-6">
-      <h1 className="text-xl font-semibold">{title}</h1>
-      <p className="text-sm text-slate-400 mt-2">Not yet implemented.</p>
     </div>
   )
 }

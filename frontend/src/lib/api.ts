@@ -62,6 +62,16 @@ export function hasSession(): boolean {
   return !!getRefreshToken() || !!accessToken
 }
 
+// getAccessTokenForStream returns a fresh access token for callers (SSE,
+// WebSocket) that open long-lived connections and can't retry on 401 the
+// way api() does. Triggers the same pre-expiry refresh as api().
+export async function getAccessTokenForStream(): Promise<string | null> {
+  if (!accessToken || Date.now() > accessExpiresAt - 30_000) {
+    if (getRefreshToken()) await refresh()
+  }
+  return accessToken
+}
+
 // refresh swaps the saved refresh token for a new access + refresh pair.
 // We await this from api() when the access token is missing or expired.
 async function refresh(): Promise<void> {
@@ -126,6 +136,56 @@ async function handleResp<T>(resp: Response): Promise<T> {
     throw new ApiError(resp.status, body as ApiErrorBody)
   }
   return body as T
+}
+
+// apiText + apiBlob exist because the JSON-first api() helper would try
+// to JSON.parse a .conf file or a PNG. Same auth + refresh flow, just a
+// different body-reader at the end. The refresh flow is replicated
+// rather than shared because the generic over-response-body split is
+// more work than two short functions.
+export async function apiText(path: string, init: RequestInit = {}): Promise<string> {
+  const resp = await authedFetch(path, init)
+  if (!resp.ok) {
+    const body = await resp
+      .json()
+      .catch(() => ({ error: resp.statusText, code: 'UNAUTHORIZED' }))
+    throw new ApiError(resp.status, body as ApiErrorBody)
+  }
+  return resp.text()
+}
+
+export async function apiBlob(path: string, init: RequestInit = {}): Promise<Blob> {
+  const resp = await authedFetch(path, init)
+  if (!resp.ok) {
+    const body = await resp
+      .json()
+      .catch(() => ({ error: resp.statusText, code: 'UNAUTHORIZED' }))
+    throw new ApiError(resp.status, body as ApiErrorBody)
+  }
+  return resp.blob()
+}
+
+// authedFetch is the shared request builder used by apiText/apiBlob. It
+// replicates the access-token lifecycle from api() — pre-expiry refresh
+// and a single 401 retry — without the JSON assumptions.
+async function authedFetch(path: string, init: RequestInit): Promise<Response> {
+  if (!accessToken || Date.now() > accessExpiresAt - 30_000) {
+    if (getRefreshToken()) await refresh()
+  }
+  const headers = new Headers(init.headers)
+  if (accessToken) headers.set('Authorization', `Bearer ${accessToken}`)
+
+  const resp = await fetch(path, { ...init, headers })
+  if (resp.status !== 401 || !getRefreshToken()) return resp
+
+  try {
+    await refresh()
+    headers.set('Authorization', `Bearer ${accessToken}`)
+    return await fetch(path, { ...init, headers })
+  } catch {
+    clearTokens()
+    throw new ApiError(401, { error: 'session expired', code: 'UNAUTHORIZED' })
+  }
 }
 
 // ---- Typed endpoint wrappers ----------------------------------------------
