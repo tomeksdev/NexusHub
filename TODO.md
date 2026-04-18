@@ -100,7 +100,8 @@ Phases are sequential in priority but work can overlap where dependencies allow.
 - [x] Structured logging via `slog` (2026-04-17) <!-- completed 2026-04-17: slog default + accessLog middleware -->
 - [x] Request ID + correlation ID middleware (2026-04-18) <!-- completed 2026-04-18: internal/middleware/requestid.go, echoed in X-Request-ID and log lines -->
 - [x] Standardized error envelope + problem+json (2026-04-17) <!-- completed 2026-04-17: internal/apierror + handler.writeError -->
-- [ ] OpenAPI 3.1 spec under `docs/api/`
+- [x] OpenAPI 3.1 spec under `docs/api/` (2026-04-18) <!-- completed 2026-04-18: spec at backend/internal/openapi/openapi.yaml, embedded via go:embed, served at GET /api/v1/openapi.yaml (public). docs/api/README.md points to it. -->
+
 - [ ] Endpoints: peers, interfaces, rules, users, audit log, health, metrics <!-- peers/interfaces/health/metrics done 2026-04-18; users/audit log open; rules blocked by Phase 5 -->
 - [x] Pagination, filtering, sorting conventions (2026-04-18) <!-- completed 2026-04-18: internal/httppage package with {items,total,limit,offset,sort} envelope; applied to /peers and /interfaces -->
 - [ ] Server-Sent Events or WebSocket for live peer/rule state

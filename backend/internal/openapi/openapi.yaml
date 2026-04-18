@@ -1,0 +1,671 @@
+openapi: 3.1.0
+info:
+  title: NexusHub API
+  version: 0.1.0
+  description: |
+    REST API for NexusHub — a WireGuard VPN management dashboard with
+    PostgreSQL, JWT auth, and eBPF-backed security rules.
+
+    **Conventions**
+
+    - All endpoints live under `/api/v1`.
+    - Authenticated routes require `Authorization: Bearer <access_token>`.
+    - List endpoints accept `?limit=`, `?offset=`, and `?sort=` (prefix
+      with `-` for descending) and return a `PageEnvelope`.
+    - Errors use the `Error` schema with a stable `code` field — rely on
+      that rather than on `error` copy.
+    - Every response echoes `X-Request-ID`. Clients may send their own
+      (must be a UUID) or let the server generate one. `X-Correlation-ID`
+      is only echoed when the caller supplied it.
+  contact:
+    name: NexusHub
+    url: https://github.com/tomeksdev/NexusHub
+  license:
+    name: MIT
+servers:
+  - url: /api/v1
+    description: Relative to the deployment base URL
+
+tags:
+  - name: Health
+  - name: Auth
+  - name: Interfaces
+  - name: Peers
+  - name: WireGuard
+  - name: Observability
+
+security:
+  - bearerAuth: []
+
+paths:
+  /health:
+    get:
+      tags: [Health]
+      summary: Liveness probe
+      security: []
+      responses:
+        '200':
+          description: Service is up
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, const: ok }
+
+  /openapi.yaml:
+    get:
+      tags: [Health]
+      summary: This spec, served by the running instance
+      security: []
+      responses:
+        '200':
+          description: OpenAPI document
+          content:
+            application/yaml:
+              schema: { type: string }
+
+  /auth/login:
+    post:
+      tags: [Auth]
+      summary: Password login
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/LoginRequest' }
+      responses:
+        '200':
+          description: Access + refresh token pair
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TokenResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401':
+          description: Invalid credentials
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '403':
+          description: Account locked or disabled
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /auth/refresh:
+    post:
+      tags: [Auth]
+      summary: Rotate the refresh token
+      security: []
+      description: |
+        Issues a fresh access+refresh pair and retires the supplied
+        refresh token. Reusing a retired token is detected and forces
+        logout of every session for the user (REFRESH_REUSED).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RefreshRequest' }
+      responses:
+        '200':
+          description: New token pair
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TokenResponse' }
+        '401':
+          description: Refresh token invalid or reused
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /auth/logout:
+    post:
+      tags: [Auth]
+      summary: Invalidate a refresh token
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RefreshRequest' }
+      responses:
+        '204': { description: Logged out }
+        '400': { $ref: '#/components/responses/BadRequest' }
+
+  /auth/password:
+    post:
+      tags: [Auth]
+      summary: Change the authenticated user's password
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PasswordChangeRequest' }
+      responses:
+        '204': { description: Password changed }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /interfaces:
+    get:
+      tags: [Interfaces]
+      summary: List interfaces
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Offset'
+        - in: query
+          name: sort
+          schema:
+            type: string
+            enum: [name, -name, listen_port, -listen_port, created_at, -created_at]
+      responses:
+        '200':
+          description: Paginated interfaces
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/PageEnvelope'
+                  - type: object
+                    properties:
+                      items:
+                        type: array
+                        items: { $ref: '#/components/schemas/Interface' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+    post:
+      tags: [Interfaces]
+      summary: Create an interface
+      description: |
+        The server generates a fresh curve25519 key pair and stores the
+        private half encrypted at rest. The private key is never returned.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/InterfaceCreate' }
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Interface' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409':
+          description: Name already exists
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /interfaces/{id}:
+    parameters:
+      - $ref: '#/components/parameters/IDPath'
+    get:
+      tags: [Interfaces]
+      summary: Get an interface by ID
+      responses:
+        '200':
+          description: Interface
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Interface' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    delete:
+      tags: [Interfaces]
+      summary: Delete an interface and cascade all its peers
+      responses:
+        '204': { description: Deleted }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /peers:
+    get:
+      tags: [Peers]
+      summary: List peers on an interface
+      parameters:
+        - in: query
+          name: interface_id
+          required: true
+          schema: { type: string, format: uuid }
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Offset'
+        - in: query
+          name: sort
+          schema:
+            type: string
+            enum: [name, -name, assigned_ip, -assigned_ip, created_at, -created_at, last_handshake, -last_handshake]
+      responses:
+        '200':
+          description: Paginated peers
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/PageEnvelope'
+                  - type: object
+                    properties:
+                      items:
+                        type: array
+                        items: { $ref: '#/components/schemas/Peer' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+    post:
+      tags: [Peers]
+      summary: Create a peer
+      description: |
+        If `public_key` is supplied the server stores it as-is (BYOK flow
+        — private key stays on the client). Otherwise the server
+        generates a fresh key pair and encrypts the private half at rest.
+        If `assigned_ip` is omitted the server picks the next free
+        address inside the interface CIDR.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PeerCreate' }
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Peer' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: Duplicate name, public key, or IP already in use
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /peers/{id}:
+    parameters:
+      - $ref: '#/components/parameters/IDPath'
+    get:
+      tags: [Peers]
+      summary: Get a peer by ID
+      responses:
+        '200':
+          description: Peer
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Peer' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    delete:
+      tags: [Peers]
+      summary: Delete a peer
+      responses:
+        '204': { description: Deleted }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /peers/{id}/rotate-psk:
+    parameters:
+      - $ref: '#/components/parameters/IDPath'
+    post:
+      tags: [Peers]
+      summary: Rotate the peer's preshared key
+      description: |
+        Retires the previous active PSK (kept in history for audit) and
+        stores a freshly generated 32-byte PSK encrypted at rest. The
+        new PSK is NOT returned in the response; fetch it via
+        `/peers/{id}/config`.
+      responses:
+        '200':
+          description: Updated peer (PSK body omitted from response)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Peer' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /peers/{id}/config:
+    parameters:
+      - $ref: '#/components/parameters/IDPath'
+    get:
+      tags: [Peers]
+      summary: Download wg-quick config text
+      responses:
+        '200':
+          description: wg-quick .conf file
+          content:
+            text/plain:
+              schema: { type: string }
+              example: |
+                [Interface]
+                PrivateKey = <base64>
+                Address = 10.8.0.2
+                DNS = 1.1.1.1
+
+                [Peer]
+                PublicKey = <base64>
+                AllowedIPs = 0.0.0.0/0, ::/0
+                Endpoint = vpn.example.com:51820
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /peers/{id}/config.png:
+    parameters:
+      - $ref: '#/components/parameters/IDPath'
+    get:
+      tags: [Peers]
+      summary: Download wg-quick config as a scannable QR PNG
+      responses:
+        '200':
+          description: PNG image
+          content:
+            image/png:
+              schema: { type: string, format: binary }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /wg/status:
+    get:
+      tags: [WireGuard]
+      summary: Data-plane mode + live device snapshot
+      responses:
+        '200':
+          description: Current status
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WGStatus' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /metrics:
+    get:
+      tags: [Observability]
+      summary: Prometheus scrape endpoint
+      responses:
+        '200':
+          description: Prometheus text exposition
+          content:
+            text/plain:
+              schema: { type: string }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  parameters:
+    IDPath:
+      in: path
+      name: id
+      required: true
+      schema: { type: string, format: uuid }
+    Limit:
+      in: query
+      name: limit
+      schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
+    Offset:
+      in: query
+      name: offset
+      schema: { type: integer, minimum: 0, default: 0 }
+
+  responses:
+    BadRequest:
+      description: Malformed request
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    Unauthorized:
+      description: Missing or invalid access token
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    Forbidden:
+      description: Authenticated but not allowed
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    NotFound:
+      description: Resource not found
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    RateLimited:
+      description: Per-IP rate limit exceeded
+      headers:
+        Retry-After:
+          schema: { type: integer }
+          description: Seconds to wait before retrying
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+
+  schemas:
+    Error:
+      type: object
+      required: [error, code]
+      properties:
+        error:
+          type: string
+          description: Human-readable message. Do not pattern-match on this.
+        code:
+          type: string
+          description: Stable machine-readable code. Safe to branch on.
+          enum:
+            - INVALID_REQUEST
+            - INVALID_CREDENTIALS
+            - ACCOUNT_LOCKED
+            - ACCOUNT_DISABLED
+            - UNAUTHORIZED
+            - FORBIDDEN
+            - REFRESH_INVALID
+            - REFRESH_REUSED
+            - RATE_LIMITED
+            - NOT_FOUND
+            - CONFLICT
+            - IP_POOL_EXHAUSTED
+            - INTERNAL
+
+    PageEnvelope:
+      type: object
+      required: [items, total, limit, offset]
+      properties:
+        items: { type: array, items: {} }
+        total: { type: integer, description: Total rows matching the query (not just this page) }
+        limit: { type: integer }
+        offset: { type: integer }
+        sort:
+          type: string
+          description: Canonical applied sort, prefixed with `-` when descending. Omitted when the default was used.
+
+    LoginRequest:
+      type: object
+      required: [email, password]
+      properties:
+        email: { type: string, format: email }
+        password: { type: string, format: password }
+
+    RefreshRequest:
+      type: object
+      required: [refresh_token]
+      properties:
+        refresh_token: { type: string }
+
+    PasswordChangeRequest:
+      type: object
+      required: [current_password, new_password]
+      properties:
+        current_password: { type: string, format: password }
+        new_password:
+          type: string
+          format: password
+          minLength: 12
+
+    TokenResponse:
+      type: object
+      required: [access_token, refresh_token, access_expires_at, role]
+      properties:
+        access_token: { type: string, description: JWT access token (~15 min TTL) }
+        refresh_token: { type: string, description: Rotating refresh token (7 d TTL by default) }
+        access_expires_at: { type: string, format: date-time }
+        role:
+          type: string
+          enum: [super_admin, admin, user]
+
+    InterfaceCreate:
+      type: object
+      required: [name, listen_port, address]
+      properties:
+        name: { type: string, example: wg0 }
+        listen_port: { type: integer, minimum: 1, maximum: 65535 }
+        address:
+          type: string
+          description: CIDR of the server side of the tunnel
+          example: 10.8.0.1/24
+        dns:
+          type: array
+          items: { type: string }
+        mtu: { type: integer, nullable: true }
+        endpoint:
+          type: string
+          nullable: true
+          description: Public `host:port` clients should connect to
+        post_up: { type: string, nullable: true }
+        post_down: { type: string, nullable: true }
+
+    Interface:
+      type: object
+      required:
+        - id
+        - name
+        - listen_port
+        - address
+        - dns
+        - public_key
+        - is_active
+        - created_at
+        - updated_at
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        listen_port: { type: integer }
+        address: { type: string, example: 10.8.0.1/24 }
+        dns:
+          type: array
+          items: { type: string }
+        mtu: { type: integer, nullable: true }
+        endpoint: { type: string, nullable: true }
+        public_key:
+          type: string
+          description: Base64-encoded curve25519 public key (44 chars)
+        post_up: { type: string, nullable: true }
+        post_down: { type: string, nullable: true }
+        is_active: { type: boolean }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    PeerCreate:
+      type: object
+      required: [interface_id, name]
+      properties:
+        interface_id: { type: string, format: uuid }
+        name: { type: string }
+        description: { type: string, nullable: true }
+        public_key:
+          type: string
+          nullable: true
+          description: BYOK — when supplied the server stores this instead of generating a key pair. Must be 44-char base64.
+        allowed_ips:
+          type: array
+          items: { type: string, description: CIDR }
+        assigned_ip:
+          type: string
+          nullable: true
+          description: Explicit address in the interface CIDR. Omit to let the server pick the next free one.
+        endpoint: { type: string, nullable: true }
+        persistent_keepalive: { type: integer, nullable: true }
+        dns:
+          type: array
+          items: { type: string }
+        expires_at: { type: string, format: date-time, nullable: true }
+        owner_user_id: { type: string, format: uuid, nullable: true }
+
+    Peer:
+      type: object
+      required:
+        - id
+        - interface_id
+        - name
+        - public_key
+        - allowed_ips
+        - assigned_ip
+        - dns
+        - status
+        - rx_bytes
+        - tx_bytes
+        - created_at
+        - updated_at
+      properties:
+        id: { type: string, format: uuid }
+        interface_id: { type: string, format: uuid }
+        owner_user_id: { type: string, format: uuid, nullable: true }
+        name: { type: string }
+        description: { type: string, nullable: true }
+        public_key: { type: string }
+        allowed_ips:
+          type: array
+          items: { type: string }
+        assigned_ip: { type: string }
+        endpoint: { type: string, nullable: true }
+        persistent_keepalive: { type: integer, nullable: true }
+        dns:
+          type: array
+          items: { type: string }
+        status:
+          type: string
+          enum: [active, disabled, expired]
+        last_handshake: { type: string, format: date-time, nullable: true }
+        rx_bytes: { type: integer, format: int64 }
+        tx_bytes: { type: integer, format: int64 }
+        expires_at: { type: string, format: date-time, nullable: true }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    WGStatus:
+      type: object
+      required: [mode, devices]
+      properties:
+        mode:
+          type: string
+          enum: [linux_kernel, userspace, unknown]
+          description: Data-plane backing the currently managed devices.
+        devices:
+          type: array
+          items: { $ref: '#/components/schemas/WGDeviceStatus' }
+
+    WGDeviceStatus:
+      type: object
+      required: [name, listen_port, peer_count]
+      properties:
+        name: { type: string }
+        type:
+          type: string
+          description: Raw wgtypes.DeviceType string (e.g. "Linux kernel", "userspace", or empty when the device is not live).
+        listen_port: { type: integer }
+        peer_count:
+          type: integer
+          description: Number of live peers on the kernel device. `-1` when the DB row has no corresponding live device.

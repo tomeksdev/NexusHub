@@ -11,6 +11,7 @@ import (
 	"github.com/tomeksdev/wireguard-install-with-gui/backend/internal/crypto"
 	"github.com/tomeksdev/wireguard-install-with-gui/backend/internal/metrics"
 	"github.com/tomeksdev/wireguard-install-with-gui/backend/internal/middleware"
+	"github.com/tomeksdev/wireguard-install-with-gui/backend/internal/openapi"
 	"github.com/tomeksdev/wireguard-install-with-gui/backend/internal/repository"
 	"github.com/tomeksdev/wireguard-install-with-gui/backend/internal/wg"
 )
@@ -57,6 +58,12 @@ func NewRouter(deps Deps) *gin.Engine {
 
 	v1 := r.Group("/api/v1")
 	v1.GET("/health", Health)
+	// OpenAPI spec — intentionally public so SDK generators and frontend
+	// codegen tools can fetch without a token. The spec itself doesn't
+	// leak configuration; it only describes shapes.
+	v1.GET("/openapi.yaml", func(c *gin.Context) {
+		c.Data(200, openapi.SpecContentType, openapi.Spec)
+	})
 
 	// Public auth endpoints. Login and refresh are the only attackable surface
 	// before authentication, so they get per-IP rate limiting.
