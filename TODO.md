@@ -113,15 +113,15 @@ Phases are sequential in priority but work can overlap where dependencies allow.
 
 ## Phase 7 — Frontend application
 
-- [ ] App shell with Refine + routing
-- [ ] Auth flow wired to backend (login, refresh, logout)
-- [ ] Peers list, peer detail, peer create/edit (with QR download)
+- [x] App shell with sidebar + page switcher (2026-04-18) <!-- completed 2026-04-18: frontend/src/App.tsx — Tailwind dark shell, sidebar nav, main content area. Refine integration deferred until routing needs justify the extra surface. -->
+- [x] Auth flow wired to backend (login, refresh, logout) (2026-04-18) <!-- completed 2026-04-18: frontend/src/lib/api.ts + auth.tsx — access token in memory, refresh in localStorage, pre-expiry refresh + 401 retry, LoginPage.tsx -->
+- [ ] Peers list, peer detail, peer create/edit (with QR download) <!-- list landed 2026-04-18; detail/create/edit open -->
 - [ ] Interfaces list & detail
 - [ ] eBPF rules editor
 - [ ] Users & roles admin screen
 - [ ] Audit log viewer with filtering
 - [ ] Metrics dashboard (Recharts)
-- [ ] Dark mode
+- [x] Dark mode (2026-04-18) <!-- completed 2026-04-18: dark-only for now, slate palette baked into Tailwind utilities -->
 - [ ] i18n scaffolding
 - [ ] Accessible by default (keyboard nav, ARIA, contrast)
 
