@@ -85,7 +85,8 @@ Phases are sequential in priority but work can overlap where dependencies allow.
 
 - [x] Pick loader: `cilium/ebpf` (Go) vs. libbpf + CO-RE (2026-04-19) <!-- completed 2026-04-19: ADR 0003 — cilium/ebpf v0.16 + bpf2go, cgo-free, CO-RE via BTF. -->
 - [x] Rule model: per-peer allow/deny lists, L3/L4 filters, rate limits (2026-04-19) <!-- completed 2026-04-19: ADR 0004 — XDP(eth0) + TC(wg0), LPM_TRIE per family, HASH rule_meta, PERCPU_HASH rate_state, map-driven updates. -->
-- [ ] Example programs: peer ingress filter, bandwidth meter, connection counter <!-- partial 2026-04-19: ebpf/src/rules.c is the XDP full-gate — LPM src lookup → rule_meta consultation → action switch with protocol match. Port matching, rate_limit, and TC-on-wg0 programs pending. -->
+- [ ] Example programs: peer ingress filter, bandwidth meter, connection counter <!-- partial 2026-04-19: ebpf/src/rules.c is the XDP full-gate — LPM src → rule_meta → protocol + TCP/UDP port-range match → action switch. rate_limit (rate_state PERCPU_HASH) and TC-on-wg0 programs pending. -->
+- [ ] TC clsact program on wg0 for post-decryption rule enforcement <!-- pending 2026-04-19: mirrors rules.c structure but reads from wg0 (no ethhdr, L3 directly). -->
 - [ ] Userspace map management (add/remove/update rule entries live) <!-- partial 2026-04-19: ebpf/userspace/RulesLoader owns rule_meta HASH + rule_src/dst_v4/v6 LPM maps with typed Put/Get/Delete for meta and prefixes; backend/internal/ebpf.Syncer interface + NoopSyncer default + FakeSyncer test double bridge DB↔kernel; real KernelSyncer wrapping RulesLoader is the next increment. -->
 - [ ] Metrics export (maps → Prometheus)
 - [ ] Safety: verifier-friendly patterns, bounds checks, no unbounded loops
