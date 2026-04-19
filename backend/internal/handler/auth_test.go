@@ -18,6 +18,7 @@ import (
 
 	"github.com/tomeksdev/wireguard-install-with-gui/backend/internal/auth"
 	"github.com/tomeksdev/wireguard-install-with-gui/backend/internal/dbtest"
+	"github.com/tomeksdev/wireguard-install-with-gui/backend/internal/ebpf"
 	"github.com/tomeksdev/wireguard-install-with-gui/backend/internal/handler"
 	mw "github.com/tomeksdev/wireguard-install-with-gui/backend/internal/middleware"
 	"github.com/tomeksdev/wireguard-install-with-gui/backend/internal/repository"
@@ -36,6 +37,9 @@ type env struct {
 	email  string
 	pass   string
 	role   string
+	// sync lets rule-handler tests assert the syncer was called in
+	// lockstep with DB writes. Other tests ignore it.
+	sync *ebpf.FakeSyncer
 }
 
 func setup(t *testing.T) *env {
@@ -48,11 +52,13 @@ func setup(t *testing.T) *env {
 		t.Fatalf("new issuer: %v", err)
 	}
 
+	sync := &ebpf.FakeSyncer{}
 	e := &env{
 		pool:  pool,
 		email: "user@example.com",
 		pass:  "correct-horse-battery-staple",
 		role:  "admin",
+		sync:  sync,
 	}
 	e.userID = createUser(t, pool, e.email, "user01", e.pass, e.role)
 
@@ -61,6 +67,8 @@ func setup(t *testing.T) *env {
 		Users:      repository.NewUserRepo(pool),
 		Sessions:   repository.NewSessionRepo(pool),
 		Audit:      repository.NewAuditRepo(pool),
+		Rules:      repository.NewRuleRepo(pool),
+		EBPFSync:   sync,
 		RefreshTTL: refreshTTL,
 		// Default: limits disabled so existing auth tests aren't flaky
 		// under bursts. TestLoginRateLimit builds its own router with limits on.

@@ -74,6 +74,7 @@ func run() error {
 
 	ifaceRepo := repository.NewInterfaceRepo(pool)
 	peerRepo := repository.NewPeerRepo(pool)
+	ruleRepo := repository.NewRuleRepo(pool)
 
 	// Try to open a netlink client. If we can't (no CAP_NET_ADMIN, no
 	// kernel module, containerised dev env), skip kernel sync and run
@@ -103,6 +104,7 @@ func run() error {
 		Audit:             repository.NewAuditRepo(pool),
 		Interfaces:        ifaceRepo,
 		Peers:             peerRepo,
+		Rules:             ruleRepo,
 		AEAD:              aead,
 		RefreshTTL:        cfg.JWTRefreshExpiry,
 		WG:                wgClient,

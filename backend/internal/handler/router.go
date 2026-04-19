@@ -9,6 +9,7 @@ import (
 
 	"github.com/tomeksdev/wireguard-install-with-gui/backend/internal/auth"
 	"github.com/tomeksdev/wireguard-install-with-gui/backend/internal/crypto"
+	"github.com/tomeksdev/wireguard-install-with-gui/backend/internal/ebpf"
 	"github.com/tomeksdev/wireguard-install-with-gui/backend/internal/metrics"
 	"github.com/tomeksdev/wireguard-install-with-gui/backend/internal/middleware"
 	"github.com/tomeksdev/wireguard-install-with-gui/backend/internal/openapi"
@@ -25,8 +26,13 @@ type Deps struct {
 	Audit      *repository.AuditRepo
 	Interfaces *repository.InterfaceRepo
 	Peers      *repository.PeerRepo
+	Rules      *repository.RuleRepo
 	AEAD       *crypto.AEAD
 	RefreshTTL time.Duration
+
+	// EBPFSync bridges rule CRUD to the kernel. NoopSyncer is the safe
+	// default for environments where eBPF isn't loaded.
+	EBPFSync ebpf.Syncer
 
 	// WG bridges the DB to the live kernel device. Nil in tests and dev
 	// environments without the kernel module — handlers skip kernel sync
@@ -143,6 +149,29 @@ func NewRouter(deps Deps) *gin.Engine {
 	if deps.Audit != nil {
 		auditH := &AuditHandler{Audit: deps.Audit}
 		admin.GET("/audit-log", auditH.List)
+	}
+
+	// eBPF rules. Same admin gate as the rest. Syncer defaults to noop
+	// so the routes are usable without a kernel runner.
+	if deps.Rules != nil {
+		sync := deps.EBPFSync
+		if sync == nil {
+			sync = ebpf.NoopSyncer{}
+		}
+		ruleH := &RuleHandler{
+			Rules:      deps.Rules,
+			Peers:      deps.Peers,
+			Interfaces: deps.Interfaces,
+			Sync:       sync,
+		}
+		admin.GET("/rules", ruleH.List)
+		admin.POST("/rules", ruleH.Create)
+		admin.GET("/rules/:id", ruleH.Get)
+		admin.PATCH("/rules/:id", ruleH.Update)
+		admin.DELETE("/rules/:id", ruleH.Delete)
+		admin.GET("/rules/:id/bindings", ruleH.ListBindings)
+		admin.POST("/rules/:id/bindings", ruleH.CreateBinding)
+		admin.DELETE("/rules/:id/bindings/:binding_id", ruleH.DeleteBinding)
 	}
 
 	return r
