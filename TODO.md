@@ -83,13 +83,13 @@ Phases are sequential in priority but work can overlap where dependencies allow.
 
 ## Phase 5 — eBPF security rules
 
-- [ ] Pick loader: `cilium/ebpf` (Go) vs. libbpf + CO-RE
-- [ ] Rule model: per-peer allow/deny lists, L3/L4 filters, rate limits
-- [ ] Example programs: peer ingress filter, bandwidth meter, connection counter
-- [ ] Userspace map management (add/remove/update rule entries live)
+- [x] Pick loader: `cilium/ebpf` (Go) vs. libbpf + CO-RE (2026-04-19) <!-- completed 2026-04-19: ADR 0003 — cilium/ebpf v0.16 + bpf2go, cgo-free, CO-RE via BTF. -->
+- [x] Rule model: per-peer allow/deny lists, L3/L4 filters, rate limits (2026-04-19) <!-- completed 2026-04-19: ADR 0004 — XDP(eth0) + TC(wg0), LPM_TRIE per family, HASH rule_meta, PERCPU_HASH rate_state, map-driven updates. -->
+- [ ] Example programs: peer ingress filter, bandwidth meter, connection counter <!-- partial 2026-04-19: ebpf/src/blocklist.c (XDP LPM_TRIE drop) landed; per-peer/bandwidth/counter programs pending. -->
+- [ ] Userspace map management (add/remove/update rule entries live) <!-- partial 2026-04-19: ebpf/userspace/BlocklistLoader covers the v4/v6 blocklist maps; full rule-sync layer pending rule_meta and rate_state programs. -->
 - [ ] Metrics export (maps → Prometheus)
 - [ ] Safety: verifier-friendly patterns, bounds checks, no unbounded loops
-- [ ] Loader tests in a kernel-ready CI runner
+- [ ] Loader tests in a kernel-ready CI runner <!-- partial 2026-04-19: blocklist_test.go map ops written, gated on rlimit memlock / CAP_BPF; skips cleanly without a kernel runner. -->
 - [ ] Fallback path if kernel lacks BTF or required features
 
 ---
