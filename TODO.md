@@ -140,8 +140,8 @@ Phases are sequential in priority but work can overlap where dependencies allow.
 
 ## Phase 9 — Testing
 
-- [ ] Backend unit tests (services, handlers with real DB) <!-- partial 2026-04-19: users + audit list endpoints have integration coverage; wg_test CIDR failures pre-exist (cidr column rejects host-bit addresses) and need a separate repair. -->
-- [ ] Backend integration tests (full HTTP + DB) <!-- partial 2026-04-19: auth + users + audit flows covered via dbtest.Fresh under the `integration` build tag. -->
+- [ ] Backend unit tests (services, handlers with real DB) <!-- partial 2026-04-19: users + audit list endpoints have integration coverage; wg_test CIDR failures fixed via migration 007 (address CIDR→INET) + host() on scan — all handler integration tests now green. -->
+- [ ] Backend integration tests (full HTTP + DB) <!-- partial 2026-04-19: auth + users + audit + wg flows covered via dbtest.Fresh under the `integration` build tag. -->
 - [x] Frontend unit tests (Vitest + Testing Library) (2026-04-19) <!-- completed 2026-04-19: vitest + jsdom config, setupFiles/MSW server in src/test, pure-unit tests for lib/prom.ts and lib/sse.ts. -->
 - [x] Frontend MSW-backed component tests (2026-04-19) <!-- completed 2026-04-19: src/lib/api.test.ts exercises login/logout/refresh/401-retry/token-lifecycle against MSW mocks. -->
 - [ ] E2E tests (Playwright) covering: login, peer create, rule attach, audit view

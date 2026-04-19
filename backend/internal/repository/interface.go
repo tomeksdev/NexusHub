@@ -63,7 +63,7 @@ func (r *InterfaceRepo) Create(ctx context.Context, p CreateInterfaceParams) (*I
 		INSERT INTO wg_interfaces
 		   (name, listen_port, address, dns, mtu, endpoint,
 		    private_key, public_key, post_up, post_down)
-		VALUES ($1, $2, $3::cidr, $4, $5, $6, $7, $8, $9, $10)
+		VALUES ($1, $2, $3::inet, $4, $5, $6, $7, $8, $9, $10)
 		RETURNING id, created_at, updated_at, is_active`
 	out := Interface{
 		Name: p.Name, ListenPort: p.ListenPort, Address: p.Address,

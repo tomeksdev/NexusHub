@@ -176,7 +176,7 @@ func contains(list []string, s string) bool {
 // IP-pool allocator without dragging the rest of every peer row.
 func (r *PeerRepo) AssignedIPsByInterface(ctx context.Context, ifaceID uuid.UUID) ([]netip.Addr, error) {
 	rows, err := r.pool.Query(ctx,
-		`SELECT assigned_ip::text FROM wg_peers WHERE interface_id = $1`, ifaceID)
+		`SELECT host(assigned_ip) FROM wg_peers WHERE interface_id = $1`, ifaceID)
 	if err != nil {
 		return nil, fmt.Errorf("list assigned ips: %w", err)
 	}
@@ -265,7 +265,7 @@ func (r *PeerRepo) RotatePSK(ctx context.Context, peerID uuid.UUID, sealedPSK []
 const selectPeer = `
 	SELECT id, interface_id, owner_user_id, name, description,
 	       public_key, private_key,
-	       allowed_ips::text[], assigned_ip::text,
+	       allowed_ips::text[], host(assigned_ip),
 	       endpoint, persistent_keepalive, dns, status::text,
 	       last_handshake, rx_bytes, tx_bytes, expires_at,
 	       created_at, updated_at
