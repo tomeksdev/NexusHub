@@ -54,7 +54,7 @@ func setup(t *testing.T) *env {
 		pass:  "correct-horse-battery-staple",
 		role:  "admin",
 	}
-	e.userID = createUser(t, pool, e.email, "u1", e.pass, e.role)
+	e.userID = createUser(t, pool, e.email, "user01", e.pass, e.role)
 
 	e.router = handler.NewRouter(handler.Deps{
 		JWTIssuer:  issuer,
@@ -388,7 +388,7 @@ func TestLoginRateLimitRejectsBurst(t *testing.T) {
 	}
 	email := "rl@example.com"
 	pw := "rate-limit-password-123"
-	createUser(t, pool, email, "rl", pw, "admin")
+	createUser(t, pool, email, "ratelim", pw, "admin")
 
 	router := handler.NewRouter(handler.Deps{
 		JWTIssuer:  issuer,

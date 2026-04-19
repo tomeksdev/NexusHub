@@ -57,7 +57,7 @@ func setupWG(t *testing.T) *wgEnv {
 
 	const email = "wg@example.com"
 	const password = "wireguard-test-password-123"
-	userID := createUser(t, pool, email, "wg", password, "admin")
+	userID := createUser(t, pool, email, "wgadmin", password, "admin")
 
 	router := handler.NewRouter(handler.Deps{
 		JWTIssuer:  issuer,
