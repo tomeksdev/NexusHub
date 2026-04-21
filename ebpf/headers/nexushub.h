@@ -70,6 +70,15 @@ struct rate_tokens {
     __u64 last_seen_ns;
 };
 
+/* rate_key_v4 — PERCPU_HASH key for IPv4 rate buckets. Per-(rule,src)
+ * granularity so one rate-limited source can't starve others
+ * hitting the same rule. addr is network byte order, matching the
+ * on-wire layout and what iphdr->saddr stores. */
+struct rate_key_v4 {
+    __u32 rule_id;
+    __u32 addr;
+};
+
 /* Upper bounds are compile-time constants; a deploy that outgrows them
  * rebuilds with new values. Unbounded maps are a DoS vector. */
 #define MAX_RULES      10000

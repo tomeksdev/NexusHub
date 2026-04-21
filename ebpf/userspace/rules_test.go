@@ -10,9 +10,9 @@ import (
 )
 
 // buildTestSpec returns a minimal CollectionSpec that mimics what
-// bpf2go emits for rules.c: one HASH + four LPM_TRIE maps, no
-// programs. Key/value sizes must match ebpf/headers/nexushub.h so
-// Update/Delete/Lookup agree with the kernel.
+// bpf2go emits for rules.c: one HASH + four LPM_TRIE + one PERCPU_HASH
+// maps, no programs. Key/value sizes must match
+// ebpf/headers/nexushub.h so Update/Delete/Lookup agree with the kernel.
 func buildTestSpec(t *testing.T) *ebpf.CollectionSpec {
 	t.Helper()
 	return &ebpf.CollectionSpec{
@@ -28,6 +28,13 @@ func buildTestSpec(t *testing.T) *ebpf.CollectionSpec {
 			mapRuleSrcV6: lpmTrieSpec(mapRuleSrcV6, 20),
 			mapRuleDstV4: lpmTrieSpec(mapRuleDstV4, 8),
 			mapRuleDstV6: lpmTrieSpec(mapRuleDstV6, 20),
+			mapRateStateV4: {
+				Name:       mapRateStateV4,
+				Type:       ebpf.PerCPUHash,
+				KeySize:    rateKeyV4Size,
+				ValueSize:  rateTokensSize,
+				MaxEntries: 1024,
+			},
 		},
 	}
 }
@@ -268,5 +275,114 @@ func TestRuleMetaUnmarshalRejectsWrongLength(t *testing.T) {
 	var m RuleMeta
 	if err := m.UnmarshalBinary(make([]byte, ruleMetaSize-1)); err == nil {
 		t.Error("expected error on short buffer")
+	}
+}
+
+func TestRateTokensMarshalRoundTrip(t *testing.T) {
+	orig := RateTokens{TokensX1000: 0xDEADBEEF_CAFEBABE, LastSeenNs: 0x0102030405060708}
+	b, err := orig.MarshalBinary()
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if len(b) != rateTokensSize {
+		t.Fatalf("len: got %d, want %d", len(b), rateTokensSize)
+	}
+	var back RateTokens
+	if err := back.UnmarshalBinary(b); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if back != orig {
+		t.Errorf("round-trip mismatch:\n  got  %+v\n  want %+v", back, orig)
+	}
+}
+
+func TestRulesLoaderPeekRateV4MissingReturnsFalse(t *testing.T) {
+	requireBPF(t)
+	l, err := NewRulesLoader(buildTestSpec(t))
+	if err != nil {
+		t.Fatalf("new loader: %v", err)
+	}
+	defer l.Close()
+
+	_, ok, err := l.PeekRateV4(42, netip.MustParseAddr("10.0.0.1"))
+	if err != nil {
+		t.Fatalf("peek: %v", err)
+	}
+	if ok {
+		t.Error("expected miss for untouched bucket")
+	}
+}
+
+func TestRulesLoaderResetRateV4MissingIsNoop(t *testing.T) {
+	requireBPF(t)
+	l, err := NewRulesLoader(buildTestSpec(t))
+	if err != nil {
+		t.Fatalf("new loader: %v", err)
+	}
+	defer l.Close()
+
+	if err := l.ResetRateV4(999, netip.MustParseAddr("10.0.0.2")); err != nil {
+		t.Errorf("reset of missing bucket should be nil, got %v", err)
+	}
+}
+
+func TestRulesLoaderRateV4SeedAndSumAcrossCPUs(t *testing.T) {
+	requireBPF(t)
+	l, err := NewRulesLoader(buildTestSpec(t))
+	if err != nil {
+		t.Fatalf("new loader: %v", err)
+	}
+	defer l.Close()
+
+	addr := netip.MustParseAddr("203.0.113.5")
+	key, err := newRateKeyV4(7, addr)
+	if err != nil {
+		t.Fatalf("key: %v", err)
+	}
+
+	// Seed identical values on every CPU. PERCPU_HASH expects one
+	// value per CPU; cilium/ebpf infers the count from runtime.
+	cpus, err := ebpf.PossibleCPU()
+	if err != nil {
+		t.Fatalf("cpu count: %v", err)
+	}
+	seed := make([]RateTokens, cpus)
+	for i := range seed {
+		seed[i] = RateTokens{TokensX1000: 500, LastSeenNs: 1000}
+	}
+	if err := l.rateV4.Update(key, seed, ebpf.UpdateAny); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	got, ok, err := l.PeekRateV4(7, addr)
+	if err != nil {
+		t.Fatalf("peek: %v", err)
+	}
+	if !ok {
+		t.Fatal("peek missed seeded bucket")
+	}
+	if want := uint64(500) * uint64(cpus); got.TokensX1000 != want {
+		t.Errorf("summed tokens: got %d, want %d (cpus=%d)", got.TokensX1000, want, cpus)
+	}
+	if got.LastSeenNs != 1000 {
+		t.Errorf("max last_seen_ns: got %d, want 1000", got.LastSeenNs)
+	}
+
+	if err := l.ResetRateV4(7, addr); err != nil {
+		t.Fatalf("reset: %v", err)
+	}
+	_, ok, err = l.PeekRateV4(7, addr)
+	if err != nil {
+		t.Fatalf("peek after reset: %v", err)
+	}
+	if ok {
+		t.Error("bucket should be gone after reset")
+	}
+}
+
+func TestRateKeyV4RejectsIPv6(t *testing.T) {
+	_, err := newRateKeyV4(1, netip.MustParseAddr("2001:db8::1"))
+	if err == nil {
+		t.Error("expected error on IPv6 address")
 	}
 }

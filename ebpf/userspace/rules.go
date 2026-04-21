@@ -27,11 +27,12 @@ import (
 // Map names in the compiled ELF. These match the variable names in
 // ebpf/src/rules.c; changing one requires changing the other.
 const (
-	mapRuleMeta  = "rule_meta"
-	mapRuleSrcV4 = "rule_src_v4"
-	mapRuleSrcV6 = "rule_src_v6"
-	mapRuleDstV4 = "rule_dst_v4"
-	mapRuleDstV6 = "rule_dst_v6"
+	mapRuleMeta    = "rule_meta"
+	mapRuleSrcV4   = "rule_src_v4"
+	mapRuleSrcV6   = "rule_src_v6"
+	mapRuleDstV4   = "rule_dst_v4"
+	mapRuleDstV6   = "rule_dst_v6"
+	mapRateStateV4 = "rate_state_v4"
 )
 
 // RuleMeta mirrors struct rule_meta in ebpf/headers/nexushub.h.
@@ -98,17 +99,61 @@ func (m *RuleMeta) UnmarshalBinary(b []byte) error {
 	return nil
 }
 
-// RulesLoader manages the five maps of the XDP rule runtime. Every
+// RateTokens mirrors struct rate_tokens in ebpf/headers/nexushub.h.
+// PERCPU_HASH stores one copy per CPU; operator-facing code (metrics,
+// reconciler) sums across CPUs. The Go shape is a single snapshot —
+// callers collect per-CPU slices externally when needed.
+type RateTokens struct {
+	TokensX1000 uint64
+	LastSeenNs  uint64
+}
+
+const rateTokensSize = 16
+
+func (r RateTokens) MarshalBinary() ([]byte, error) {
+	b := make([]byte, rateTokensSize)
+	binary.LittleEndian.PutUint64(b[0:8], r.TokensX1000)
+	binary.LittleEndian.PutUint64(b[8:16], r.LastSeenNs)
+	return b, nil
+}
+
+func (r *RateTokens) UnmarshalBinary(b []byte) error {
+	if len(b) != rateTokensSize {
+		return fmt.Errorf("rate_tokens: expected %d bytes, got %d", rateTokensSize, len(b))
+	}
+	r.TokensX1000 = binary.LittleEndian.Uint64(b[0:8])
+	r.LastSeenNs = binary.LittleEndian.Uint64(b[8:16])
+	return nil
+}
+
+// rateKeyV4 mirrors struct rate_key_v4 in ebpf/headers/nexushub.h.
+// addr is stored in network byte order to match the packet path.
+type rateKeyV4 struct {
+	RuleID uint32
+	Addr   [4]byte
+}
+
+const rateKeyV4Size = 8
+
+func (k rateKeyV4) MarshalBinary() ([]byte, error) {
+	b := make([]byte, rateKeyV4Size)
+	binary.LittleEndian.PutUint32(b[0:4], k.RuleID)
+	copy(b[4:8], k.Addr[:])
+	return b, nil
+}
+
+// RulesLoader manages the six maps of the XDP rule runtime. Every
 // operation is a single map-write — the XDP program picks up changes
 // on the next packet without reload.
 type RulesLoader struct {
 	coll *ebpf.Collection
 
-	meta  *ebpf.Map
-	srcV4 *ebpf.Map
-	srcV6 *ebpf.Map
-	dstV4 *ebpf.Map
-	dstV6 *ebpf.Map
+	meta    *ebpf.Map
+	srcV4   *ebpf.Map
+	srcV6   *ebpf.Map
+	dstV4   *ebpf.Map
+	dstV6   *ebpf.Map
+	rateV4  *ebpf.Map
 }
 
 // NewRulesLoader builds the collection from spec, pulls handles for
@@ -154,10 +199,16 @@ func NewRulesLoader(spec *ebpf.CollectionSpec) (*RulesLoader, error) {
 		coll.Close()
 		return nil, err
 	}
+	rateV4, err := pick(mapRateStateV4)
+	if err != nil {
+		coll.Close()
+		return nil, err
+	}
 	return &RulesLoader{
 		coll: coll, meta: meta,
 		srcV4: srcV4, srcV6: srcV6,
 		dstV4: dstV4, dstV6: dstV6,
+		rateV4: rateV4,
 	}, nil
 }
 
@@ -265,4 +316,51 @@ func dropENOENT(err error) error {
 		return nil
 	}
 	return err
+}
+
+// ResetRateV4 clears the token bucket for (ruleID, addr) so the next
+// packet starts from a fresh state. Used by the reconciler when a
+// rule's pps/burst changes and by operator tools that want to lift a
+// throttle without waiting for natural refill. Deleting a non-existent
+// bucket returns nil (BPF's ENOENT is folded to nil by dropENOENT).
+func (l *RulesLoader) ResetRateV4(ruleID uint32, addr netip.Addr) error {
+	k, err := newRateKeyV4(ruleID, addr)
+	if err != nil {
+		return err
+	}
+	return dropENOENT(l.rateV4.Delete(k))
+}
+
+// PeekRateV4 returns the token bucket for (ruleID, addr) summed across
+// all CPUs. PERCPU_HASH reads produce one copy per CPU; summing is the
+// right reduction for tokens (total available) but wrong for
+// LastSeenNs — we take the max (most recent) instead. Returns
+// (zero-value, false, nil) when no bucket exists.
+func (l *RulesLoader) PeekRateV4(ruleID uint32, addr netip.Addr) (RateTokens, bool, error) {
+	k, err := newRateKeyV4(ruleID, addr)
+	if err != nil {
+		return RateTokens{}, false, err
+	}
+	var perCPU []RateTokens
+	if err := l.rateV4.Lookup(k, &perCPU); err != nil {
+		if errors.Is(err, ebpf.ErrKeyNotExist) {
+			return RateTokens{}, false, nil
+		}
+		return RateTokens{}, false, err
+	}
+	var sum RateTokens
+	for _, t := range perCPU {
+		sum.TokensX1000 += t.TokensX1000
+		if t.LastSeenNs > sum.LastSeenNs {
+			sum.LastSeenNs = t.LastSeenNs
+		}
+	}
+	return sum, true, nil
+}
+
+func newRateKeyV4(ruleID uint32, addr netip.Addr) (rateKeyV4, error) {
+	if !addr.Is4() {
+		return rateKeyV4{}, fmt.Errorf("expected IPv4 addr, got %s", addr)
+	}
+	return rateKeyV4{RuleID: ruleID, Addr: addr.As4()}, nil
 }

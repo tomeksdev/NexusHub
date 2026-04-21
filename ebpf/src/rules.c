@@ -6,12 +6,14 @@
  *   2. Hash lookup on rule_id in rule_meta → action + filters
  *   3. Protocol check
  *   4. TCP/UDP src+dst port range check (0/0 = wildcard)
- *   5. Switch on action (DENY → XDP_DROP, everything else → XDP_PASS)
+ *   5. Dispatch on action:
+ *        DENY        → XDP_DROP
+ *        RATE_LIMIT  → per-(rule, src) token bucket (IPv4); drop when empty
+ *        ALLOW/LOG   → XDP_PASS (LOG ringbuf lands in a later commit)
  *
- * Map layout matches ADR 0004. rate_limit is stubbed: the switch
- * passes through ALLOW/LOG/RATE_LIMIT to XDP_PASS for now, so only
- * DENY rules actually drop. The rate_state PERCPU_HASH follows in a
- * later commit.
+ * Map layout matches ADR 0004. IPv6 rate-limiting is intentionally
+ * deferred: the rate_state_v4 PERCPU_HASH is v4-only for now, and
+ * RATE_LIMIT rules matched on the v6 path fall through to XDP_PASS.
  *
  * IPv4 and IPv6 live in separate LPM maps because trie keys must be
  * fixed-size. A single packet checks the family that matches its
@@ -64,8 +66,8 @@ struct {
 } rule_src_v6 SEC(".maps");
 
 /* Dst maps are declared so the userspace loader can write to them and
- * the program can be extended in place once L4 parsing lands. They're
- * unused by the current decide_* path. */
+ * the program can be extended in place once dst-based matching lands.
+ * They're unused by the current decide_* path. */
 struct {
     __uint(type, BPF_MAP_TYPE_LPM_TRIE);
     __type(key, struct lpm_v4_key);
@@ -81,6 +83,16 @@ struct {
     __uint(max_entries, MAX_LPM_V6);
     __uint(map_flags, BPF_F_NO_PREALLOC);
 } rule_dst_v6 SEC(".maps");
+
+/* PERCPU_HASH (rule_id, src_addr) → rate_tokens. Per-CPU to avoid
+ * the global spinlock cost; the small overshoot from racing CPUs is
+ * acceptable for rate-limiting semantics (documented in ADR 0004). */
+struct {
+    __uint(type, BPF_MAP_TYPE_PERCPU_HASH);
+    __type(key, struct rate_key_v4);
+    __type(value, struct rate_tokens);
+    __uint(max_entries, MAX_RATE_STATE);
+} rate_state_v4 SEC(".maps");
 
 static __always_inline int
 protocol_matches(__u8 want, __u8 got)
@@ -99,11 +111,73 @@ protocol_matches(__u8 want, __u8 got)
 static __always_inline int
 apply_action(struct rule_meta *meta)
 {
-    /* Only DENY actually drops for now. ALLOW is a positive assertion
-     * that the packet should continue; LOG and RATE_LIMIT fall through
-     * until ringbuf + PERCPU_HASH machinery lands. */
+    /* DENY drops. ALLOW is a positive assertion that the packet should
+     * continue; LOG falls through to PASS until ringbuf emission lands.
+     * RATE_LIMIT is handled by the caller before reaching here, because
+     * it needs the src addr + rule_id for bucket keying. */
     if (meta->action == ACTION_DENY)
         return XDP_DROP;
+    return XDP_PASS;
+}
+
+/* rate_check_v4 implements a token-bucket per (rule_id, src_addr).
+ * Capacity = rate_burst tokens (or rate_pps if burst is unset);
+ * refill rate = rate_pps tokens per second. A packet consumes 1
+ * token; when the bucket is empty the packet is dropped.
+ *
+ * tokens_x1000 is scaled ×1000 so refill keeps sub-packet precision
+ * across short inter-arrival times. One packet = 1000 units consumed.
+ *
+ * Fail-open on bucket allocation failure (map is full): the DoS risk
+ * of letting a single flow through beats silently dropping legitimate
+ * traffic when the operator didn't size the map right. */
+static __always_inline int
+rate_check_v4(__u32 rule_id, __u32 src_addr, struct rule_meta *meta)
+{
+    __u32 pps = meta->rate_pps;
+    if (pps == 0)
+        return XDP_PASS; /* malformed rule — no throttle configured */
+
+    __u32 burst = meta->rate_burst ? meta->rate_burst : pps;
+    __u64 cap_x1000 = (__u64)burst * 1000ULL;
+
+    struct rate_key_v4 k = { .rule_id = rule_id, .addr = src_addr };
+    __u64 now = bpf_ktime_get_ns();
+
+    struct rate_tokens *t = bpf_map_lookup_elem(&rate_state_v4, &k);
+    if (!t) {
+        struct rate_tokens fresh = {
+            .tokens_x1000 = cap_x1000,
+            .last_seen_ns = now,
+        };
+        if (bpf_map_update_elem(&rate_state_v4, &k, &fresh, BPF_ANY) != 0)
+            return XDP_PASS; /* map full: fail open */
+        t = bpf_map_lookup_elem(&rate_state_v4, &k);
+        if (!t)
+            return XDP_PASS;
+    }
+
+    /* Refill. Cap elapsed at 1s before multiplying so (pps × elapsed)
+     * stays under u64 range even at pathological pps values. An older
+     * bucket would hit cap_x1000 anyway after the clamp below. */
+    __u64 elapsed = now - t->last_seen_ns;
+    if (elapsed > 1000000000ULL)
+        elapsed = 1000000000ULL;
+
+    __u64 refill_x1000 = ((__u64)pps * elapsed) / 1000000ULL;
+    __u64 new_tokens = t->tokens_x1000 + refill_x1000;
+    if (new_tokens > cap_x1000)
+        new_tokens = cap_x1000;
+
+    t->last_seen_ns = now;
+
+    if (new_tokens < 1000) {
+        /* Not enough tokens to pass a whole packet — drop and keep the
+         * (possibly slightly refilled) balance for next time. */
+        t->tokens_x1000 = new_tokens;
+        return XDP_DROP;
+    }
+    t->tokens_x1000 = new_tokens - 1000;
     return XDP_PASS;
 }
 
@@ -179,6 +253,9 @@ decide_v4(struct iphdr *iph, void *data_end)
     read_l4_ports(l4, data_end, iph->protocol, &sport, &dport);
     if (!ports_match(meta, sport, dport))
         return XDP_PASS;
+
+    if (meta->action == ACTION_RATE_LIMIT)
+        return rate_check_v4(*rid, iph->saddr, meta);
 
     return apply_action(meta);
 }
