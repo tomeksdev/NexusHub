@@ -1,4 +1,4 @@
-module github.com/tomeksdev/wireguard-install-with-gui/ebpf
+module github.com/tomeksdev/NexusHub/ebpf
 
 go 1.22
 

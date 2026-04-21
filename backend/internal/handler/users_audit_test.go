@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/tomeksdev/wireguard-install-with-gui/backend/internal/repository"
+	"github.com/tomeksdev/NexusHub/backend/internal/repository"
 )
 
 // These tests exercise the admin-only list endpoints at /api/v1/users and

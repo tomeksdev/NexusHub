@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/tomeksdev/wireguard-install-with-gui/backend/internal/wg"
+	"github.com/tomeksdev/NexusHub/backend/internal/wg"
 )
 
 func TestGenerateKeyPairShape(t *testing.T) {

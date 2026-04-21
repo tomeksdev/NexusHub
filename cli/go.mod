@@ -1,4 +1,4 @@
-module github.com/tomeksdev/wireguard-install-with-gui/cli
+module github.com/tomeksdev/NexusHub/cli
 
 go 1.22
 

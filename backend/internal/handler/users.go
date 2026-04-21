@@ -8,9 +8,9 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 
-	"github.com/tomeksdev/wireguard-install-with-gui/backend/internal/apierror"
-	"github.com/tomeksdev/wireguard-install-with-gui/backend/internal/httppage"
-	"github.com/tomeksdev/wireguard-install-with-gui/backend/internal/repository"
+	"github.com/tomeksdev/NexusHub/backend/internal/apierror"
+	"github.com/tomeksdev/NexusHub/backend/internal/httppage"
+	"github.com/tomeksdev/NexusHub/backend/internal/repository"
 )
 
 // UserHandler exposes admin-only read access to the users table. Writes

@@ -7,14 +7,14 @@ import (
 
 	"github.com/gin-gonic/gin"
 
-	"github.com/tomeksdev/wireguard-install-with-gui/backend/internal/auth"
-	"github.com/tomeksdev/wireguard-install-with-gui/backend/internal/crypto"
-	"github.com/tomeksdev/wireguard-install-with-gui/backend/internal/ebpf"
-	"github.com/tomeksdev/wireguard-install-with-gui/backend/internal/metrics"
-	"github.com/tomeksdev/wireguard-install-with-gui/backend/internal/middleware"
-	"github.com/tomeksdev/wireguard-install-with-gui/backend/internal/openapi"
-	"github.com/tomeksdev/wireguard-install-with-gui/backend/internal/repository"
-	"github.com/tomeksdev/wireguard-install-with-gui/backend/internal/wg"
+	"github.com/tomeksdev/NexusHub/backend/internal/auth"
+	"github.com/tomeksdev/NexusHub/backend/internal/crypto"
+	"github.com/tomeksdev/NexusHub/backend/internal/ebpf"
+	"github.com/tomeksdev/NexusHub/backend/internal/metrics"
+	"github.com/tomeksdev/NexusHub/backend/internal/middleware"
+	"github.com/tomeksdev/NexusHub/backend/internal/openapi"
+	"github.com/tomeksdev/NexusHub/backend/internal/repository"
+	"github.com/tomeksdev/NexusHub/backend/internal/wg"
 )
 
 // Deps bundles everything the router needs so cmd/api/main.go has a single

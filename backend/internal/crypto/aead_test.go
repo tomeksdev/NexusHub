@@ -6,7 +6,7 @@ import (
 	"encoding/base64"
 	"testing"
 
-	"github.com/tomeksdev/wireguard-install-with-gui/backend/internal/crypto"
+	"github.com/tomeksdev/NexusHub/backend/internal/crypto"
 )
 
 func mustKey(t *testing.T) []byte {

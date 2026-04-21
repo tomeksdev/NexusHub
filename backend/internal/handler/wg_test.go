@@ -18,11 +18,11 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/tomeksdev/wireguard-install-with-gui/backend/internal/auth"
-	"github.com/tomeksdev/wireguard-install-with-gui/backend/internal/crypto"
-	"github.com/tomeksdev/wireguard-install-with-gui/backend/internal/dbtest"
-	"github.com/tomeksdev/wireguard-install-with-gui/backend/internal/handler"
-	"github.com/tomeksdev/wireguard-install-with-gui/backend/internal/repository"
+	"github.com/tomeksdev/NexusHub/backend/internal/auth"
+	"github.com/tomeksdev/NexusHub/backend/internal/crypto"
+	"github.com/tomeksdev/NexusHub/backend/internal/dbtest"
+	"github.com/tomeksdev/NexusHub/backend/internal/handler"
+	"github.com/tomeksdev/NexusHub/backend/internal/repository"
 )
 
 // wgEnv is the WG-aware variant of env. We don't reuse env because

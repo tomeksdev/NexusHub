@@ -11,8 +11,8 @@ import (
 
 	"github.com/gin-gonic/gin"
 
-	"github.com/tomeksdev/wireguard-install-with-gui/backend/internal/repository"
-	"github.com/tomeksdev/wireguard-install-with-gui/backend/internal/wg"
+	"github.com/tomeksdev/NexusHub/backend/internal/repository"
+	"github.com/tomeksdev/NexusHub/backend/internal/wg"
 )
 
 // PeerEventsHandler streams live peer state over Server-Sent Events. The

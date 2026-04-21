@@ -6,8 +6,8 @@ import (
 
 	"github.com/gin-gonic/gin"
 
-	"github.com/tomeksdev/wireguard-install-with-gui/backend/internal/repository"
-	"github.com/tomeksdev/wireguard-install-with-gui/backend/internal/wg"
+	"github.com/tomeksdev/NexusHub/backend/internal/repository"
+	"github.com/tomeksdev/NexusHub/backend/internal/wg"
 )
 
 // StatusHandler reports data-plane mode plus live device counters. Surfaced

@@ -11,11 +11,11 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgconn"
 
-	"github.com/tomeksdev/wireguard-install-with-gui/backend/internal/apierror"
-	"github.com/tomeksdev/wireguard-install-with-gui/backend/internal/crypto"
-	"github.com/tomeksdev/wireguard-install-with-gui/backend/internal/httppage"
-	"github.com/tomeksdev/wireguard-install-with-gui/backend/internal/repository"
-	"github.com/tomeksdev/wireguard-install-with-gui/backend/internal/wg"
+	"github.com/tomeksdev/NexusHub/backend/internal/apierror"
+	"github.com/tomeksdev/NexusHub/backend/internal/crypto"
+	"github.com/tomeksdev/NexusHub/backend/internal/httppage"
+	"github.com/tomeksdev/NexusHub/backend/internal/repository"
+	"github.com/tomeksdev/NexusHub/backend/internal/wg"
 )
 
 // InterfaceHandler owns CRUD on wg_interfaces.

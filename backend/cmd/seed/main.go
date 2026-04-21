@@ -34,8 +34,8 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"golang.org/x/crypto/curve25519"
 
-	"github.com/tomeksdev/wireguard-install-with-gui/backend/internal/auth"
-	"github.com/tomeksdev/wireguard-install-with-gui/backend/internal/db"
+	"github.com/tomeksdev/NexusHub/backend/internal/auth"
+	"github.com/tomeksdev/NexusHub/backend/internal/db"
 )
 
 func main() {

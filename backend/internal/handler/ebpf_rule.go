@@ -11,11 +11,11 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgconn"
 
-	"github.com/tomeksdev/wireguard-install-with-gui/backend/internal/apierror"
-	"github.com/tomeksdev/wireguard-install-with-gui/backend/internal/ebpf"
-	"github.com/tomeksdev/wireguard-install-with-gui/backend/internal/httppage"
-	"github.com/tomeksdev/wireguard-install-with-gui/backend/internal/middleware"
-	"github.com/tomeksdev/wireguard-install-with-gui/backend/internal/repository"
+	"github.com/tomeksdev/NexusHub/backend/internal/apierror"
+	"github.com/tomeksdev/NexusHub/backend/internal/ebpf"
+	"github.com/tomeksdev/NexusHub/backend/internal/httppage"
+	"github.com/tomeksdev/NexusHub/backend/internal/middleware"
+	"github.com/tomeksdev/NexusHub/backend/internal/repository"
 )
 
 // Allowed enum values, mirroring ebpf_rule_action/direction/protocol in

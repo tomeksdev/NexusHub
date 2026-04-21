@@ -14,15 +14,15 @@ import (
 
 	"github.com/gin-gonic/gin"
 
-	"github.com/tomeksdev/wireguard-install-with-gui/backend/internal/auth"
-	"github.com/tomeksdev/wireguard-install-with-gui/backend/internal/config"
-	"github.com/tomeksdev/wireguard-install-with-gui/backend/internal/crypto"
-	"github.com/tomeksdev/wireguard-install-with-gui/backend/internal/db"
-	"github.com/tomeksdev/wireguard-install-with-gui/backend/internal/handler"
-	"github.com/tomeksdev/wireguard-install-with-gui/backend/internal/metrics"
-	"github.com/tomeksdev/wireguard-install-with-gui/backend/internal/middleware"
-	"github.com/tomeksdev/wireguard-install-with-gui/backend/internal/repository"
-	"github.com/tomeksdev/wireguard-install-with-gui/backend/internal/wg"
+	"github.com/tomeksdev/NexusHub/backend/internal/auth"
+	"github.com/tomeksdev/NexusHub/backend/internal/config"
+	"github.com/tomeksdev/NexusHub/backend/internal/crypto"
+	"github.com/tomeksdev/NexusHub/backend/internal/db"
+	"github.com/tomeksdev/NexusHub/backend/internal/handler"
+	"github.com/tomeksdev/NexusHub/backend/internal/metrics"
+	"github.com/tomeksdev/NexusHub/backend/internal/middleware"
+	"github.com/tomeksdev/NexusHub/backend/internal/repository"
+	"github.com/tomeksdev/NexusHub/backend/internal/wg"
 )
 
 // Populated via -ldflags -X at build time. Falling back to "dev" keeps

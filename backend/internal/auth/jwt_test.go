@@ -8,7 +8,7 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/tomeksdev/wireguard-install-with-gui/backend/internal/auth"
+	"github.com/tomeksdev/NexusHub/backend/internal/auth"
 )
 
 const testSecret = "unit-test-secret-at-least-32-bytes!"

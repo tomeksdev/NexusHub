@@ -12,7 +12,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/tomeksdev/wireguard-install-with-gui/backend/internal/dbtest"
+	"github.com/tomeksdev/NexusHub/backend/internal/dbtest"
 )
 
 const validPubKey = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQ=" // 43 + '='

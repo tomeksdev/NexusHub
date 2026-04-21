@@ -16,12 +16,12 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/tomeksdev/wireguard-install-with-gui/backend/internal/auth"
-	"github.com/tomeksdev/wireguard-install-with-gui/backend/internal/dbtest"
-	"github.com/tomeksdev/wireguard-install-with-gui/backend/internal/ebpf"
-	"github.com/tomeksdev/wireguard-install-with-gui/backend/internal/handler"
-	mw "github.com/tomeksdev/wireguard-install-with-gui/backend/internal/middleware"
-	"github.com/tomeksdev/wireguard-install-with-gui/backend/internal/repository"
+	"github.com/tomeksdev/NexusHub/backend/internal/auth"
+	"github.com/tomeksdev/NexusHub/backend/internal/dbtest"
+	"github.com/tomeksdev/NexusHub/backend/internal/ebpf"
+	"github.com/tomeksdev/NexusHub/backend/internal/handler"
+	mw "github.com/tomeksdev/NexusHub/backend/internal/middleware"
+	"github.com/tomeksdev/NexusHub/backend/internal/repository"
 )
 
 const (

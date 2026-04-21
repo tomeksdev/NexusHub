@@ -164,7 +164,7 @@ Phases are sequential in priority but work can overlap where dependencies allow.
 
 ## Phase 11 — Packaging & deployment
 
-- [ ] Multi-arch (`amd64`, `arm64`) image published to `ghcr.io/tomeksdev/wireguard-install-with-gui`
+- [ ] Multi-arch (`amd64`, `arm64`) image published to `ghcr.io/tomeksdev/nexushub`
 - [ ] Systemd unit files for bare-metal installs
 - [ ] `install.sh` replacement for v1.0.0 (still supports one-liner bootstrap)
 - [ ] Example `docker-compose.yml` for operators with TLS via Caddy

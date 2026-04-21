@@ -14,11 +14,11 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	qrcode "github.com/skip2/go-qrcode"
 
-	"github.com/tomeksdev/wireguard-install-with-gui/backend/internal/apierror"
-	"github.com/tomeksdev/wireguard-install-with-gui/backend/internal/crypto"
-	"github.com/tomeksdev/wireguard-install-with-gui/backend/internal/httppage"
-	"github.com/tomeksdev/wireguard-install-with-gui/backend/internal/repository"
-	"github.com/tomeksdev/wireguard-install-with-gui/backend/internal/wg"
+	"github.com/tomeksdev/NexusHub/backend/internal/apierror"
+	"github.com/tomeksdev/NexusHub/backend/internal/crypto"
+	"github.com/tomeksdev/NexusHub/backend/internal/httppage"
+	"github.com/tomeksdev/NexusHub/backend/internal/repository"
+	"github.com/tomeksdev/NexusHub/backend/internal/wg"
 )
 
 // peerPrivateKeyAAD is bound to the ciphertext of every peer private key,

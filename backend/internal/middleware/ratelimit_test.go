@@ -9,7 +9,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
-	"github.com/tomeksdev/wireguard-install-with-gui/backend/internal/middleware"
+	"github.com/tomeksdev/NexusHub/backend/internal/middleware"
 )
 
 func newRouter(t *testing.T, cfg middleware.RateLimitConfig) (*gin.Engine, *middleware.RateLimiter) {

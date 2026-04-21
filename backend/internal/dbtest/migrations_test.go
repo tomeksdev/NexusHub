@@ -11,7 +11,7 @@ import (
 	"github.com/golang-migrate/migrate/v4"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/tomeksdev/wireguard-install-with-gui/backend/internal/dbtest"
+	"github.com/tomeksdev/NexusHub/backend/internal/dbtest"
 )
 
 // TestMigrationsRoundTrip applies every migration up, rolls them all back,

@@ -6,7 +6,7 @@ package handler
 import (
 	"github.com/gin-gonic/gin"
 
-	"github.com/tomeksdev/wireguard-install-with-gui/backend/internal/apierror"
+	"github.com/tomeksdev/NexusHub/backend/internal/apierror"
 )
 
 func writeError(c *gin.Context, status int, code, msg string) {

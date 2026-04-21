@@ -11,7 +11,7 @@ permissions:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: tomeksdev/wireguard-install-with-gui
+  IMAGE_NAME: tomeksdev/nexushub
 
 jobs:
   build-and-push:
