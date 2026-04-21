@@ -347,6 +347,48 @@ func dropENOENT(err error) error {
 	return err
 }
 
+// LookupSrcAddr returns the rule_id that a packet from addr would
+// hit via the src LPM map, honouring the longest-prefix-match the
+// kernel would perform. Returns (0, false, nil) when no prefix in
+// the trie covers the address. Used by tests and the reconciler's
+// drift-check path — never on the packet-processing hot path.
+func (l *RulesLoader) LookupSrcAddr(addr netip.Addr) (uint32, bool, error) {
+	return l.lookupAddr(addr, l.srcV4, l.srcV6)
+}
+
+// LookupDstAddr mirrors LookupSrcAddr but reads the dst LPM maps.
+func (l *RulesLoader) LookupDstAddr(addr netip.Addr) (uint32, bool, error) {
+	return l.lookupAddr(addr, l.dstV4, l.dstV6)
+}
+
+func (l *RulesLoader) lookupAddr(addr netip.Addr, v4, v6 *ebpf.Map) (uint32, bool, error) {
+	var rid uint32
+	if addr.Is4() {
+		k, err := addrToLPMv4(addr)
+		if err != nil {
+			return 0, false, err
+		}
+		if err := v4.Lookup(k, &rid); err != nil {
+			if errors.Is(err, ebpf.ErrKeyNotExist) {
+				return 0, false, nil
+			}
+			return 0, false, err
+		}
+		return rid, true, nil
+	}
+	k, err := addrToLPMv6(addr)
+	if err != nil {
+		return 0, false, err
+	}
+	if err := v6.Lookup(k, &rid); err != nil {
+		if errors.Is(err, ebpf.ErrKeyNotExist) {
+			return 0, false, nil
+		}
+		return 0, false, err
+	}
+	return rid, true, nil
+}
+
 // ResetRateV4 clears the token bucket for (ruleID, addr) so the next
 // packet starts from a fresh state. Used by the reconciler when a
 // rule's pps/burst changes and by operator tools that want to lift a

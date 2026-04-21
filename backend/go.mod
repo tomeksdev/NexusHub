@@ -3,6 +3,7 @@ module github.com/tomeksdev/NexusHub/backend
 go 1.22
 
 require (
+	github.com/cilium/ebpf v0.16.0
 	github.com/gin-gonic/gin v1.10.0
 	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/golang-migrate/migrate/v4 v4.17.1
@@ -13,10 +14,16 @@ require (
 	github.com/skip2/go-qrcode v0.0.0-20200617195104-da1b6568686e
 	github.com/testcontainers/testcontainers-go v0.31.0
 	github.com/testcontainers/testcontainers-go/modules/postgres v0.31.0
+	github.com/tomeksdev/NexusHub/ebpf v0.0.0-00010101000000-000000000000
 	golang.org/x/crypto v0.31.0
 	golang.org/x/time v0.5.0
 	golang.zx2c4.com/wireguard/wgctrl v0.0.0-20241231184526-a9ab2273dd10
 )
+
+// The sibling ebpf module ships as source alongside the backend in this
+// monorepo; the fake version above satisfies go.mod while the replace
+// points the loader at the working-copy directory.
+replace github.com/tomeksdev/NexusHub/ebpf => ../ebpf
 
 require (
 	dario.cat/mergo v1.0.0 // indirect
@@ -97,6 +104,7 @@ require (
 	go.opentelemetry.io/otel/trace v1.24.0 // indirect
 	go.uber.org/atomic v1.7.0 // indirect
 	golang.org/x/arch v0.8.0 // indirect
+	golang.org/x/exp v0.0.0-20230315142452-642cacee5cc0 // indirect
 	golang.org/x/mod v0.17.0 // indirect
 	golang.org/x/net v0.33.0 // indirect
 	golang.org/x/sync v0.10.0 // indirect
