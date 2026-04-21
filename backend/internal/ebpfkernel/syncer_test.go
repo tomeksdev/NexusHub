@@ -23,10 +23,12 @@ const (
 	mapRuleDstV4   = "rule_dst_v4"
 	mapRuleDstV6   = "rule_dst_v6"
 	mapRateStateV4 = "rate_state_v4"
+	mapRateStateV6 = "rate_state_v6"
 
 	ruleMetaSize   = 28 // see userspace.RuleMeta
 	rateTokensSize = 16
 	rateKeyV4Size  = 8
+	rateKeyV6Size  = 20
 )
 
 func newTestLoader(t *testing.T) *userspace.RulesLoader {
@@ -51,6 +53,13 @@ func newTestLoader(t *testing.T) *userspace.RulesLoader {
 				Name:       mapRateStateV4,
 				Type:       ebpf.PerCPUHash,
 				KeySize:    rateKeyV4Size,
+				ValueSize:  rateTokensSize,
+				MaxEntries: 1024,
+			},
+			mapRateStateV6: {
+				Name:       mapRateStateV6,
+				Type:       ebpf.PerCPUHash,
+				KeySize:    rateKeyV6Size,
 				ValueSize:  rateTokensSize,
 				MaxEntries: 1024,
 			},

@@ -33,6 +33,7 @@ const (
 	mapRuleDstV4   = "rule_dst_v4"
 	mapRuleDstV6   = "rule_dst_v6"
 	mapRateStateV4 = "rate_state_v4"
+	mapRateStateV6 = "rate_state_v6"
 	mapLogEvents   = "log_events"
 )
 
@@ -156,6 +157,23 @@ func (k rateKeyV4) MarshalBinary() ([]byte, error) {
 	return b, nil
 }
 
+// rateKeyV6 mirrors struct rate_key_v6: u32 rule_id + u8[16] addr for
+// 20 bytes total. Go struct layout packs u32 at offset 0 + [16]byte at
+// offset 4; no tail padding when the struct is used as a map key.
+type rateKeyV6 struct {
+	RuleID uint32
+	Addr   [16]byte
+}
+
+const rateKeyV6Size = 20
+
+func (k rateKeyV6) MarshalBinary() ([]byte, error) {
+	b := make([]byte, rateKeyV6Size)
+	binary.LittleEndian.PutUint32(b[0:4], k.RuleID)
+	copy(b[4:20], k.Addr[:])
+	return b, nil
+}
+
 // RulesLoader manages the map set of the XDP/TC rule runtime. Every
 // rule operation is a single map-write — the eBPF programs pick up
 // changes on the next packet without reload. The log_events ringbuf
@@ -170,6 +188,7 @@ type RulesLoader struct {
 	dstV4     *ebpf.Map
 	dstV6     *ebpf.Map
 	rateV4    *ebpf.Map
+	rateV6    *ebpf.Map
 	logEvents *ebpf.Map // nil if the collection omits the ringbuf (tests)
 }
 
@@ -221,6 +240,11 @@ func NewRulesLoader(spec *ebpf.CollectionSpec) (*RulesLoader, error) {
 		coll.Close()
 		return nil, err
 	}
+	rateV6, err := pick(mapRateStateV6)
+	if err != nil {
+		coll.Close()
+		return nil, err
+	}
 	// log_events is optional — maps-only test specs may omit it. A
 	// missing ringbuf surfaces later via OpenLogReader, not here.
 	logEvents := coll.Maps[mapLogEvents]
@@ -229,6 +253,7 @@ func NewRulesLoader(spec *ebpf.CollectionSpec) (*RulesLoader, error) {
 		srcV4: srcV4, srcV6: srcV6,
 		dstV4: dstV4, dstV6: dstV6,
 		rateV4:    rateV4,
+		rateV6:    rateV6,
 		logEvents: logEvents,
 	}, nil
 }
@@ -410,6 +435,15 @@ func (l *RulesLoader) ResetRateV4(ruleID uint32, addr netip.Addr) error {
 	return dropENOENT(l.rateV4.Delete(k))
 }
 
+// ResetRateV6 is the v6 counterpart of ResetRateV4.
+func (l *RulesLoader) ResetRateV6(ruleID uint32, addr netip.Addr) error {
+	k, err := newRateKeyV6(ruleID, addr)
+	if err != nil {
+		return err
+	}
+	return dropENOENT(l.rateV6.Delete(k))
+}
+
 // PeekRateV4 returns the token bucket for (ruleID, addr) summed across
 // all CPUs. PERCPU_HASH reads produce one copy per CPU; summing is the
 // right reduction for tokens (total available) but wrong for
@@ -420,8 +454,21 @@ func (l *RulesLoader) PeekRateV4(ruleID uint32, addr netip.Addr) (RateTokens, bo
 	if err != nil {
 		return RateTokens{}, false, err
 	}
+	return peekRate(l.rateV4, k)
+}
+
+// PeekRateV6 is the v6 counterpart of PeekRateV4.
+func (l *RulesLoader) PeekRateV6(ruleID uint32, addr netip.Addr) (RateTokens, bool, error) {
+	k, err := newRateKeyV6(ruleID, addr)
+	if err != nil {
+		return RateTokens{}, false, err
+	}
+	return peekRate(l.rateV6, k)
+}
+
+func peekRate(m *ebpf.Map, key any) (RateTokens, bool, error) {
 	var perCPU []RateTokens
-	if err := l.rateV4.Lookup(k, &perCPU); err != nil {
+	if err := m.Lookup(key, &perCPU); err != nil {
 		if errors.Is(err, ebpf.ErrKeyNotExist) {
 			return RateTokens{}, false, nil
 		}
@@ -442,4 +489,11 @@ func newRateKeyV4(ruleID uint32, addr netip.Addr) (rateKeyV4, error) {
 		return rateKeyV4{}, fmt.Errorf("expected IPv4 addr, got %s", addr)
 	}
 	return rateKeyV4{RuleID: ruleID, Addr: addr.As4()}, nil
+}
+
+func newRateKeyV6(ruleID uint32, addr netip.Addr) (rateKeyV6, error) {
+	if !addr.Is6() || addr.Is4In6() {
+		return rateKeyV6{}, fmt.Errorf("expected IPv6 addr, got %s", addr)
+	}
+	return rateKeyV6{RuleID: ruleID, Addr: addr.As16()}, nil
 }

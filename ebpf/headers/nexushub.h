@@ -79,6 +79,15 @@ struct rate_key_v4 {
     __u32 addr;
 };
 
+/* rate_key_v6 — v4's counterpart for IPv6 buckets. Same per-(rule,src)
+ * granularity. addr holds ip6hdr->saddr bytes verbatim (network order).
+ * Total size is 20 bytes; the trailing pad keeps the struct aligned to
+ * 4 bytes, which is all the kernel map ABI requires for key layouts. */
+struct rate_key_v6 {
+    __u32 rule_id;
+    __u8  addr[16];
+};
+
 /* log_event — ringbuf payload streamed to userspace for ACTION_LOG hits.
  * Ports/bytes/rule_id are host byte order (emitter ntohs'd ports); the
  * two address slots are network order with IPv4 occupying the first 4

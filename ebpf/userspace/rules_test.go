@@ -10,7 +10,7 @@ import (
 )
 
 // buildTestSpec returns a minimal CollectionSpec that mimics what
-// bpf2go emits for rules.c: one HASH + four LPM_TRIE + one PERCPU_HASH
+// bpf2go emits for rules.c: one HASH + four LPM_TRIE + two PERCPU_HASH
 // maps, no programs. Key/value sizes must match
 // ebpf/headers/nexushub.h so Update/Delete/Lookup agree with the kernel.
 func buildTestSpec(t *testing.T) *ebpf.CollectionSpec {
@@ -32,6 +32,13 @@ func buildTestSpec(t *testing.T) *ebpf.CollectionSpec {
 				Name:       mapRateStateV4,
 				Type:       ebpf.PerCPUHash,
 				KeySize:    rateKeyV4Size,
+				ValueSize:  rateTokensSize,
+				MaxEntries: 1024,
+			},
+			mapRateStateV6: {
+				Name:       mapRateStateV6,
+				Type:       ebpf.PerCPUHash,
+				KeySize:    rateKeyV6Size,
 				ValueSize:  rateTokensSize,
 				MaxEntries: 1024,
 			},
@@ -384,6 +391,104 @@ func TestRateKeyV4RejectsIPv6(t *testing.T) {
 	_, err := newRateKeyV4(1, netip.MustParseAddr("2001:db8::1"))
 	if err == nil {
 		t.Error("expected error on IPv6 address")
+	}
+}
+
+func TestRateKeyV6RejectsIPv4(t *testing.T) {
+	_, err := newRateKeyV6(1, netip.MustParseAddr("10.0.0.1"))
+	if err == nil {
+		t.Error("expected error on IPv4 address")
+	}
+}
+
+func TestRateKeyV6MarshalLayout(t *testing.T) {
+	k := rateKeyV6{RuleID: 0x01020304}
+	for i := range k.Addr {
+		k.Addr[i] = byte(0x10 + i)
+	}
+	b, err := k.MarshalBinary()
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if len(b) != rateKeyV6Size {
+		t.Fatalf("length = %d, want %d", len(b), rateKeyV6Size)
+	}
+	want := []byte{
+		// rule_id (LE u32)
+		0x04, 0x03, 0x02, 0x01,
+		// addr
+		0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17,
+		0x18, 0x19, 0x1a, 0x1b, 0x1c, 0x1d, 0x1e, 0x1f,
+	}
+	for i, w := range want {
+		if b[i] != w {
+			t.Fatalf("byte %d: got 0x%02x, want 0x%02x\n  got  %x\n  want %x", i, b[i], w, b, want)
+		}
+	}
+}
+
+func TestRulesLoaderResetRateV6MissingIsNoop(t *testing.T) {
+	requireBPF(t)
+	l, err := NewRulesLoader(buildTestSpec(t))
+	if err != nil {
+		t.Fatalf("new loader: %v", err)
+	}
+	defer l.Close()
+
+	if err := l.ResetRateV6(999, netip.MustParseAddr("2001:db8::2")); err != nil {
+		t.Errorf("reset of missing bucket should be nil, got %v", err)
+	}
+}
+
+func TestRulesLoaderRateV6SeedAndSumAcrossCPUs(t *testing.T) {
+	requireBPF(t)
+	l, err := NewRulesLoader(buildTestSpec(t))
+	if err != nil {
+		t.Fatalf("new loader: %v", err)
+	}
+	defer l.Close()
+
+	addr := netip.MustParseAddr("2001:db8::5")
+	key, err := newRateKeyV6(7, addr)
+	if err != nil {
+		t.Fatalf("key: %v", err)
+	}
+
+	cpus, err := ebpf.PossibleCPU()
+	if err != nil {
+		t.Fatalf("cpu count: %v", err)
+	}
+	seed := make([]RateTokens, cpus)
+	for i := range seed {
+		seed[i] = RateTokens{TokensX1000: 500, LastSeenNs: 1000}
+	}
+	if err := l.rateV6.Update(key, seed, ebpf.UpdateAny); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	got, ok, err := l.PeekRateV6(7, addr)
+	if err != nil {
+		t.Fatalf("peek: %v", err)
+	}
+	if !ok {
+		t.Fatal("peek missed seeded bucket")
+	}
+	if want := uint64(500) * uint64(cpus); got.TokensX1000 != want {
+		t.Errorf("summed tokens: got %d, want %d (cpus=%d)", got.TokensX1000, want, cpus)
+	}
+	if got.LastSeenNs != 1000 {
+		t.Errorf("max last_seen_ns: got %d, want 1000", got.LastSeenNs)
+	}
+
+	if err := l.ResetRateV6(7, addr); err != nil {
+		t.Fatalf("reset: %v", err)
+	}
+	_, ok, err = l.PeekRateV6(7, addr)
+	if err != nil {
+		t.Fatalf("peek after reset: %v", err)
+	}
+	if ok {
+		t.Error("bucket should be gone after reset")
 	}
 }
 

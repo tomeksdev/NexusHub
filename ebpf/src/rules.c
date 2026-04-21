@@ -24,9 +24,10 @@
  * Keeping the internal verdict representation uniform means decide_*
  * and rate_check_v4 need no per-hook branching.
  *
- * Map layout matches ADR 0004. IPv6 rate-limiting is intentionally
- * deferred: the rate_state_v4 PERCPU_HASH is v4-only for now, and
- * RATE_LIMIT rules matched on the v6 path fall through to PASS.
+ * Map layout matches ADR 0004. Rate-limit state is split per family
+ * (rate_state_v4 + rate_state_v6) because PERCPU_HASH keys are
+ * fixed-size and we don't want to waste 12 bytes per v4 bucket just
+ * to share a map with v6.
  *
  * IPv4 and IPv6 live in separate LPM maps because trie keys must be
  * fixed-size. A single packet checks the family that matches its
@@ -108,6 +109,16 @@ struct {
     __uint(max_entries, MAX_RATE_STATE);
 } rate_state_v4 SEC(".maps");
 
+/* v6 rate state. Same semantics as v4 with a wider key. We size both
+ * maps to MAX_RATE_STATE independently — a deploy that rate-limits
+ * mostly v4 traffic doesn't waste headroom on the v6 map. */
+struct {
+    __uint(type, BPF_MAP_TYPE_PERCPU_HASH);
+    __type(key, struct rate_key_v6);
+    __type(value, struct rate_tokens);
+    __uint(max_entries, MAX_RATE_STATE);
+} rate_state_v6 SEC(".maps");
+
 /* RINGBUF for ACTION_LOG telemetry. Userspace drains it into
  * connection_logs. Size is a power of two per ringbuf ABI; 1 MiB gives
  * ~18k events (56 B each) of headroom before drop, which covers a
@@ -172,6 +183,38 @@ emit_log(__u32 rule_id, struct rule_meta *meta, __u8 family, __u8 direction,
     bpf_ringbuf_submit(ev, 0);
 }
 
+/* token_bucket_step runs the shared refill + consume math on an
+ * already-looked-up bucket. Split out from rate_check_* so v4 and v6
+ * share the arithmetic; the map-specific lookup/update stays inlined
+ * in each caller to keep the verifier's pointer-provenance check
+ * happy. */
+static __always_inline int
+token_bucket_step(struct rate_tokens *t, __u32 pps, __u64 cap_x1000, __u64 now)
+{
+    /* Refill. Cap elapsed at 1s before multiplying so (pps × elapsed)
+     * stays under u64 range even at pathological pps values. An older
+     * bucket would hit cap_x1000 anyway after the clamp below. */
+    __u64 elapsed = now - t->last_seen_ns;
+    if (elapsed > 1000000000ULL)
+        elapsed = 1000000000ULL;
+
+    __u64 refill_x1000 = ((__u64)pps * elapsed) / 1000000ULL;
+    __u64 new_tokens = t->tokens_x1000 + refill_x1000;
+    if (new_tokens > cap_x1000)
+        new_tokens = cap_x1000;
+
+    t->last_seen_ns = now;
+
+    if (new_tokens < 1000) {
+        /* Not enough tokens to pass a whole packet — drop and keep the
+         * (possibly slightly refilled) balance for next time. */
+        t->tokens_x1000 = new_tokens;
+        return XDP_DROP;
+    }
+    t->tokens_x1000 = new_tokens - 1000;
+    return XDP_PASS;
+}
+
 /* rate_check_v4 implements a token-bucket per (rule_id, src_addr).
  * Capacity = rate_burst tokens (or rate_pps if burst is unset);
  * refill rate = rate_pps tokens per second. A packet consumes 1
@@ -208,29 +251,39 @@ rate_check_v4(__u32 rule_id, __u32 src_addr, struct rule_meta *meta)
         if (!t)
             return XDP_PASS;
     }
+    return token_bucket_step(t, pps, cap_x1000, now);
+}
 
-    /* Refill. Cap elapsed at 1s before multiplying so (pps × elapsed)
-     * stays under u64 range even at pathological pps values. An older
-     * bucket would hit cap_x1000 anyway after the clamp below. */
-    __u64 elapsed = now - t->last_seen_ns;
-    if (elapsed > 1000000000ULL)
-        elapsed = 1000000000ULL;
+/* rate_check_v6 mirrors rate_check_v4 against rate_state_v6. The key
+ * is wider (16-byte address) but the map contract and fail-open
+ * semantics on map-full are identical. */
+static __always_inline int
+rate_check_v6(__u32 rule_id, const __u8 src_addr[16], struct rule_meta *meta)
+{
+    __u32 pps = meta->rate_pps;
+    if (pps == 0)
+        return XDP_PASS;
 
-    __u64 refill_x1000 = ((__u64)pps * elapsed) / 1000000ULL;
-    __u64 new_tokens = t->tokens_x1000 + refill_x1000;
-    if (new_tokens > cap_x1000)
-        new_tokens = cap_x1000;
+    __u32 burst = meta->rate_burst ? meta->rate_burst : pps;
+    __u64 cap_x1000 = (__u64)burst * 1000ULL;
 
-    t->last_seen_ns = now;
+    struct rate_key_v6 k = { .rule_id = rule_id };
+    __builtin_memcpy(k.addr, src_addr, 16);
+    __u64 now = bpf_ktime_get_ns();
 
-    if (new_tokens < 1000) {
-        /* Not enough tokens to pass a whole packet — drop and keep the
-         * (possibly slightly refilled) balance for next time. */
-        t->tokens_x1000 = new_tokens;
-        return XDP_DROP;
+    struct rate_tokens *t = bpf_map_lookup_elem(&rate_state_v6, &k);
+    if (!t) {
+        struct rate_tokens fresh = {
+            .tokens_x1000 = cap_x1000,
+            .last_seen_ns = now,
+        };
+        if (bpf_map_update_elem(&rate_state_v6, &k, &fresh, BPF_ANY) != 0)
+            return XDP_PASS;
+        t = bpf_map_lookup_elem(&rate_state_v6, &k);
+        if (!t)
+            return XDP_PASS;
     }
-    t->tokens_x1000 = new_tokens - 1000;
-    return XDP_PASS;
+    return token_bucket_step(t, pps, cap_x1000, now);
 }
 
 /* port_matches returns 1 if the observed port falls inside [from, to]
@@ -345,6 +398,9 @@ decide_v6(struct ipv6hdr *ip6h, void *data_end, __u8 direction, __u32 bytes)
     read_l4_ports(l4, data_end, ip6h->nexthdr, &sport, &dport);
     if (!ports_match(meta, sport, dport))
         return XDP_PASS;
+
+    if (meta->action == ACTION_RATE_LIMIT)
+        return rate_check_v6(*rid, (const __u8 *)&ip6h->saddr, meta);
 
     if (meta->action == ACTION_LOG) {
         emit_log(*rid, meta, 10 /*AF_INET6*/, direction, bytes, ip6h->nexthdr,
