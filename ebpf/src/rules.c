@@ -1,23 +1,35 @@
 /* SPDX-License-Identifier: GPL-2.0
- * rules.c — XDP full-gate program for pre-tunnel rule enforcement.
+ * rules.c — full-gate rule enforcement, two programs sharing one map set.
  *
- * Attached to eth0 (the WAN interface). For each incoming packet:
+ *   SEC("xdp") xdp_rules          → attached to eth0 (pre-tunnel, WAN).
+ *                                    Sees Ethernet-framed packets.
+ *   SEC("tc")  tc_rules_wg0       → attached to wg0 clsact ingress
+ *                                    (post-decryption). wg0 is a pure
+ *                                    L3 device (ARPHRD_NONE); skb->data
+ *                                    already points at the iphdr.
+ *
+ * Both programs feed the same decide_v4/decide_v6 pipeline:
  *   1. LPM lookup on src address in rule_src_v4/v6 → rule_id
  *   2. Hash lookup on rule_id in rule_meta → action + filters
  *   3. Protocol check
  *   4. TCP/UDP src+dst port range check (0/0 = wildcard)
  *   5. Dispatch on action:
- *        DENY        → XDP_DROP
+ *        DENY        → drop
  *        RATE_LIMIT  → per-(rule, src) token bucket (IPv4); drop when empty
- *        ALLOW/LOG   → XDP_PASS (LOG ringbuf lands in a later commit)
+ *        ALLOW/LOG   → pass (LOG ringbuf lands in a later commit)
+ *
+ * Verdicts flow as XDP codes throughout; the TC wrapper translates
+ * XDP_DROP → TC_ACT_SHOT and everything else → TC_ACT_OK at the top.
+ * Keeping the internal verdict representation uniform means decide_*
+ * and rate_check_v4 need no per-hook branching.
  *
  * Map layout matches ADR 0004. IPv6 rate-limiting is intentionally
  * deferred: the rate_state_v4 PERCPU_HASH is v4-only for now, and
- * RATE_LIMIT rules matched on the v6 path fall through to XDP_PASS.
+ * RATE_LIMIT rules matched on the v6 path fall through to PASS.
  *
  * IPv4 and IPv6 live in separate LPM maps because trie keys must be
  * fixed-size. A single packet checks the family that matches its
- * ethtype and returns.
+ * ethtype/skb->protocol and returns.
  *
  * This program does NOT consult rule_dst_* yet — that needs an
  * L4-aware AND across both maps to be meaningful. src-only matches the
@@ -34,6 +46,7 @@
 #include <linux/in.h>
 #include <linux/ip.h>
 #include <linux/ipv6.h>
+#include <linux/pkt_cls.h>
 
 #include "../headers/bpf_helpers.h"
 #include "../headers/nexushub.h"
@@ -315,4 +328,53 @@ int xdp_rules(struct xdp_md *ctx)
     }
 
     return XDP_PASS;
+}
+
+/* xdp_to_tc maps our internal XDP verdicts onto TC action codes so the
+ * shared decide_* helpers can stay hook-agnostic. XDP_DROP is the only
+ * "stop" verdict decide_* ever emits; everything else means "let it
+ * through". TC_ACT_OK tells the kernel to keep processing the packet
+ * along the normal ingress path (policy routing, iptables, sockets). */
+static __always_inline int
+xdp_to_tc(int verdict)
+{
+    return verdict == XDP_DROP ? TC_ACT_SHOT : TC_ACT_OK;
+}
+
+/* tc_rules_wg0 — TC clsact ingress program for the WireGuard tunnel.
+ *
+ * wg0 is registered as ARPHRD_NONE: the kernel delivers skbs with
+ * skb->mac_len == 0 and skb->data already positioned at the L3 header.
+ * There is no Ethernet frame to skip past.
+ *
+ * skb->protocol holds the L3 ethertype in network byte order, the same
+ * value the WAN-side ethhdr would carry. bpf_ntohs it once and dispatch
+ * identically to the XDP path.
+ *
+ * On any parse/bounds failure we fail open (TC_ACT_OK) — the WAN-side
+ * XDP gate has already screened public-internet sources, and dropping
+ * decrypted-but-unparseable inner traffic would blackhole peers. */
+SEC("tc")
+int tc_rules_wg0(struct __sk_buff *skb)
+{
+    void *data     = (void *)(long)skb->data;
+    void *data_end = (void *)(long)skb->data_end;
+
+    __u16 proto = bpf_ntohs(skb->protocol);
+
+    if (proto == ETH_P_IP) {
+        struct iphdr *iph = data;
+        if ((void *)(iph + 1) > data_end)
+            return TC_ACT_OK;
+        return xdp_to_tc(decide_v4(iph, data_end));
+    }
+
+    if (proto == ETH_P_IPV6) {
+        struct ipv6hdr *ip6h = data;
+        if ((void *)(ip6h + 1) > data_end)
+            return TC_ACT_OK;
+        return xdp_to_tc(decide_v6(ip6h, data_end));
+    }
+
+    return TC_ACT_OK;
 }

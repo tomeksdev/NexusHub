@@ -386,3 +386,34 @@ func TestRateKeyV4RejectsIPv6(t *testing.T) {
 		t.Error("expected error on IPv6 address")
 	}
 }
+
+func TestRulesLoaderProgramAccessor(t *testing.T) {
+	// Exercises the accessor against a maps-only spec (the one all
+	// kernel-free tests use). Programs are intentionally absent so the
+	// accessor must report (nil, false) rather than panic. Production
+	// specs loaded from the bpf2go .o have both programs populated; the
+	// same accessor gives them back by SEC() name.
+	requireBPF(t)
+	l, err := NewRulesLoader(buildTestSpec(t))
+	if err != nil {
+		t.Fatalf("new loader: %v", err)
+	}
+	defer l.Close()
+
+	if p, ok := l.Program(ProgramXDPRules); ok || p != nil {
+		t.Errorf("XDP prog in maps-only spec: got (%v, %v), want (nil, false)", p, ok)
+	}
+	if p, ok := l.Program(ProgramTCRulesWg0); ok || p != nil {
+		t.Errorf("TC prog in maps-only spec: got (%v, %v), want (nil, false)", p, ok)
+	}
+	if p, ok := l.Program("nonexistent"); ok || p != nil {
+		t.Errorf("unknown name: got (%v, %v), want (nil, false)", p, ok)
+	}
+}
+
+func TestRulesLoaderProgramAccessorNilReceiver(t *testing.T) {
+	var l *RulesLoader
+	if p, ok := l.Program(ProgramXDPRules); ok || p != nil {
+		t.Errorf("nil receiver: got (%v, %v), want (nil, false)", p, ok)
+	}
+}

@@ -35,6 +35,19 @@ const (
 	mapRateStateV4 = "rate_state_v4"
 )
 
+// Program names in the compiled ELF. These match the SEC() function
+// names in ebpf/src/rules.c: clang preserves the C symbol and bpf2go
+// surfaces them verbatim.
+//
+// ProgramXDPRules attaches to the WAN interface via link.AttachXDP;
+// ProgramTCRulesWg0 attaches to wg0's clsact ingress hook (the caller
+// owns tc qdisc setup — cilium/ebpf's tcx helpers or classic tc netlink
+// both work).
+const (
+	ProgramXDPRules   = "xdp_rules"
+	ProgramTCRulesWg0 = "tc_rules_wg0"
+)
+
 // RuleMeta mirrors struct rule_meta in ebpf/headers/nexushub.h.
 // Field order + sizes are load-bearing: the kernel reads raw bytes.
 type RuleMeta struct {
@@ -222,6 +235,22 @@ func (l *RulesLoader) Close() error {
 	l.coll.Close()
 	l.coll = nil
 	return nil
+}
+
+// Program returns the loaded program with the given SEC() name. The
+// second value is false when the name is not in the collection — which
+// is the normal state for tests that build a maps-only spec. Callers
+// attach the returned *ebpf.Program via link.AttachXDP (for
+// ProgramXDPRules) or the tc/tcx helpers (for ProgramTCRulesWg0).
+//
+// The program remains owned by the loader; do not Close it directly.
+// Closing the returned link is the caller's responsibility.
+func (l *RulesLoader) Program(name string) (*ebpf.Program, bool) {
+	if l == nil || l.coll == nil {
+		return nil, false
+	}
+	p, ok := l.coll.Programs[name]
+	return p, ok
 }
 
 // PutRuleMeta writes (or overwrites) the meta entry for a rule. The
