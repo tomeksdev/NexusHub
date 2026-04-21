@@ -79,9 +79,28 @@ struct rate_key_v4 {
     __u32 addr;
 };
 
+/* log_event — ringbuf payload streamed to userspace for ACTION_LOG hits.
+ * Ports/bytes/rule_id are host byte order (emitter ntohs'd ports); the
+ * two address slots are network order with IPv4 occupying the first 4
+ * bytes and remaining bytes zeroed. family disambiguates the two. */
+struct log_event {
+    __u64 ts_ns;
+    __u32 rule_id;
+    __u16 src_port;
+    __u16 dst_port;
+    __u32 bytes;
+    __u8  action;
+    __u8  protocol;   /* IPPROTO_* value from the packet, not PROTO_* */
+    __u8  family;     /* AF_INET=2, AF_INET6=10 */
+    __u8  direction;  /* 0=ingress, 1=egress */
+    __u8  src_addr[16];
+    __u8  dst_addr[16];
+};
+
 /* Upper bounds are compile-time constants; a deploy that outgrows them
  * rebuilds with new values. Unbounded maps are a DoS vector. */
-#define MAX_RULES      10000
-#define MAX_LPM_V4     10000
-#define MAX_LPM_V6     10000
-#define MAX_RATE_STATE 65536
+#define MAX_RULES        10000
+#define MAX_LPM_V4       10000
+#define MAX_LPM_V6       10000
+#define MAX_RATE_STATE   65536
+#define LOG_RINGBUF_SIZE (1 << 20)

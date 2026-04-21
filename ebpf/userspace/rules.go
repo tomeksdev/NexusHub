@@ -33,6 +33,7 @@ const (
 	mapRuleDstV4   = "rule_dst_v4"
 	mapRuleDstV6   = "rule_dst_v6"
 	mapRateStateV4 = "rate_state_v4"
+	mapLogEvents   = "log_events"
 )
 
 // Program names in the compiled ELF. These match the SEC() function
@@ -155,18 +156,21 @@ func (k rateKeyV4) MarshalBinary() ([]byte, error) {
 	return b, nil
 }
 
-// RulesLoader manages the six maps of the XDP rule runtime. Every
-// operation is a single map-write — the XDP program picks up changes
-// on the next packet without reload.
+// RulesLoader manages the map set of the XDP/TC rule runtime. Every
+// rule operation is a single map-write — the eBPF programs pick up
+// changes on the next packet without reload. The log_events ringbuf
+// is optional: older test specs omit it, and OpenLogReader surfaces
+// that as an explicit error rather than panicking.
 type RulesLoader struct {
 	coll *ebpf.Collection
 
-	meta    *ebpf.Map
-	srcV4   *ebpf.Map
-	srcV6   *ebpf.Map
-	dstV4   *ebpf.Map
-	dstV6   *ebpf.Map
-	rateV4  *ebpf.Map
+	meta      *ebpf.Map
+	srcV4     *ebpf.Map
+	srcV6     *ebpf.Map
+	dstV4     *ebpf.Map
+	dstV6     *ebpf.Map
+	rateV4    *ebpf.Map
+	logEvents *ebpf.Map // nil if the collection omits the ringbuf (tests)
 }
 
 // NewRulesLoader builds the collection from spec, pulls handles for
@@ -217,11 +221,15 @@ func NewRulesLoader(spec *ebpf.CollectionSpec) (*RulesLoader, error) {
 		coll.Close()
 		return nil, err
 	}
+	// log_events is optional — maps-only test specs may omit it. A
+	// missing ringbuf surfaces later via OpenLogReader, not here.
+	logEvents := coll.Maps[mapLogEvents]
 	return &RulesLoader{
 		coll: coll, meta: meta,
 		srcV4: srcV4, srcV6: srcV6,
 		dstV4: dstV4, dstV6: dstV6,
-		rateV4: rateV4,
+		rateV4:    rateV4,
+		logEvents: logEvents,
 	}, nil
 }
 

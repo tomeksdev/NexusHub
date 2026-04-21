@@ -191,6 +191,18 @@ func (s *KernelSyncer) Reconcile(ctx context.Context, active []baseebpf.Rule) er
 	return nil
 }
 
+// ResolveRuleID inverts the kernel-side u32 → application-side UUID
+// mapping. Used by the log consumer to translate the rule_id stamped
+// into a ringbuf event back into the UUID that connection_logs
+// stores. Returns (zero, false) when the kernel id isn't known —
+// typically a stale event arriving after Delete.
+func (s *KernelSyncer) ResolveRuleID(rid uint32) (uuid.UUID, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	id, ok := s.revIDs[rid]
+	return id, ok
+}
+
 // Close releases in-memory state. The underlying loader is owned by
 // the caller and deliberately not closed here — a caller that built
 // the loader once and attached both the XDP and TC programs would

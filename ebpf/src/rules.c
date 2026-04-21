@@ -16,7 +16,8 @@
  *   5. Dispatch on action:
  *        DENY        → drop
  *        RATE_LIMIT  → per-(rule, src) token bucket (IPv4); drop when empty
- *        ALLOW/LOG   → pass (LOG ringbuf lands in a later commit)
+ *        LOG         → emit log_event to ring buffer, then pass
+ *        ALLOW       → pass
  *
  * Verdicts flow as XDP codes throughout; the TC wrapper translates
  * XDP_DROP → TC_ACT_SHOT and everything else → TC_ACT_OK at the top.
@@ -107,6 +108,17 @@ struct {
     __uint(max_entries, MAX_RATE_STATE);
 } rate_state_v4 SEC(".maps");
 
+/* RINGBUF for ACTION_LOG telemetry. Userspace drains it into
+ * connection_logs. Size is a power of two per ringbuf ABI; 1 MiB gives
+ * ~18k events (56 B each) of headroom before drop, which covers a
+ * consumer stall of tens of milliseconds at realistic log-rule rates.
+ * The kernel-side drop on full is acceptable: logging is best-effort
+ * and we'd rather lose events than stall the datapath. */
+struct {
+    __uint(type, BPF_MAP_TYPE_RINGBUF);
+    __uint(max_entries, LOG_RINGBUF_SIZE);
+} log_events SEC(".maps");
+
 static __always_inline int
 protocol_matches(__u8 want, __u8 got)
 {
@@ -121,16 +133,43 @@ protocol_matches(__u8 want, __u8 got)
     return 0;
 }
 
-static __always_inline int
-apply_action(struct rule_meta *meta)
+/* emit_log reserves a ringbuf slot and fills a log_event from the match
+ * context. ports/bytes are in host order; src/dst are raw on-wire bytes
+ * (network order for IPv4 in the first 4 bytes, zero-padded). Best
+ * effort — if the ringbuf is full or reserve fails we silently drop the
+ * event rather than stalling the datapath. */
+static __always_inline void
+emit_log(__u32 rule_id, struct rule_meta *meta, __u8 family, __u8 direction,
+         __u32 bytes, __u8 l4_proto, __u16 sport_net, __u16 dport_net,
+         const void *src_addr, const void *dst_addr, __u32 addr_len)
 {
-    /* DENY drops. ALLOW is a positive assertion that the packet should
-     * continue; LOG falls through to PASS until ringbuf emission lands.
-     * RATE_LIMIT is handled by the caller before reaching here, because
-     * it needs the src addr + rule_id for bucket keying. */
-    if (meta->action == ACTION_DENY)
-        return XDP_DROP;
-    return XDP_PASS;
+    struct log_event *ev = bpf_ringbuf_reserve(&log_events, sizeof(*ev), 0);
+    if (!ev)
+        return;
+
+    ev->ts_ns     = bpf_ktime_get_ns();
+    ev->rule_id   = rule_id;
+    ev->src_port  = bpf_ntohs(sport_net);
+    ev->dst_port  = bpf_ntohs(dport_net);
+    ev->bytes     = bytes;
+    ev->action    = meta->action;
+    ev->protocol  = l4_proto;
+    ev->family    = family;
+    ev->direction = direction;
+
+    /* Zero both address slots first so the unused tail of an IPv4 event
+     * doesn't leak stack garbage to userspace. */
+    __builtin_memset(ev->src_addr, 0, sizeof(ev->src_addr));
+    __builtin_memset(ev->dst_addr, 0, sizeof(ev->dst_addr));
+    if (addr_len == 4) {
+        __builtin_memcpy(ev->src_addr, src_addr, 4);
+        __builtin_memcpy(ev->dst_addr, dst_addr, 4);
+    } else if (addr_len == 16) {
+        __builtin_memcpy(ev->src_addr, src_addr, 16);
+        __builtin_memcpy(ev->dst_addr, dst_addr, 16);
+    }
+
+    bpf_ringbuf_submit(ev, 0);
 }
 
 /* rate_check_v4 implements a token-bucket per (rule_id, src_addr).
@@ -238,7 +277,7 @@ read_l4_ports(void *l4, void *data_end, __u8 proto, __u16 *sport, __u16 *dport)
 }
 
 static __always_inline int
-decide_v4(struct iphdr *iph, void *data_end)
+decide_v4(struct iphdr *iph, void *data_end, __u8 direction, __u32 bytes)
 {
     struct lpm_v4_key key = { .prefixlen = 32 };
     __builtin_memcpy(key.addr, &iph->saddr, 4);
@@ -270,11 +309,20 @@ decide_v4(struct iphdr *iph, void *data_end)
     if (meta->action == ACTION_RATE_LIMIT)
         return rate_check_v4(*rid, iph->saddr, meta);
 
-    return apply_action(meta);
+    if (meta->action == ACTION_LOG) {
+        emit_log(*rid, meta, 2 /*AF_INET*/, direction, bytes, iph->protocol,
+                 sport, dport, &iph->saddr, &iph->daddr, 4);
+        return XDP_PASS;
+    }
+
+    if (meta->action == ACTION_DENY)
+        return XDP_DROP;
+
+    return XDP_PASS;
 }
 
 static __always_inline int
-decide_v6(struct ipv6hdr *ip6h, void *data_end)
+decide_v6(struct ipv6hdr *ip6h, void *data_end, __u8 direction, __u32 bytes)
 {
     struct lpm_v6_key key = { .prefixlen = 128 };
     __builtin_memcpy(key.addr, &ip6h->saddr, 16);
@@ -298,7 +346,16 @@ decide_v6(struct ipv6hdr *ip6h, void *data_end)
     if (!ports_match(meta, sport, dport))
         return XDP_PASS;
 
-    return apply_action(meta);
+    if (meta->action == ACTION_LOG) {
+        emit_log(*rid, meta, 10 /*AF_INET6*/, direction, bytes, ip6h->nexthdr,
+                 sport, dport, &ip6h->saddr, &ip6h->daddr, 16);
+        return XDP_PASS;
+    }
+
+    if (meta->action == ACTION_DENY)
+        return XDP_DROP;
+
+    return XDP_PASS;
 }
 
 SEC("xdp")
@@ -311,20 +368,24 @@ int xdp_rules(struct xdp_md *ctx)
     if ((void *)(eth + 1) > data_end)
         return XDP_PASS;
 
+    /* Byte count is the full L2 frame size. Cast through long so the
+     * verifier sees a scalar subtraction rather than two packet ptrs. */
+    __u32 bytes = (__u32)((long)data_end - (long)data);
+
     __u16 proto = bpf_ntohs(eth->h_proto);
 
     if (proto == ETH_P_IP) {
         struct iphdr *iph = (void *)(eth + 1);
         if ((void *)(iph + 1) > data_end)
             return XDP_PASS;
-        return decide_v4(iph, data_end);
+        return decide_v4(iph, data_end, 0 /*ingress*/, bytes);
     }
 
     if (proto == ETH_P_IPV6) {
         struct ipv6hdr *ip6h = (void *)(eth + 1);
         if ((void *)(ip6h + 1) > data_end)
             return XDP_PASS;
-        return decide_v6(ip6h, data_end);
+        return decide_v6(ip6h, data_end, 0 /*ingress*/, bytes);
     }
 
     return XDP_PASS;
@@ -360,20 +421,25 @@ int tc_rules_wg0(struct __sk_buff *skb)
     void *data     = (void *)(long)skb->data;
     void *data_end = (void *)(long)skb->data_end;
 
+    /* skb->len is the total L3 length the kernel sees; data_end-data may
+     * exclude non-linear skb fragments. Both are fine for log reporting;
+     * prefer skb->len so truncated telemetry matches traffic counters. */
+    __u32 bytes = skb->len;
+
     __u16 proto = bpf_ntohs(skb->protocol);
 
     if (proto == ETH_P_IP) {
         struct iphdr *iph = data;
         if ((void *)(iph + 1) > data_end)
             return TC_ACT_OK;
-        return xdp_to_tc(decide_v4(iph, data_end));
+        return xdp_to_tc(decide_v4(iph, data_end, 0 /*ingress*/, bytes));
     }
 
     if (proto == ETH_P_IPV6) {
         struct ipv6hdr *ip6h = data;
         if ((void *)(ip6h + 1) > data_end)
             return TC_ACT_OK;
-        return xdp_to_tc(decide_v6(ip6h, data_end));
+        return xdp_to_tc(decide_v6(ip6h, data_end, 0 /*ingress*/, bytes));
     }
 
     return TC_ACT_OK;
