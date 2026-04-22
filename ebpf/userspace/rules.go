@@ -270,6 +270,97 @@ func (l *RulesLoader) Close() error {
 	return nil
 }
 
+// MapStats is a single-map operational snapshot: how many entries are
+// live right now vs. the compile-time ceiling. Prometheus scrapes this
+// via the ebpfkernel.MetricsCollector; operator dashboards alert when
+// Entries/MaxEntries crosses a capacity threshold.
+type MapStats struct {
+	Entries    uint32
+	MaxEntries uint32
+}
+
+// LoaderStats gathers one MapStats per BPF map the loader owns. Read
+// lazily (one pass per map) so an empty deploy costs ~seven no-op
+// iterations. Scrape cost scales with live entries, not with
+// MaxEntries — iteration stops at the last populated slot.
+type LoaderStats struct {
+	RuleMeta    MapStats
+	RuleSrcV4   MapStats
+	RuleSrcV6   MapStats
+	RuleDstV4   MapStats
+	RuleDstV6   MapStats
+	RateStateV4 MapStats
+	RateStateV6 MapStats
+}
+
+// Stats samples every managed map and returns the counts. Iteration
+// runs against the kernel map (not against cached userspace state) so
+// drift between syncer bookkeeping and the actual kernel table is
+// caught. Intended for Prometheus scrape cadence (~15s) — don't call
+// on the packet hot path.
+func (l *RulesLoader) Stats() (LoaderStats, error) {
+	if l == nil || l.coll == nil {
+		return LoaderStats{}, errors.New("loader not initialised")
+	}
+	pairs := []struct {
+		m   *ebpf.Map
+		out *MapStats
+	}{
+		{l.meta, nil},
+		{l.srcV4, nil},
+		{l.srcV6, nil},
+		{l.dstV4, nil},
+		{l.dstV6, nil},
+		{l.rateV4, nil},
+		{l.rateV6, nil},
+	}
+	var out LoaderStats
+	pairs[0].out = &out.RuleMeta
+	pairs[1].out = &out.RuleSrcV4
+	pairs[2].out = &out.RuleSrcV6
+	pairs[3].out = &out.RuleDstV4
+	pairs[4].out = &out.RuleDstV6
+	pairs[5].out = &out.RateStateV4
+	pairs[6].out = &out.RateStateV6
+	for i, p := range pairs {
+		s, err := mapStats(p.m)
+		if err != nil {
+			return LoaderStats{}, fmt.Errorf("stats[%d]: %w", i, err)
+		}
+		*p.out = s
+	}
+	return out, nil
+}
+
+// mapStats walks keys only (via NextKey) and returns (entries, cap).
+// Values are intentionally not fetched — we only care about
+// cardinality, and skipping the Lookup sidesteps the per-CPU value
+// marshaling rules. Works uniformly across HASH, LPM_TRIE, and
+// PERCPU_HASH.
+func mapStats(m *ebpf.Map) (MapStats, error) {
+	if m == nil {
+		return MapStats{}, nil
+	}
+	info, err := m.Info()
+	if err != nil {
+		return MapStats{}, fmt.Errorf("map info: %w", err)
+	}
+	cur := make([]byte, info.KeySize)
+	nxt := make([]byte, info.KeySize)
+	var count uint32
+	// First call with nil asks the kernel for the first key.
+	err = m.NextKey(nil, &nxt)
+	for err == nil {
+		count++
+		cur, nxt = nxt, cur
+		err = m.NextKey(cur, &nxt)
+	}
+	if errors.Is(err, ebpf.ErrKeyNotExist) {
+		return MapStats{Entries: count, MaxEntries: info.MaxEntries}, nil
+	}
+	return MapStats{}, fmt.Errorf("next key: %w", err)
+}
+
 // Program returns the loaded program with the given SEC() name. The
 // second value is false when the name is not in the collection — which
 // is the normal state for tests that build a maps-only spec. Callers

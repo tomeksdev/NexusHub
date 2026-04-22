@@ -427,6 +427,87 @@ func TestRateKeyV6MarshalLayout(t *testing.T) {
 	}
 }
 
+func TestRulesLoaderStatsReflectsSeededMaps(t *testing.T) {
+	requireBPF(t)
+	l, err := NewRulesLoader(buildTestSpec(t))
+	if err != nil {
+		t.Fatalf("new loader: %v", err)
+	}
+	defer l.Close()
+
+	// Empty loader: every map reports 0 entries but carries its cap.
+	s, err := l.Stats()
+	if err != nil {
+		t.Fatalf("stats empty: %v", err)
+	}
+	if s.RuleMeta.Entries != 0 || s.RuleMeta.MaxEntries == 0 {
+		t.Errorf("empty RuleMeta: got %+v", s.RuleMeta)
+	}
+	if s.RateStateV4.Entries != 0 || s.RateStateV4.MaxEntries == 0 {
+		t.Errorf("empty RateStateV4: got %+v", s.RateStateV4)
+	}
+
+	// Seed: 2 meta rows, 2 src_v4 rows, 1 src_v6 row, 1 dst_v4 row,
+	// 1 v4 rate bucket, 1 v6 rate bucket. Counts must match exactly.
+	if err := l.PutRuleMeta(1, RuleMeta{IsActive: 1}); err != nil {
+		t.Fatalf("put meta 1: %v", err)
+	}
+	if err := l.PutRuleMeta(2, RuleMeta{IsActive: 1}); err != nil {
+		t.Fatalf("put meta 2: %v", err)
+	}
+	if err := l.PutSrcAddr(netip.MustParseAddr("10.0.0.1"), 1); err != nil {
+		t.Fatalf("put src v4 /32 #1: %v", err)
+	}
+	if err := l.PutSrcAddr(netip.MustParseAddr("10.0.0.2"), 2); err != nil {
+		t.Fatalf("put src v4 /32 #2: %v", err)
+	}
+	if err := l.PutSrcAddr(netip.MustParseAddr("2001:db8::1"), 1); err != nil {
+		t.Fatalf("put src v6 /128: %v", err)
+	}
+	if err := l.PutDstPrefix(netip.MustParsePrefix("192.168.1.0/24"), 1); err != nil {
+		t.Fatalf("put dst v4: %v", err)
+	}
+
+	// Seed rate buckets via the maps directly so we don't need a
+	// packet to create them.
+	cpus, err := ebpf.PossibleCPU()
+	if err != nil {
+		t.Fatalf("cpu count: %v", err)
+	}
+	seed := make([]RateTokens, cpus)
+	kv4, _ := newRateKeyV4(1, netip.MustParseAddr("10.0.0.1"))
+	if err := l.rateV4.Update(kv4, seed, ebpf.UpdateAny); err != nil {
+		t.Fatalf("seed v4 rate: %v", err)
+	}
+	kv6, _ := newRateKeyV6(1, netip.MustParseAddr("2001:db8::1"))
+	if err := l.rateV6.Update(kv6, seed, ebpf.UpdateAny); err != nil {
+		t.Fatalf("seed v6 rate: %v", err)
+	}
+
+	s, err = l.Stats()
+	if err != nil {
+		t.Fatalf("stats seeded: %v", err)
+	}
+	checks := []struct {
+		name string
+		got  uint32
+		want uint32
+	}{
+		{"RuleMeta", s.RuleMeta.Entries, 2},
+		{"RuleSrcV4", s.RuleSrcV4.Entries, 2},
+		{"RuleSrcV6", s.RuleSrcV6.Entries, 1},
+		{"RuleDstV4", s.RuleDstV4.Entries, 1},
+		{"RuleDstV6", s.RuleDstV6.Entries, 0},
+		{"RateStateV4", s.RateStateV4.Entries, 1},
+		{"RateStateV6", s.RateStateV6.Entries, 1},
+	}
+	for _, c := range checks {
+		if c.got != c.want {
+			t.Errorf("%s entries = %d, want %d", c.name, c.got, c.want)
+		}
+	}
+}
+
 func TestRulesLoaderResetRateV6MissingIsNoop(t *testing.T) {
 	requireBPF(t)
 	l, err := NewRulesLoader(buildTestSpec(t))
