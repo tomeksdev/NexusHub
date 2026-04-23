@@ -34,6 +34,7 @@ const (
 	mapRuleDstV6   = "rule_dst_v6"
 	mapRateStateV4 = "rate_state_v4"
 	mapRateStateV6 = "rate_state_v6"
+	mapRuleHits    = "rule_hits"
 	mapLogEvents   = "log_events"
 )
 
@@ -174,6 +175,34 @@ func (k rateKeyV6) MarshalBinary() ([]byte, error) {
 	return b, nil
 }
 
+// RuleHits mirrors struct rule_hits in ebpf/headers/nexushub.h. The
+// map is PERCPU_HASH so readers that want an aggregate — a single
+// "bytes across the fleet" number — must sum across CPUs. PeekRuleHits
+// handles that reduction for callers; direct Lookup on the underlying
+// map returns the per-CPU slice if finer granularity is needed.
+type RuleHits struct {
+	Packets uint64
+	Bytes   uint64
+}
+
+const ruleHitsSize = 16
+
+func (h RuleHits) MarshalBinary() ([]byte, error) {
+	b := make([]byte, ruleHitsSize)
+	binary.LittleEndian.PutUint64(b[0:8], h.Packets)
+	binary.LittleEndian.PutUint64(b[8:16], h.Bytes)
+	return b, nil
+}
+
+func (h *RuleHits) UnmarshalBinary(b []byte) error {
+	if len(b) != ruleHitsSize {
+		return fmt.Errorf("rule_hits: expected %d bytes, got %d", ruleHitsSize, len(b))
+	}
+	h.Packets = binary.LittleEndian.Uint64(b[0:8])
+	h.Bytes = binary.LittleEndian.Uint64(b[8:16])
+	return nil
+}
+
 // RulesLoader manages the map set of the XDP/TC rule runtime. Every
 // rule operation is a single map-write — the eBPF programs pick up
 // changes on the next packet without reload. The log_events ringbuf
@@ -189,6 +218,7 @@ type RulesLoader struct {
 	dstV6     *ebpf.Map
 	rateV4    *ebpf.Map
 	rateV6    *ebpf.Map
+	ruleHits  *ebpf.Map // nil if the collection omits the counter map (tests)
 	logEvents *ebpf.Map // nil if the collection omits the ringbuf (tests)
 }
 
@@ -245,8 +275,10 @@ func NewRulesLoader(spec *ebpf.CollectionSpec) (*RulesLoader, error) {
 		coll.Close()
 		return nil, err
 	}
-	// log_events is optional — maps-only test specs may omit it. A
-	// missing ringbuf surfaces later via OpenLogReader, not here.
+	// rule_hits and log_events are optional — maps-only test specs
+	// may omit them. rule_hits absence surfaces via PeekRuleHits
+	// returning ok=false; log_events absence via OpenLogReader.
+	ruleHitsMap := coll.Maps[mapRuleHits]
 	logEvents := coll.Maps[mapLogEvents]
 	return &RulesLoader{
 		coll: coll, meta: meta,
@@ -254,6 +286,7 @@ func NewRulesLoader(spec *ebpf.CollectionSpec) (*RulesLoader, error) {
 		dstV4: dstV4, dstV6: dstV6,
 		rateV4:    rateV4,
 		rateV6:    rateV6,
+		ruleHits:  ruleHitsMap,
 		logEvents: logEvents,
 	}, nil
 }
@@ -280,9 +313,10 @@ type MapStats struct {
 }
 
 // LoaderStats gathers one MapStats per BPF map the loader owns. Read
-// lazily (one pass per map) so an empty deploy costs ~seven no-op
-// iterations. Scrape cost scales with live entries, not with
-// MaxEntries — iteration stops at the last populated slot.
+// lazily (one pass per map) so an empty deploy costs a handful of
+// no-op iterations. Scrape cost scales with live entries, not with
+// MaxEntries — iteration stops at the last populated slot. RuleHits
+// is zero-valued when the spec omits the rule_hits map (tests).
 type LoaderStats struct {
 	RuleMeta    MapStats
 	RuleSrcV4   MapStats
@@ -291,6 +325,7 @@ type LoaderStats struct {
 	RuleDstV6   MapStats
 	RateStateV4 MapStats
 	RateStateV6 MapStats
+	RuleHits    MapStats
 }
 
 // Stats samples every managed map and returns the counts. Iteration
@@ -313,6 +348,7 @@ func (l *RulesLoader) Stats() (LoaderStats, error) {
 		{l.dstV6, nil},
 		{l.rateV4, nil},
 		{l.rateV6, nil},
+		{l.ruleHits, nil},
 	}
 	var out LoaderStats
 	pairs[0].out = &out.RuleMeta
@@ -322,6 +358,7 @@ func (l *RulesLoader) Stats() (LoaderStats, error) {
 	pairs[4].out = &out.RuleDstV6
 	pairs[5].out = &out.RateStateV4
 	pairs[6].out = &out.RateStateV6
+	pairs[7].out = &out.RuleHits
 	for i, p := range pairs {
 		s, err := mapStats(p.m)
 		if err != nil {
@@ -555,6 +592,43 @@ func (l *RulesLoader) PeekRateV6(ruleID uint32, addr netip.Addr) (RateTokens, bo
 		return RateTokens{}, false, err
 	}
 	return peekRate(l.rateV6, k)
+}
+
+// PeekRuleHits returns the cumulative (packets, bytes) counter for a
+// rule, summed across CPUs. Returns (zero, false, nil) when the rule
+// has never fired (no bucket yet) or when the spec omits the
+// rule_hits map (tests). The map is PERCPU_HASH so the single read
+// translates into NumCPU() separate memory locations; cost is fine
+// for API / metric scrape cadences, not for the packet hot path.
+func (l *RulesLoader) PeekRuleHits(ruleID uint32) (RuleHits, bool, error) {
+	if l == nil || l.ruleHits == nil {
+		return RuleHits{}, false, nil
+	}
+	var perCPU []RuleHits
+	if err := l.ruleHits.Lookup(ruleID, &perCPU); err != nil {
+		if errors.Is(err, ebpf.ErrKeyNotExist) {
+			return RuleHits{}, false, nil
+		}
+		return RuleHits{}, false, err
+	}
+	var sum RuleHits
+	for _, h := range perCPU {
+		sum.Packets += h.Packets
+		sum.Bytes += h.Bytes
+	}
+	return sum, true, nil
+}
+
+// ResetRuleHits clears the counter for a rule. Used by the reconciler
+// when a rule is removed and by operator tools that want to zero a
+// counter without waiting for a restart. Deleting a non-existent key
+// returns nil (BPF's ENOENT is folded via dropENOENT). No-op when the
+// spec omits the counter map.
+func (l *RulesLoader) ResetRuleHits(ruleID uint32) error {
+	if l == nil || l.ruleHits == nil {
+		return nil
+	}
+	return dropENOENT(l.ruleHits.Delete(ruleID))
 }
 
 func peekRate(m *ebpf.Map, key any) (RateTokens, bool, error) {

@@ -119,6 +119,18 @@ struct {
     __uint(max_entries, MAX_RATE_STATE);
 } rate_state_v6 SEC(".maps");
 
+/* PERCPU_HASH rule_id → struct rule_hits. Lossless counter ticked
+ * on every matched rule regardless of action — the ringbuf can drop
+ * under load and only fires for ACTION_LOG, whereas this map
+ * captures ALLOW/DENY/RATE_LIMIT matches too. Operators read it via
+ * bpf map dump or the userspace loader's PeekRuleHits. */
+struct {
+    __uint(type, BPF_MAP_TYPE_PERCPU_HASH);
+    __type(key, __u32);
+    __type(value, struct rule_hits);
+    __uint(max_entries, MAX_RULES);
+} rule_hits SEC(".maps");
+
 /* RINGBUF for ACTION_LOG telemetry. Userspace drains it into
  * connection_logs. Size is a power of two per ringbuf ABI; 1 MiB gives
  * ~18k events (56 B each) of headroom before drop, which covers a
@@ -129,6 +141,26 @@ struct {
     __uint(type, BPF_MAP_TYPE_RINGBUF);
     __uint(max_entries, LOG_RINGBUF_SIZE);
 } log_events SEC(".maps");
+
+/* count_hit ticks the per-rule counter. Called once per matched
+ * rule, before action dispatch, so every match is recorded even
+ * when the action subsequently drops the packet. First touch
+ * creates the entry with {1, bytes}; subsequent touches accumulate.
+ * Failure to update (map full at MAX_RULES) is silently ignored —
+ * the counter is operational telemetry, not a policy input, and
+ * losing counts beats stalling the datapath. */
+static __always_inline void
+count_hit(__u32 rule_id, __u32 bytes)
+{
+    struct rule_hits *h = bpf_map_lookup_elem(&rule_hits, &rule_id);
+    if (h) {
+        h->packets += 1;
+        h->bytes += bytes;
+        return;
+    }
+    struct rule_hits fresh = { .packets = 1, .bytes = bytes };
+    bpf_map_update_elem(&rule_hits, &rule_id, &fresh, BPF_ANY);
+}
 
 static __always_inline int
 protocol_matches(__u8 want, __u8 got)
@@ -368,6 +400,8 @@ decide_v4(struct iphdr *iph, void *data_end, __u8 direction, __u32 bytes)
     if (!ports_match(meta, sport, dport))
         return XDP_PASS;
 
+    count_hit(*rid, bytes);
+
     if (meta->action == ACTION_RATE_LIMIT)
         return rate_check_v4(*rid, iph->saddr, meta);
 
@@ -412,6 +446,8 @@ decide_v6(struct ipv6hdr *ip6h, void *data_end, __u8 direction, __u32 bytes)
     read_l4_ports(l4, data_end, ip6h->nexthdr, &sport, &dport);
     if (!ports_match(meta, sport, dport))
         return XDP_PASS;
+
+    count_hit(*rid, bytes);
 
     if (meta->action == ACTION_RATE_LIMIT)
         return rate_check_v6(*rid, (const __u8 *)&ip6h->saddr, meta);

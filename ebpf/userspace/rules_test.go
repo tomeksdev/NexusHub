@@ -42,6 +42,13 @@ func buildTestSpec(t *testing.T) *ebpf.CollectionSpec {
 				ValueSize:  rateTokensSize,
 				MaxEntries: 1024,
 			},
+			mapRuleHits: {
+				Name:       mapRuleHits,
+				Type:       ebpf.PerCPUHash,
+				KeySize:    4,
+				ValueSize:  ruleHitsSize,
+				MaxEntries: 1024,
+			},
 		},
 	}
 }
@@ -484,6 +491,13 @@ func TestRulesLoaderStatsReflectsSeededMaps(t *testing.T) {
 		t.Fatalf("seed v6 rate: %v", err)
 	}
 
+	// Seed one rule_hits counter so Stats() picks up a non-zero entry.
+	hitsSeed := make([]RuleHits, cpus)
+	hitsSeed[0] = RuleHits{Packets: 1, Bytes: 100}
+	if err := l.ruleHits.Update(uint32(1), hitsSeed, ebpf.UpdateAny); err != nil {
+		t.Fatalf("seed rule_hits: %v", err)
+	}
+
 	s, err = l.Stats()
 	if err != nil {
 		t.Fatalf("stats seeded: %v", err)
@@ -500,11 +514,110 @@ func TestRulesLoaderStatsReflectsSeededMaps(t *testing.T) {
 		{"RuleDstV6", s.RuleDstV6.Entries, 0},
 		{"RateStateV4", s.RateStateV4.Entries, 1},
 		{"RateStateV6", s.RateStateV6.Entries, 1},
+		{"RuleHits", s.RuleHits.Entries, 1},
 	}
 	for _, c := range checks {
 		if c.got != c.want {
 			t.Errorf("%s entries = %d, want %d", c.name, c.got, c.want)
 		}
+	}
+}
+
+func TestRuleHitsMarshalRoundTrip(t *testing.T) {
+	h := RuleHits{Packets: 0xdeadbeef, Bytes: 0xcafebabe00112233}
+	b, err := h.MarshalBinary()
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if len(b) != ruleHitsSize {
+		t.Fatalf("size: got %d want %d", len(b), ruleHitsSize)
+	}
+	var back RuleHits
+	if err := back.UnmarshalBinary(b); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if back != h {
+		t.Fatalf("roundtrip: got %+v want %+v", back, h)
+	}
+}
+
+func TestRulesLoaderPeekRuleHitsAbsentIsZeroNotError(t *testing.T) {
+	requireBPF(t)
+	l, err := NewRulesLoader(buildTestSpec(t))
+	if err != nil {
+		t.Fatalf("new loader: %v", err)
+	}
+	defer l.Close()
+
+	got, ok, err := l.PeekRuleHits(42)
+	if err != nil {
+		t.Fatalf("peek absent: %v", err)
+	}
+	if ok {
+		t.Fatalf("ok should be false for never-hit rule")
+	}
+	if got != (RuleHits{}) {
+		t.Fatalf("expected zero RuleHits, got %+v", got)
+	}
+}
+
+func TestRulesLoaderPeekRuleHitsSumsAcrossCPUs(t *testing.T) {
+	requireBPF(t)
+	l, err := NewRulesLoader(buildTestSpec(t))
+	if err != nil {
+		t.Fatalf("new loader: %v", err)
+	}
+	defer l.Close()
+
+	cpus, err := ebpf.PossibleCPU()
+	if err != nil {
+		t.Fatalf("cpu count: %v", err)
+	}
+	// Seed per-CPU slots with a distinctive pattern so the sum is
+	// easy to verify and we notice if a CPU gets skipped.
+	seed := make([]RuleHits, cpus)
+	var wantP, wantB uint64
+	for i := range seed {
+		seed[i] = RuleHits{Packets: uint64(i + 1), Bytes: uint64((i + 1) * 100)}
+		wantP += seed[i].Packets
+		wantB += seed[i].Bytes
+	}
+	if err := l.ruleHits.Update(uint32(7), seed, ebpf.UpdateAny); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	got, ok, err := l.PeekRuleHits(7)
+	if err != nil {
+		t.Fatalf("peek: %v", err)
+	}
+	if !ok {
+		t.Fatalf("ok should be true after seed")
+	}
+	if got.Packets != wantP {
+		t.Errorf("Packets: got %d want %d", got.Packets, wantP)
+	}
+	if got.Bytes != wantB {
+		t.Errorf("Bytes: got %d want %d", got.Bytes, wantB)
+	}
+
+	if err := l.ResetRuleHits(7); err != nil {
+		t.Fatalf("reset: %v", err)
+	}
+	if _, ok, _ := l.PeekRuleHits(7); ok {
+		t.Fatalf("counter should be gone after ResetRuleHits")
+	}
+}
+
+func TestRulesLoaderResetRuleHitsMissingIsNoop(t *testing.T) {
+	requireBPF(t)
+	l, err := NewRulesLoader(buildTestSpec(t))
+	if err != nil {
+		t.Fatalf("new loader: %v", err)
+	}
+	defer l.Close()
+
+	if err := l.ResetRuleHits(999); err != nil {
+		t.Errorf("reset of missing counter should be nil, got %v", err)
 	}
 }
 

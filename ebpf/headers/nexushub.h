@@ -88,6 +88,16 @@ struct rate_key_v6 {
     __u8  addr[16];
 };
 
+/* rule_hits — PERCPU_HASH value for per-rule lossless hit counters.
+ * Ticked on every matched rule regardless of action (ALLOW/DENY/
+ * RATE_LIMIT/LOG), so operators can answer "how many packets did
+ * rule X see this hour" without depending on ringbuf drain cadence
+ * or the rule being configured for logging. */
+struct rule_hits {
+    __u64 packets;
+    __u64 bytes;
+};
+
 /* log_event — ringbuf payload streamed to userspace for ACTION_LOG hits.
  * Ports/bytes/rule_id are host byte order (emitter ntohs'd ports); the
  * two address slots are network order with IPv4 occupying the first 4
