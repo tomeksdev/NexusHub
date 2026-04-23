@@ -155,7 +155,7 @@ Phases are sequential in priority but work can overlap where dependencies allow.
 
 ## Phase 10 — Observability
 
-- [ ] Prometheus metrics: HTTP, DB pool, WireGuard peer stats, eBPF counters
+- [x] Prometheus metrics: HTTP, DB pool, WireGuard peer stats, eBPF counters (2026-04-22) <!-- completed 2026-04-22: HTTP counters + latency histogram via internal/metrics.Middleware (landed 2026-04-17); DB pool via metrics.RegisterPoolCollector over pgxpool.Stat (landed 2026-04-17); eBPF map entries+capacity+stats_errors via ebpfkernel.MetricsCollector over RulesLoader.Stats (landed 2026-04-22); WireGuard per-interface+per-peer via wg.NewWGCollector over wg.Client — wg_peers / wg_device_up / wg_listen_port / wg_peer_last_handshake_seconds / wg_peer_{receive,transmit}_bytes_total / wg_scrape_errors_total (2026-04-22). WG collector registered in cmd/api/main.go from the DB interface list after reconcile — runtime-added interfaces require restart to appear. Pure-Go coverage via FakeClient (seed/scrape, missing-device counter tick, partial failure keeps healthy interface reporting, pedantic registration, handshake zero-time handling). -->
 - [ ] `/metrics` endpoint + sample Grafana dashboards in `docs/deployment/`
 - [ ] OpenTelemetry traces for HTTP + DB
 - [ ] Structured audit log with retention policy

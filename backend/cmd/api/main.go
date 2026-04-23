@@ -94,6 +94,17 @@ func run() error {
 			slog.Error("reconcile: load db state", "err", rerr)
 		} else {
 			wg.ReconcileStartup(ctx, wgClient, slog.Default(), dbs)
+			// Register the WG Prometheus collector with the interfaces
+			// we just reconciled. Interfaces added at runtime will not
+			// surface until restart — that matches the reconciler model
+			// where startup is the alignment point.
+			names := make([]string, 0, len(dbs))
+			for _, d := range dbs {
+				names = append(names, d.Name)
+			}
+			if len(names) > 0 {
+				metrics.Registry.MustRegister(wg.NewWGCollector(wgClient, names, slog.Default()))
+			}
 		}
 	}
 
