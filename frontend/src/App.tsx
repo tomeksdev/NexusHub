@@ -6,13 +6,15 @@ import { InterfacesPage } from './pages/InterfacesPage'
 import { LoginPage } from './pages/LoginPage'
 import { MetricsPage } from './pages/MetricsPage'
 import { PeersPage } from './pages/PeersPage'
+import { RulesPage } from './pages/RulesPage'
 import { UsersPage } from './pages/UsersPage'
 
-type Page = 'peers' | 'interfaces' | 'users' | 'audit' | 'metrics'
+type Page = 'peers' | 'interfaces' | 'rules' | 'users' | 'audit' | 'metrics'
 
 const NAV: { id: Page; label: string }[] = [
   { id: 'peers', label: 'Peers' },
   { id: 'interfaces', label: 'Interfaces' },
+  { id: 'rules', label: 'Rules' },
   { id: 'metrics', label: 'Metrics' },
   { id: 'users', label: 'Users' },
   { id: 'audit', label: 'Audit log' },
@@ -63,6 +65,7 @@ function App() {
       <main className="flex-1 overflow-y-auto">
         {page === 'peers' && <PeersPage />}
         {page === 'interfaces' && <InterfacesPage />}
+        {page === 'rules' && <RulesPage />}
         {page === 'metrics' && <MetricsPage />}
         {page === 'users' && <UsersPage />}
         {page === 'audit' && <AuditPage />}
