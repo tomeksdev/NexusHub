@@ -16,10 +16,13 @@
     "@refinedev/react-hook-form": "^5.0.4",
     "@tanstack/react-query": "^5.99.0",
     "@tanstack/react-table": "^8.21.3",
+    "i18next": "^26.0.6",
+    "i18next-browser-languagedetector": "^8.2.1",
     "lucide-react": "^1.8.0",
     "react": "^19.2.4",
     "react-dom": "^19.2.4",
     "react-hook-form": "^7.72.1",
+    "react-i18next": "^17.0.4",
     "recharts": "^3.8.1",
     "zod": "^4.3.6"
   },

@@ -125,7 +125,7 @@ Phases are sequential in priority but work can overlap where dependencies allow.
 - [x] Metrics dashboard (Recharts) (2026-04-18) <!-- completed 2026-04-18: MetricsPage.tsx scrapes /api/v1/metrics every 5s, tiny Prometheus text parser in lib/prom.ts, AreaChart of req/s + 5xx/s + stat tiles for DB pool and Go runtime -->
 
 - [x] Dark mode (2026-04-18) <!-- completed 2026-04-18: dark-only for now, slate palette baked into Tailwind utilities -->
-- [ ] i18n scaffolding
+- [x] i18n scaffolding (2026-04-23) <!-- completed 2026-04-23: react-i18next + i18next + i18next-browser-languagedetector wired via src/lib/i18n.ts with en+pl translation bundles under src/lib/locales/. Detection order is localStorage("nexushub.lang") → navigator → fallbackLng; user selection persists via the detector's cache. Imported once in main.tsx for side-effect init. LanguageSwitcher component under src/components/ drops into the sidebar footer. App.tsx nav labels + UsersPage columns/empty-state/status/2FA strings converted as the reference conversion; remaining pages stay English-literal and can migrate incrementally without breaking the scaffolding. -->
 - [ ] Accessible by default (keyboard nav, ARIA, contrast)
 
 ---
