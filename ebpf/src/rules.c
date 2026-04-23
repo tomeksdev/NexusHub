@@ -343,6 +343,15 @@ decide_v4(struct iphdr *iph, void *data_end, __u8 direction, __u32 bytes)
     if (!meta || !meta->is_active)
         return XDP_PASS;
 
+    /* Honour the rule's configured direction. DIR_BOTH matches every
+     * hook; otherwise the rule's direction must equal the caller's.
+     * Both hook entry points currently pass direction=0 (INGRESS)
+     * because XDP is pre-routing ingress and our TC hook is clsact
+     * ingress — rules created with direction=egress are no-ops until
+     * an egress hook is added. */
+    if (meta->direction != DIR_BOTH && meta->direction != direction)
+        return XDP_PASS;
+
     if (!protocol_matches(meta->protocol, iph->protocol))
         return XDP_PASS;
 
@@ -386,6 +395,11 @@ decide_v6(struct ipv6hdr *ip6h, void *data_end, __u8 direction, __u32 bytes)
 
     struct rule_meta *meta = bpf_map_lookup_elem(&rule_meta, rid);
     if (!meta || !meta->is_active)
+        return XDP_PASS;
+
+    /* Honour the rule's configured direction — same rationale as the
+     * v4 path above. */
+    if (meta->direction != DIR_BOTH && meta->direction != direction)
         return XDP_PASS;
 
     if (!protocol_matches(meta->protocol, ip6h->nexthdr))
