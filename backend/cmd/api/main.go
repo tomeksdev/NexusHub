@@ -22,6 +22,7 @@ import (
 	"github.com/tomeksdev/NexusHub/backend/internal/metrics"
 	"github.com/tomeksdev/NexusHub/backend/internal/middleware"
 	"github.com/tomeksdev/NexusHub/backend/internal/repository"
+	"github.com/tomeksdev/NexusHub/backend/internal/tracing"
 	"github.com/tomeksdev/NexusHub/backend/internal/wg"
 )
 
@@ -52,6 +53,22 @@ func run() error {
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+
+	// Stand tracing up before the pool so query spans are wired from
+	// the first connection ping. When OTEL_EXPORTER_OTLP_ENDPOINT is
+	// unset, tracing.Init returns a no-op shutdown and the global
+	// provider stays at otel's noop — every span call goes nowhere.
+	shutdownTracing, err := tracing.Init(ctx, tracing.Config{Version: buildVersion})
+	if err != nil {
+		return fmt.Errorf("tracing init: %w", err)
+	}
+	defer func() {
+		flushCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := shutdownTracing(flushCtx); err != nil {
+			slog.Warn("tracing shutdown", "err", err)
+		}
+	}()
 
 	pool, err := db.NewPool(ctx, cfg.DatabaseURL)
 	if err != nil {

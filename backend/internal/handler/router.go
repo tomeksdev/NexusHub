@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"go.opentelemetry.io/contrib/instrumentation/github.com/gin-gonic/gin/otelgin"
 
 	"github.com/tomeksdev/NexusHub/backend/internal/auth"
 	"github.com/tomeksdev/NexusHub/backend/internal/crypto"
@@ -55,7 +56,17 @@ type Deps struct {
 // which we replace with a slog-backed one.
 func NewRouter(deps Deps) *gin.Engine {
 	r := gin.New()
-	r.Use(gin.Recovery(), middleware.RequestID(), metrics.Middleware(), accessLog())
+	// otelgin wraps every request in a span (gin.HandlerFunc name is
+	// the span name) and extracts inbound traceparent headers. Placed
+	// before RequestID so the span is the parent of everything else.
+	// No-op when the global tracer provider is noop (tracing disabled).
+	r.Use(
+		gin.Recovery(),
+		otelgin.Middleware("nexushub-api"),
+		middleware.RequestID(),
+		metrics.Middleware(),
+		accessLog(),
+	)
 
 	authH := &AuthHandler{
 		Users: deps.Users, Sessions: deps.Sessions, Audit: deps.Audit,
