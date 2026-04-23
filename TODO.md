@@ -156,10 +156,10 @@ Phases are sequential in priority but work can overlap where dependencies allow.
 ## Phase 10 — Observability
 
 - [x] Prometheus metrics: HTTP, DB pool, WireGuard peer stats, eBPF counters (2026-04-22) <!-- completed 2026-04-22: HTTP counters + latency histogram via internal/metrics.Middleware (landed 2026-04-17); DB pool via metrics.RegisterPoolCollector over pgxpool.Stat (landed 2026-04-17); eBPF map entries+capacity+stats_errors via ebpfkernel.MetricsCollector over RulesLoader.Stats (landed 2026-04-22); WireGuard per-interface+per-peer via wg.NewWGCollector over wg.Client — wg_peers / wg_device_up / wg_listen_port / wg_peer_last_handshake_seconds / wg_peer_{receive,transmit}_bytes_total / wg_scrape_errors_total (2026-04-22). WG collector registered in cmd/api/main.go from the DB interface list after reconcile — runtime-added interfaces require restart to appear. Pure-Go coverage via FakeClient (seed/scrape, missing-device counter tick, partial failure keeps healthy interface reporting, pedantic registration, handshake zero-time handling). -->
-- [ ] `/metrics` endpoint + sample Grafana dashboards in `docs/deployment/`
+- [x] `/metrics` endpoint + sample Grafana dashboards in `docs/deployment/` (2026-04-22) <!-- completed 2026-04-22: /api/v1/metrics landed with Phase 6 (promhttp over the shared Registry); Grafana dashboard docs/deployment/grafana/nexushub-overview.json is a 13-panel import covering API overview (build info, req/s, 5xx%, auth 401/s, latency p50/95/99, per-route req/s), DB pool (4-line timeseries + utilisation gauge), eBPF (map entries + capacity-utilisation % per map), and WireGuard (peer-count stat, per-peer throughput timeseries, handshake-freshness table with color-graded staleness). The `interface` dashboard variable pulls live from label_values(nexushub_wg_peers, interface). -->
 - [ ] OpenTelemetry traces for HTTP + DB
 - [ ] Structured audit log with retention policy
-- [ ] Alert examples: auth spikes, peer handshake failures, eBPF load errors
+- [x] Alert examples: auth spikes, peer handshake failures, eBPF load errors (2026-04-22) <!-- completed 2026-04-22: docs/deployment/prometheus/alerts.yml ships 10 rules in 4 groups (nexushub.api / .db / .wireguard / .ebpf) covering all three called-out scenarios plus API down / 5xx spikes / DB pool pressure / WG device down / WG scrape errors / eBPF scrape errors / eBPF map >80% full. page vs ticket severities; `for:` windows tuned to survive single-scrape glitches. docs/deployment/README.md documents Prometheus scrape config + import steps. -->
 
 ---
 
