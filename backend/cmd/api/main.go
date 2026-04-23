@@ -14,6 +14,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"github.com/tomeksdev/NexusHub/backend/internal/audit"
 	"github.com/tomeksdev/NexusHub/backend/internal/auth"
 	"github.com/tomeksdev/NexusHub/backend/internal/config"
 	"github.com/tomeksdev/NexusHub/backend/internal/crypto"
@@ -92,6 +93,15 @@ func run() error {
 	ifaceRepo := repository.NewInterfaceRepo(pool)
 	peerRepo := repository.NewPeerRepo(pool)
 	ruleRepo := repository.NewRuleRepo(pool)
+	auditRepo := repository.NewAuditRepo(pool)
+
+	// Start the audit retention loop. Zero AuditRetentionDays (or
+	// a negative value) disables pruning — the loop exits
+	// immediately. The goroutine shuts down on ctx cancellation.
+	go audit.RunRetentionLoop(ctx, auditRepo, audit.RetentionConfig{
+		Retention: time.Duration(cfg.AuditRetentionDays) * 24 * time.Hour,
+		Interval:  cfg.AuditRetentionScan,
+	}, slog.Default())
 
 	// Try to open a netlink client. If we can't (no CAP_NET_ADMIN, no
 	// kernel module, containerised dev env), skip kernel sync and run
@@ -129,7 +139,7 @@ func run() error {
 		JWTIssuer:         jwtIssuer,
 		Users:             repository.NewUserRepo(pool),
 		Sessions:          repository.NewSessionRepo(pool),
-		Audit:             repository.NewAuditRepo(pool),
+		Audit:             auditRepo,
 		Interfaces:        ifaceRepo,
 		Peers:             peerRepo,
 		Rules:             ruleRepo,

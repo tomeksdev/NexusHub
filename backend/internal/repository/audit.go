@@ -203,3 +203,21 @@ func auditContains(list []string, s string) bool {
 	}
 	return false
 }
+
+// PruneOlderThan deletes audit rows whose occurred_at is strictly
+// before cutoff and returns the number of rows removed. Used by the
+// retention loop; also callable ad-hoc for operator cleanup. The
+// DELETE streams via the occurred_at index so this is cheap even on
+// large tables.
+//
+// The "append-only" comment on the audit_log table is an application
+// invariant (handlers must not UPDATE/DELETE individual rows); an
+// operator-driven retention pass is a separate concern.
+func (r *AuditRepo) PruneOlderThan(ctx context.Context, cutoff time.Time) (int64, error) {
+	tag, err := r.pool.Exec(ctx,
+		`DELETE FROM audit_log WHERE occurred_at < $1`, cutoff)
+	if err != nil {
+		return 0, fmt.Errorf("prune audit: %w", err)
+	}
+	return tag.RowsAffected(), nil
+}
