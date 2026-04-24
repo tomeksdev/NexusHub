@@ -203,3 +203,92 @@ func (c *Client) Health() (*Health, error) {
 	err := c.Do("GET", "/api/v1/health", nil, &out)
 	return &out, err
 }
+
+// ---- Mutations ------------------------------------------------------------
+
+// CreatePeerRequest mirrors the backend handler's binding. Only Name +
+// InterfaceID are strictly required; everything else has server-side
+// defaults (server-generated keys, auto-allocated IP, etc.).
+type CreatePeerRequest struct {
+	InterfaceID         string   `json:"interface_id"`
+	Name                string   `json:"name"`
+	Description         string   `json:"description,omitempty"`
+	AssignedIP          string   `json:"assigned_ip,omitempty"`
+	AllowedIPs          []string `json:"allowed_ips,omitempty"`
+	Endpoint            string   `json:"endpoint,omitempty"`
+	PersistentKeepAlive int      `json:"persistent_keepalive,omitempty"`
+}
+
+// CreatePeer creates a peer row and returns the server-generated
+// record (including keypair and allocated IP when those were left
+// for the server to fill in).
+func (c *Client) CreatePeer(req CreatePeerRequest) (*Peer, error) {
+	var out Peer
+	err := c.Do("POST", "/api/v1/peers", req, &out)
+	return &out, err
+}
+
+// DeletePeer removes a peer by ID. Returns nil on 204 or 404 —
+// deleting a non-existent peer is idempotent from the caller's
+// perspective.
+func (c *Client) DeletePeer(id string) error {
+	return c.Do("DELETE", "/api/v1/peers/"+id, nil, nil)
+}
+
+// CreateRuleRequest matches the backend's createRuleRequest.
+// Pointer fields distinguish "omit" from "zero" — priority=0 is
+// valid and means lowest priority, not unset.
+type CreateRuleRequest struct {
+	Name        string  `json:"name"`
+	Description string  `json:"description,omitempty"`
+	Action      string  `json:"action"`
+	Direction   string  `json:"direction,omitempty"`
+	Protocol    string  `json:"protocol,omitempty"`
+	SrcCIDR     string  `json:"src_cidr,omitempty"`
+	DstCIDR     string  `json:"dst_cidr,omitempty"`
+	SrcPortFrom *int    `json:"src_port_from,omitempty"`
+	SrcPortTo   *int    `json:"src_port_to,omitempty"`
+	DstPortFrom *int    `json:"dst_port_from,omitempty"`
+	DstPortTo   *int    `json:"dst_port_to,omitempty"`
+	RatePPS     *int    `json:"rate_pps,omitempty"`
+	RateBurst   *int    `json:"rate_burst,omitempty"`
+	Priority    *int    `json:"priority,omitempty"`
+	IsActive    *bool   `json:"is_active,omitempty"`
+}
+
+// CreateRule posts a rule. The backend validates enum values and
+// returns a 400 with CodeInvalidRequest on bad input; that surfaces
+// through client.Error verbatim.
+func (c *Client) CreateRule(req CreateRuleRequest) (*Rule, error) {
+	var out Rule
+	err := c.Do("POST", "/api/v1/rules", req, &out)
+	return &out, err
+}
+
+// UpdateRuleRequest carries the subset of fields the toggle + edit
+// paths change. All fields are optional — PATCH semantics on the
+// backend.
+type UpdateRuleRequest struct {
+	IsActive *bool `json:"is_active,omitempty"`
+}
+
+// UpdateRule PATCHes a rule. Used by `rule toggle` today; extending
+// to full edit is additive when we add --name/--action flags.
+func (c *Client) UpdateRule(id string, req UpdateRuleRequest) (*Rule, error) {
+	var out Rule
+	err := c.Do("PATCH", "/api/v1/rules/"+id, req, &out)
+	return &out, err
+}
+
+// DeleteRule removes a rule. Idempotent on 404.
+func (c *Client) DeleteRule(id string) error {
+	return c.Do("DELETE", "/api/v1/rules/"+id, nil, nil)
+}
+
+// GetRule fetches a single rule by ID. Used by `rule toggle` so we
+// can read the current is_active before flipping.
+func (c *Client) GetRule(id string) (*Rule, error) {
+	var out Rule
+	err := c.Do("GET", "/api/v1/rules/"+id, nil, &out)
+	return &out, err
+}

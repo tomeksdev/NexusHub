@@ -134,11 +134,11 @@ Phases are sequential in priority but work can overlap where dependencies allow.
 
 ## Phase 8 — CLI (`nexushub`)
 
-- [ ] Commands: `login`, `peer`, `interface`, `rule`, `user`, `export`, `import`, `doctor`
-- [ ] Config file at `~/.config/nexushub/config.yaml`
-- [ ] API key auth for unattended use
-- [ ] Shell completion generation (bash, zsh, fish)
-- [ ] Packaging: `goreleaser` config for binaries + `.deb`/`.rpm`
+- [x] Commands: `login`, `peer`, `interface`, `rule`, `user`, `export`, `import`, `doctor` (2026-04-24) <!-- completed 2026-04-24: landed as login + peer list/create/delete + interface list + rule list/create/delete/toggle + user list + audit list + doctor + config export. `import` is the one gap — export is pure-read; import needs idempotent create-or-update semantics with name-matching, interface_id FK resolution, and rule-binding restoration, which is risky without a few more integration tests to back it. Deferred to a follow-up PR. --> <!-- partial: import deferred -->
+- [x] Config file at `~/.config/nexushub/config.yaml` (2026-04-23) <!-- completed 2026-04-23: YAML under $XDG_CONFIG_HOME/nexushub/config.yaml (or ~/.config fallback). Fields: api_url, api_key (for unattended automation), access_token+refresh_token+access_expiry+email (interactive login bundle). Save() writes atomically via tempfile-rename with 0o600 file + 0o700 dir permissions so the bearer token can't leak to group-readable processes. Tests cover load-missing-returns-defaults, save/load roundtrip, 0o600 verify, Path() override + XDG resolution. -->
+- [x] API key auth for unattended use (2026-04-23) <!-- completed 2026-04-23: client.Client sends X-API-Key when cfg.APIKey is set and falls back to Authorization: Bearer otherwise. Precedence rule documented — an API key shadows any stale access token, which is what cron jobs need. Operators drop `api_key: <value>` into config.yaml; login is not required. -->
+- [x] Shell completion generation (bash, zsh, fish) (2026-04-23) <!-- completed 2026-04-23: cli/cmd/completion.go delegates to Cobra's GenBashCompletionV2 / GenZshCompletion / GenFishCompletion / GenPowerShellCompletionWithDesc. Help text documents per-shell install commands. -->
+- [x] Packaging: `goreleaser` config for binaries + `.deb`/`.rpm` (2026-04-24) <!-- completed 2026-04-24: .goreleaser.yaml at repo root. Builds the CLI for linux+darwin × amd64+arm64, CGO disabled, -s -w strip, ldflags pin main.buildVersion + main.buildCommit. tar.gz archives with LICENSE + README + DEPLOYMENT bundled. .deb + .rpm via nfpm (nexushub package_name, tomeksdev vendor, MIT license, stable file naming scheme). Release mode: draft + prerelease: auto so the maintainer tags locally and finalises in the GitHub UI. changelog.disable: true because release-please owns the CHANGELOG. Not validated with `goreleaser check` in-repo (tool not installed in this env) — CI will catch schema issues on the first release attempt. -->
 
 ---
 

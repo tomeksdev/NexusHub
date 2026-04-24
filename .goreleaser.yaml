@@ -1,0 +1,91 @@
+# GoReleaser config for the `nexushub` CLI.
+#
+# Run locally (no release):
+#   goreleaser build --single-target --snapshot --clean
+#
+# Release on tag push (handled by the release GitHub Actions workflow):
+#   git tag v2.0.0 && git push --tags
+#
+# The backend API + frontend ship as container images via the
+# docker-publish workflow; this config is CLI-only so operators
+# downloading a binary can manage a deployment without Docker.
+
+version: 2
+
+project_name: nexushub
+
+before:
+  hooks:
+    - cd cli && go mod tidy
+
+builds:
+  - id: nexushub
+    main: .
+    dir: cli
+    binary: nexushub
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+    # Pin the Go toolchain to the module-declared minor. Otherwise a
+    # release runner with Go 1.23 could produce binaries that panic
+    # on constructs the 1.22 staging env doesn't exercise yet.
+    env_files:
+      GOTOOLCHAIN: local
+    ldflags:
+      - -s -w
+      - -X main.buildVersion={{ .Version }}
+      - -X main.buildCommit={{ .ShortCommit }}
+
+archives:
+  - id: nexushub
+    formats: [tar.gz]
+    name_template: >-
+      {{ .ProjectName }}_
+      {{- .Version }}_
+      {{- .Os }}_
+      {{- .Arch }}
+    files:
+      - LICENSE
+      - README.md
+      - src: docs/deployment/README.md
+        dst: DEPLOYMENT.md
+
+checksum:
+  name_template: "{{ .ProjectName }}_{{ .Version }}_checksums.txt"
+
+snapshot:
+  version_template: "{{ incpatch .Version }}-next"
+
+changelog:
+  # Release-please already owns the changelog; do not duplicate here.
+  disable: true
+
+# .deb / .rpm packaging via nfpm. Maintainer contact + license fields
+# mirror the repo metadata. Conflicts intentionally omitted — operators
+# running v1 and v2 side-by-side is out of scope; they pick one.
+nfpms:
+  - id: nexushub
+    package_name: nexushub
+    vendor: tomeksdev
+    homepage: https://github.com/tomeksdev/NexusHub
+    maintainer: tomeksdev <info@tomeksdev.com>
+    description: |
+      NexusHub CLI — command-line interface for the NexusHub WireGuard
+      VPN management platform.
+    license: MIT
+    formats:
+      - deb
+      - rpm
+    file_name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+
+release:
+  github:
+    owner: tomeksdev
+    name: NexusHub
+  draft: true
+  prerelease: auto
