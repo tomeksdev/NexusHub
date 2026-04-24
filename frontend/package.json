@@ -14,7 +14,7 @@
     "@refinedev/react-hook-form": "^5.0.4",
     "@tanstack/react-query": "^5.99.0",
     "@tanstack/react-table": "^8.21.3",
-    "lucide-react": "^1.8.0",
+    "lucide-react": "^1.11.0",
     "react": "^19.2.4",
     "react-dom": "^19.2.4",
     "react-hook-form": "^7.72.1",
