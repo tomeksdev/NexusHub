@@ -1,6 +1,7 @@
 import { useState, type FormEvent } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 
+import { Modal } from '../components/Modal'
 import { ApiError, api } from '../lib/api'
 
 interface Props {
@@ -64,26 +65,8 @@ export function PeerCreateModal({ interfaceID, onClose, onCreated }: Props) {
   }
 
   return (
-    <div
-      className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4"
-      onClick={onClose}
-    >
-      <div
-        className="w-full max-w-lg rounded-xl bg-slate-900 border border-slate-800 shadow-xl overflow-hidden"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <header className="flex items-center justify-between px-5 py-3 border-b border-slate-800">
-          <h2 className="text-lg font-semibold">New peer</h2>
-          <button
-            onClick={onClose}
-            className="text-slate-400 hover:text-slate-200 text-sm px-2 py-1"
-            aria-label="Close"
-          >
-            ✕
-          </button>
-        </header>
-
-        <form onSubmit={submit} className="p-5 space-y-4">
+    <Modal title="New peer" onClose={onClose} maxWidthClass="max-w-lg">
+      <form onSubmit={submit} className="space-y-4">
           <Field label="Name" required>
             <input
               value={name}
@@ -144,30 +127,29 @@ export function PeerCreateModal({ interfaceID, onClose, onCreated }: Props) {
             </p>
           )}
 
-          <div className="flex justify-end gap-2 pt-2">
-            <button
-              type="button"
-              onClick={onClose}
-              className="px-3 py-1.5 rounded-md text-slate-300 hover:bg-slate-800 text-sm"
-            >
-              Cancel
-            </button>
-            <button
-              type="submit"
-              disabled={mut.isPending || !name.trim()}
-              className="px-3 py-1.5 rounded-md bg-sky-600 hover:bg-sky-500 disabled:opacity-50 disabled:hover:bg-sky-600 text-sm font-medium"
-            >
-              {mut.isPending ? 'Creating…' : 'Create'}
-            </button>
-          </div>
-        </form>
-      </div>
-    </div>
+        <div className="flex justify-end gap-2 pt-2">
+          <button
+            type="button"
+            onClick={onClose}
+            className="px-3 py-1.5 rounded-md text-slate-300 hover:bg-slate-800 text-sm focus-visible:outline-2 focus-visible:outline-indigo-500 focus-visible:outline-offset-2"
+          >
+            Cancel
+          </button>
+          <button
+            type="submit"
+            disabled={mut.isPending || !name.trim()}
+            className="px-3 py-1.5 rounded-md bg-sky-600 hover:bg-sky-500 disabled:opacity-50 disabled:hover:bg-sky-600 text-sm font-medium focus-visible:outline-2 focus-visible:outline-sky-400 focus-visible:outline-offset-2"
+          >
+            {mut.isPending ? 'Creating…' : 'Create'}
+          </button>
+        </div>
+      </form>
+    </Modal>
   )
 }
 
 const inputCls =
-  'w-full rounded-md bg-slate-800 border border-slate-700 px-2 py-1.5 text-sm focus:outline-none focus:border-sky-500'
+  'w-full rounded-md bg-slate-800 border border-slate-700 px-2 py-1.5 text-sm focus-visible:outline-2 focus-visible:outline-sky-500 focus-visible:outline-offset-1 focus:border-sky-500'
 
 function Field({
   label,

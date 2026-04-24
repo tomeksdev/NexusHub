@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 
 import { api, type PageEnvelope } from '../lib/api'
+import { useNowEveryMinute } from '../lib/hooks'
 import { sseStream } from '../lib/sse'
 import { PeerConfigModal } from './PeerConfigModal'
 import { PeerCreateModal } from './PeerCreateModal'
@@ -29,6 +30,7 @@ interface LivePeer {
 
 export function PeersPage() {
   const qc = useQueryClient()
+  const nowMs = useNowEveryMinute()
   const { data, isLoading, isError, error } = useQuery({
     queryKey: ['peers'],
     queryFn: async () => {
@@ -148,7 +150,7 @@ export function PeersPage() {
                 const rx = l?.rx_bytes ?? p.rx_bytes
                 const tx = l?.tx_bytes ?? p.tx_bytes
                 const recentMs = handshake
-                  ? Date.now() - new Date(handshake).getTime()
+                  ? nowMs - new Date(handshake).getTime()
                   : Number.POSITIVE_INFINITY
                 const isLive = recentMs < 3 * 60_000
                 return (

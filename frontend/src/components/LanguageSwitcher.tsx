@@ -15,7 +15,7 @@ export function LanguageSwitcher() {
       <select
         value={current}
         onChange={(e) => void i18n.changeLanguage(e.target.value)}
-        className="w-full px-2 py-1 rounded bg-slate-950 border border-slate-800 text-slate-300 text-xs focus:outline-none focus:border-indigo-500"
+        className="w-full px-2 py-1 rounded bg-slate-950 border border-slate-800 text-slate-300 text-xs focus-visible:outline-2 focus-visible:outline-indigo-500 focus-visible:outline-offset-1 focus:border-indigo-500"
       >
         {LANGUAGES.map((lng) => (
           <option key={lng} value={lng}>

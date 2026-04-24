@@ -1,6 +1,7 @@
 import { useState, type FormEvent } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 
+import { Modal } from '../components/Modal'
 import { ApiError, api } from '../lib/api'
 import type { Rule } from './RulesPage'
 
@@ -106,23 +107,9 @@ export function RuleEditorModal({ rule, onClose }: Props) {
   }
 
   return (
-    <div className="fixed inset-0 bg-slate-950/70 flex items-center justify-center p-4 z-50">
-      <div className="bg-slate-900 border border-slate-800 rounded-lg w-full max-w-2xl max-h-[90vh] overflow-y-auto">
-        <form onSubmit={onSubmit} className="p-6 space-y-4">
-          <header className="flex items-baseline justify-between">
-            <h2 className="text-lg font-semibold">
-              {editing ? `Edit rule: ${rule!.name}` : 'New rule'}
-            </h2>
-            <button
-              type="button"
-              onClick={onClose}
-              className="text-slate-500 hover:text-slate-200 text-sm"
-            >
-              Close
-            </button>
-          </header>
-
-          <div className="grid grid-cols-2 gap-4">
+    <Modal title={editing ? `Edit rule: ${rule!.name}` : 'New rule'} onClose={onClose}>
+      <form onSubmit={onSubmit} className="space-y-4">
+        <div className="grid grid-cols-2 gap-4">
             <Field label="Name" required>
               <input
                 type="text"
@@ -300,30 +287,29 @@ export function RuleEditorModal({ rule, onClose }: Props) {
             <p className="text-rose-400 text-sm">{(mut.error as Error).message}</p>
           )}
 
-          <div className="flex justify-end gap-2 pt-2">
-            <button
-              type="button"
-              onClick={onClose}
-              className="px-4 py-2 rounded-md text-sm text-slate-300 hover:bg-slate-800"
-            >
-              Cancel
-            </button>
-            <button
-              type="submit"
-              disabled={mut.isPending || !name.trim()}
-              className="px-4 py-2 rounded-md text-sm bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50"
-            >
-              {mut.isPending ? 'Saving…' : editing ? 'Save' : 'Create'}
-            </button>
-          </div>
-        </form>
-      </div>
-    </div>
+        <div className="flex justify-end gap-2 pt-2">
+          <button
+            type="button"
+            onClick={onClose}
+            className="px-4 py-2 rounded-md text-sm text-slate-300 hover:bg-slate-800 focus-visible:outline-2 focus-visible:outline-indigo-500 focus-visible:outline-offset-2"
+          >
+            Cancel
+          </button>
+          <button
+            type="submit"
+            disabled={mut.isPending || !name.trim()}
+            className="px-4 py-2 rounded-md text-sm bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 focus-visible:outline-2 focus-visible:outline-indigo-400 focus-visible:outline-offset-2"
+          >
+            {mut.isPending ? 'Saving…' : editing ? 'Save' : 'Create'}
+          </button>
+        </div>
+      </form>
+    </Modal>
   )
 }
 
 const inputClass =
-  'w-full px-3 py-1.5 rounded-md bg-slate-950 border border-slate-800 text-sm text-slate-100 focus:outline-none focus:border-indigo-500'
+  'w-full px-3 py-1.5 rounded-md bg-slate-950 border border-slate-800 text-sm text-slate-100 focus-visible:outline-2 focus-visible:outline-indigo-500 focus-visible:outline-offset-1 focus:border-indigo-500'
 
 function Field({
   label,

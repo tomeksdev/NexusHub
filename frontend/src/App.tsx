@@ -24,18 +24,29 @@ function App() {
 
   return (
     <div className="min-h-screen flex bg-slate-950 text-slate-100">
+      {/* Skip link: visually hidden until keyboard-focused, jumps past the
+          nav to the main region. Critical for keyboard and screen-reader
+          users who would otherwise tab through the whole sidebar on
+          every page view. */}
+      <a
+        href="#main-content"
+        className="sr-only focus-visible:not-sr-only focus-visible:fixed focus-visible:top-2 focus-visible:left-2 focus-visible:z-50 focus-visible:px-3 focus-visible:py-2 focus-visible:rounded-md focus-visible:bg-indigo-600 focus-visible:text-white"
+      >
+        Skip to content
+      </a>
       <aside className="w-56 bg-slate-900 border-r border-slate-800 flex flex-col">
         <div className="px-5 py-5 border-b border-slate-800">
           <h1 className="font-semibold">{t('app.title')}</h1>
           <p className="text-xs text-slate-500 mt-0.5">{t('app.subtitle')}</p>
         </div>
-        <nav className="flex-1 px-2 py-3 space-y-0.5">
+        <nav aria-label="Primary" className="flex-1 px-2 py-3 space-y-0.5">
           {NAV_ORDER.map((id) => (
             <button
               key={id}
               onClick={() => setPage(id)}
+              aria-current={page === id ? 'page' : undefined}
               className={
-                'w-full text-left px-3 py-2 rounded-md text-sm transition ' +
+                'w-full text-left px-3 py-2 rounded-md text-sm transition focus-visible:outline-2 focus-visible:outline-indigo-500 focus-visible:outline-offset-2 ' +
                 (page === id
                   ? 'bg-slate-800 text-slate-100'
                   : 'text-slate-400 hover:bg-slate-800/50 hover:text-slate-200')
@@ -59,7 +70,7 @@ function App() {
         </div>
       </aside>
 
-      <main className="flex-1 overflow-y-auto">
+      <main id="main-content" tabIndex={-1} className="flex-1 overflow-y-auto">
         {page === 'peers' && <PeersPage />}
         {page === 'interfaces' && <InterfacesPage />}
         {page === 'rules' && <RulesPage />}

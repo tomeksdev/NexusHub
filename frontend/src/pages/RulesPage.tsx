@@ -143,17 +143,17 @@ export function RulesPage() {
                   <td className="px-4 py-2 text-slate-400">
                     {r.protocol}
                     {(r.protocol === 'tcp' || r.protocol === 'udp') && (
-                      <span className="ml-1 text-slate-600 text-xs">
+                      <span className="ml-1 text-slate-500 text-xs">
                         :{summarisePorts(r.src_port_from, r.src_port_to)}→
                         {summarisePorts(r.dst_port_from, r.dst_port_to)}
                       </span>
                     )}
                   </td>
                   <td className="px-4 py-2 font-mono text-xs text-slate-400">
-                    {r.src_cidr ?? <span className="text-slate-600">any</span>}
+                    {r.src_cidr ?? <span className="text-slate-500">any</span>}
                   </td>
                   <td className="px-4 py-2 font-mono text-xs text-slate-400">
-                    {r.dst_cidr ?? <span className="text-slate-600">any</span>}
+                    {r.dst_cidr ?? <span className="text-slate-500">any</span>}
                   </td>
                   <td className="px-4 py-2">
                     <button

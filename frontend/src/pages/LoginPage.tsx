@@ -47,7 +47,7 @@ export function LoginPage() {
             required
             value={email}
             onChange={(e) => setEmail(e.target.value)}
-            className="w-full rounded-md bg-slate-800 border border-slate-700 px-3 py-2 text-sm focus:outline-none focus:border-sky-500"
+            className="w-full rounded-md bg-slate-800 border border-slate-700 px-3 py-2 text-sm focus-visible:outline-2 focus-visible:outline-sky-500 focus-visible:outline-offset-1 focus:border-sky-500"
           />
         </div>
         <div className="space-y-1">
@@ -61,7 +61,7 @@ export function LoginPage() {
             required
             value={password}
             onChange={(e) => setPassword(e.target.value)}
-            className="w-full rounded-md bg-slate-800 border border-slate-700 px-3 py-2 text-sm focus:outline-none focus:border-sky-500"
+            className="w-full rounded-md bg-slate-800 border border-slate-700 px-3 py-2 text-sm focus-visible:outline-2 focus-visible:outline-sky-500 focus-visible:outline-offset-1 focus:border-sky-500"
           />
         </div>
         {err && <p className="text-sm text-rose-400">{err}</p>}

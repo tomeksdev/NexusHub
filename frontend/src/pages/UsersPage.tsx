@@ -2,6 +2,7 @@ import { useQuery } from '@tanstack/react-query'
 import { useTranslation } from 'react-i18next'
 
 import { api, type PageEnvelope } from '../lib/api'
+import { useNowEveryMinute } from '../lib/hooks'
 
 interface User {
   id: string
@@ -18,6 +19,7 @@ interface User {
 
 export function UsersPage() {
   const { t } = useTranslation()
+  const nowMs = useNowEveryMinute()
   const { data, isLoading, isError, error } = useQuery({
     queryKey: ['users'],
     queryFn: () => api<PageEnvelope<User>>('/api/v1/users?limit=100'),
@@ -58,7 +60,7 @@ export function UsersPage() {
             </thead>
             <tbody className="divide-y divide-slate-800">
               {items.map((u) => {
-                const locked = !!u.locked_until && new Date(u.locked_until).getTime() > Date.now()
+                const locked = !!u.locked_until && new Date(u.locked_until).getTime() > nowMs
                 return (
                   <tr key={u.id} className="hover:bg-slate-900/50">
                     <td className="px-4 py-2 font-medium">{u.email}</td>

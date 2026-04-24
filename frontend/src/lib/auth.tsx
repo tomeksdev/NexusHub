@@ -101,6 +101,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   return <AuthCtx.Provider value={value}>{children}</AuthCtx.Provider>
 }
 
+// Co-located with AuthProvider intentionally — the hook reads the
+// context created here, and splitting the file just to appease the
+// fast-refresh plugin would churn every call site.
+// eslint-disable-next-line react-refresh/only-export-components
 export function useAuth(): AuthState {
   const ctx = useContext(AuthCtx)
   if (!ctx) throw new Error('useAuth must be used inside <AuthProvider>')
