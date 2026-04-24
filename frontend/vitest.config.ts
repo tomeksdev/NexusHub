@@ -12,5 +12,21 @@ export default defineConfig({
     globals: true,
     setupFiles: ['./src/test/setup.ts'],
     css: false,
+    coverage: {
+      provider: 'v8',
+      reporter: ['text', 'json-summary', 'html'],
+      reportsDirectory: './coverage',
+      include: ['src/**/*.{ts,tsx}'],
+      // Exclude boilerplate that tests shouldn't be measured against:
+      // entry shim, i18n bootstrap (no branches), and locale JSON
+      // dictionaries (not code).
+      exclude: [
+        'src/main.tsx',
+        'src/vite-env.d.ts',
+        'src/test/**',
+        'src/lib/i18n.ts',
+        'src/lib/locales/**',
+      ],
+    },
   },
 })

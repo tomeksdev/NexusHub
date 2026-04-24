@@ -150,8 +150,8 @@ Phases are sequential in priority but work can overlap where dependencies allow.
 - [x] Frontend MSW-backed component tests (2026-04-19) <!-- completed 2026-04-19: src/lib/api.test.ts exercises login/logout/refresh/401-retry/token-lifecycle against MSW mocks. -->
 - [ ] E2E tests (Playwright) covering: login, peer create, rule attach, audit view
 - [ ] eBPF tests in a kernel runner
-- [ ] Load test baseline (k6 or vegeta) — document expected RPS and latency targets
-- [ ] Coverage gate in CI (threshold TBD)
+- [x] Load test baseline (k6 or vegeta) — document expected RPS and latency targets (2026-04-24) <!-- completed 2026-04-24: tests/load/baseline.js — k6 ramping-vus 0→20→50→0 over ~5 min, exercises auth/refresh + peers list + /metrics on a ~5 s per-VU cadence modelling real operator tabs. Custom Trend metrics per endpoint so p95/p99 are attributable. Thresholds encode SLOs: <1% errors, <400 ms overall p95, <200 ms refresh / <300 ms peer-list / <150 ms metrics. docs/deployment/load-testing.md documents assumptions (same-host pg, default pool, maps not full), regression-hunting pattern, and what's deliberately out of scope (lockouts, SSE soak, kernel-side XDP). -->
+- [x] Coverage gate in CI (threshold TBD) (2026-04-24) <!-- completed 2026-04-24: go-lint-test job now runs `go test -race -coverprofile=coverage.out -covermode=atomic`; per-module floor enforced from the coverage summary (backend 15%, cli 5%, ebpf 35%). Frontend job adds `npx vitest run --coverage` (v8 provider wired in vitest.config.ts, reports json-summary + html + text, excludes main.tsx/i18n/locales) and gates on lines ≥ 20%. All floors are set just below current coverage so CI stays green today; regressions fail, and the floors ratchet up in follow-up PRs as tests land. Coverage artefacts uploaded on every run with 14-day retention. -->
 
 ---
 
