@@ -16,8 +16,11 @@ RUN npm run build
 
 # Stage 3: Runtime
 FROM debian:bookworm-slim
+# curl is needed by HEALTHCHECK below. It's pre-existing in debian's
+# package base but not in -slim; without it the check exits 127 and
+# the container is reported unhealthy indefinitely.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates wireguard-tools iproute2 iptables \
+    ca-certificates curl wireguard-tools iproute2 iptables \
     && rm -rf /var/lib/apt/lists/*
 RUN groupadd -r nexushub && useradd -r -g nexushub -s /sbin/nologin nexushub
 WORKDIR /app
