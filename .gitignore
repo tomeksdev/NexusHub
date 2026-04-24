@@ -1,6 +1,7 @@
 # Go
 backend/tmp/
 cli/tmp/
+cli/bin/
 *.exe
 *.test
 *.out

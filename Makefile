@@ -57,6 +57,20 @@ ebpf-test: ## Run ebpf userspace unit tests (map tests skip without kernel)
 ebpf-gen: ## Regenerate bpf2go artifacts from C sources (needs clang + kernel headers)
 	cd ebpf && $(GO_ENV) go generate ./...
 
+# ---- CLI ------------------------------------------------------------------
+
+.PHONY: cli-build
+cli-build: ## Build the `nexushub` CLI binary into cli/bin/
+	cd cli && mkdir -p bin && $(GO_ENV) go build -o bin/nexushub .
+
+.PHONY: cli-test
+cli-test: ## Run CLI unit tests
+	cd cli && $(GO_ENV) go test ./...
+
+.PHONY: cli-install
+cli-install: ## Install the CLI to $GOBIN (or $GOPATH/bin)
+	cd cli && $(GO_ENV) go install .
+
 # ---- Frontend -------------------------------------------------------------
 
 .PHONY: frontend-install
@@ -86,10 +100,10 @@ frontend-lint: ## Run eslint on frontend sources
 # ---- Aggregate ------------------------------------------------------------
 
 .PHONY: test
-test: backend-test ebpf-test frontend-test ## Run every unit test suite
+test: backend-test ebpf-test cli-test frontend-test ## Run every unit test suite
 
 .PHONY: build
-build: backend-build frontend-build ## Build every deployable artifact
+build: backend-build cli-build frontend-build ## Build every deployable artifact
 
 .PHONY: lint
 lint: backend-lint frontend-lint ## Lint everything
