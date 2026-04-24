@@ -155,3 +155,51 @@ func IsTOTPRequired(err error) bool {
 	var e *Error
 	return errors.As(err, &e) && e.Code == "TOTP_REQUIRED"
 }
+
+// ListInterfaces fetches the paginated interface list.
+func (c *Client) ListInterfaces(limit int) (*PageEnvelope[Interface], error) {
+	var out PageEnvelope[Interface]
+	err := c.Do("GET", fmt.Sprintf("/api/v1/interfaces?limit=%d", limit), nil, &out)
+	return &out, err
+}
+
+// ListPeers fetches peers for the given interface.
+func (c *Client) ListPeers(interfaceID string, limit int) (*PageEnvelope[Peer], error) {
+	var out PageEnvelope[Peer]
+	err := c.Do("GET",
+		fmt.Sprintf("/api/v1/peers?interface_id=%s&limit=%d", interfaceID, limit),
+		nil, &out)
+	return &out, err
+}
+
+// ListRules fetches every rule regardless of active state. The active=true
+// query filter is intentionally omitted so ops can see disabled rules too.
+func (c *Client) ListRules(limit int) (*PageEnvelope[Rule], error) {
+	var out PageEnvelope[Rule]
+	err := c.Do("GET", fmt.Sprintf("/api/v1/rules?limit=%d&sort=-priority", limit), nil, &out)
+	return &out, err
+}
+
+// ListUsers requires admin role; a non-admin token gets 403 and the
+// typed *Error surfaces that verbatim.
+func (c *Client) ListUsers(limit int) (*PageEnvelope[User], error) {
+	var out PageEnvelope[User]
+	err := c.Do("GET", fmt.Sprintf("/api/v1/users?limit=%d", limit), nil, &out)
+	return &out, err
+}
+
+// ListAudit pulls the most recent audit entries, newest first.
+func (c *Client) ListAudit(limit int) (*PageEnvelope[AuditEntry], error) {
+	var out PageEnvelope[AuditEntry]
+	err := c.Do("GET", fmt.Sprintf("/api/v1/audit-log?limit=%d&sort=-occurred_at", limit), nil, &out)
+	return &out, err
+}
+
+// Health probes the unauthenticated health endpoint. Used by the
+// doctor command to distinguish reachability failures from auth
+// failures.
+func (c *Client) Health() (*Health, error) {
+	var out Health
+	err := c.Do("GET", "/api/v1/health", nil, &out)
+	return &out, err
+}
