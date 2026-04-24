@@ -98,13 +98,19 @@ func NewUserRepo(pool *pgxpool.Pool) *UserRepo {
 }
 
 // UserCredentials carries the minimum fields needed by the login handler.
+// TOTPSecretCipher is the raw encrypted blob as stored in the DB; the
+// handler decrypts it via crypto.AEAD before validating a code. When
+// TOTPEnabled is false the handler skips TOTP entirely — the secret may
+// still be present from an abandoned enrollment but is not load-bearing.
 type UserCredentials struct {
-	ID           uuid.UUID
-	PasswordHash string
-	Role         string
-	IsActive     bool
-	LockedUntil  *time.Time
-	FailedLogins int
+	ID               uuid.UUID
+	PasswordHash     string
+	Role             string
+	IsActive         bool
+	LockedUntil      *time.Time
+	FailedLogins     int
+	TOTPEnabled      bool
+	TOTPSecretCipher []byte
 }
 
 // GetCredentialsByEmail returns the credential bundle for the given email
@@ -113,10 +119,12 @@ type UserCredentials struct {
 func (r *UserRepo) GetCredentialsByEmail(ctx context.Context, email string) (*UserCredentials, error) {
 	var c UserCredentials
 	err := r.pool.QueryRow(ctx,
-		`SELECT id, password_hash, role::text, is_active, locked_until, failed_logins
+		`SELECT id, password_hash, role::text, is_active, locked_until, failed_logins,
+		        totp_enabled, totp_secret
 		   FROM users WHERE email = $1`,
 		email,
-	).Scan(&c.ID, &c.PasswordHash, &c.Role, &c.IsActive, &c.LockedUntil, &c.FailedLogins)
+	).Scan(&c.ID, &c.PasswordHash, &c.Role, &c.IsActive, &c.LockedUntil, &c.FailedLogins,
+		&c.TOTPEnabled, &c.TOTPSecretCipher)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrUserNotFound
 	}
@@ -124,6 +132,79 @@ func (r *UserRepo) GetCredentialsByEmail(ctx context.Context, email string) (*Us
 		return nil, fmt.Errorf("lookup user: %w", err)
 	}
 	return &c, nil
+}
+
+// SetTOTPPending stashes an encrypted TOTP secret on the user row
+// without flipping totp_enabled. Used during enrollment so the secret
+// is durable between the enroll and verify calls; an abandoned
+// enrollment leaves the secret in place but it is never validated
+// against a login (the flag gates that). A subsequent enroll simply
+// overwrites.
+func (r *UserRepo) SetTOTPPending(ctx context.Context, userID uuid.UUID, secretCipher []byte) error {
+	cmd, err := r.pool.Exec(ctx,
+		`UPDATE users
+		    SET totp_secret = $2, totp_enabled = FALSE
+		  WHERE id = $1`,
+		userID, secretCipher,
+	)
+	if err != nil {
+		return fmt.Errorf("set totp pending: %w", err)
+	}
+	if cmd.RowsAffected() == 0 {
+		return ErrUserNotFound
+	}
+	return nil
+}
+
+// EnableTOTP flips totp_enabled=true. Separate from SetTOTPPending so
+// the handler can validate a code against the stored secret before
+// committing the user to a 2FA regime they can't actually satisfy.
+func (r *UserRepo) EnableTOTP(ctx context.Context, userID uuid.UUID) error {
+	cmd, err := r.pool.Exec(ctx,
+		`UPDATE users SET totp_enabled = TRUE WHERE id = $1`,
+		userID,
+	)
+	if err != nil {
+		return fmt.Errorf("enable totp: %w", err)
+	}
+	if cmd.RowsAffected() == 0 {
+		return ErrUserNotFound
+	}
+	return nil
+}
+
+// ClearTOTP wipes both the secret and the flag. Used by the disable
+// endpoint; also the right shape for account-recovery admin flows.
+func (r *UserRepo) ClearTOTP(ctx context.Context, userID uuid.UUID) error {
+	cmd, err := r.pool.Exec(ctx,
+		`UPDATE users SET totp_secret = NULL, totp_enabled = FALSE WHERE id = $1`,
+		userID,
+	)
+	if err != nil {
+		return fmt.Errorf("clear totp: %w", err)
+	}
+	if cmd.RowsAffected() == 0 {
+		return ErrUserNotFound
+	}
+	return nil
+}
+
+// GetTOTP returns the stored TOTP state for the user. Used by
+// authenticated management endpoints (enroll/disable) where we need
+// to decide whether to ask for the current code or generate a fresh
+// secret. Empty cipher + enabled=false means "never set up".
+func (r *UserRepo) GetTOTP(ctx context.Context, userID uuid.UUID) (enabled bool, secretCipher []byte, err error) {
+	err = r.pool.QueryRow(ctx,
+		`SELECT totp_enabled, totp_secret FROM users WHERE id = $1`,
+		userID,
+	).Scan(&enabled, &secretCipher)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil, ErrUserNotFound
+	}
+	if err != nil {
+		return false, nil, fmt.Errorf("get totp: %w", err)
+	}
+	return enabled, secretCipher, nil
 }
 
 // MarkLoginSuccess resets the failed-login counter and stamps last_login_at.
@@ -181,6 +262,23 @@ func (r *UserRepo) UpdatePassword(ctx context.Context, userID uuid.UUID, newHash
 		return ErrUserNotFound
 	}
 	return nil
+}
+
+// GetEmail returns the user's email, case-preserved from storage.
+// Used when generating a TOTP enrollment label so the authenticator
+// app shows the familiar account identifier.
+func (r *UserRepo) GetEmail(ctx context.Context, userID uuid.UUID) (string, error) {
+	var email string
+	err := r.pool.QueryRow(ctx,
+		`SELECT email::text FROM users WHERE id = $1`, userID,
+	).Scan(&email)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", ErrUserNotFound
+	}
+	if err != nil {
+		return "", fmt.Errorf("get email: %w", err)
+	}
+	return email, nil
 }
 
 // GetPasswordHash returns just the current password hash, for re-authenticating

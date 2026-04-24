@@ -70,7 +70,7 @@ func NewRouter(deps Deps) *gin.Engine {
 
 	authH := &AuthHandler{
 		Users: deps.Users, Sessions: deps.Sessions, Audit: deps.Audit,
-		JWT: deps.JWTIssuer, RefreshTTL: deps.RefreshTTL,
+		JWT: deps.JWTIssuer, AEAD: deps.AEAD, RefreshTTL: deps.RefreshTTL,
 	}
 
 	v1 := r.Group("/api/v1")
@@ -108,6 +108,12 @@ func NewRouter(deps Deps) *gin.Engine {
 	authed := v1.Group("")
 	authed.Use(middleware.RequireAuth(deps.JWTIssuer, deps.Sessions))
 	authed.POST("/auth/password", authH.ChangePassword)
+	// TOTP 2FA. Enroll is the only one that changes server state on
+	// its own; Verify commits that state; Disable requires password
+	// + current code (defense in depth against stolen-session abuse).
+	authed.POST("/auth/totp/enroll", authH.EnrollTOTP)
+	authed.POST("/auth/totp/verify", authH.VerifyTOTP)
+	authed.POST("/auth/totp/disable", authH.DisableTOTP)
 
 	// WireGuard CRUD — admin/super_admin only. The config + QR exports are
 	// in the same group; an authenticated non-admin should not be able to

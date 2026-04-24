@@ -13,22 +13,36 @@ import (
 
 	"github.com/tomeksdev/NexusHub/backend/internal/apierror"
 	"github.com/tomeksdev/NexusHub/backend/internal/auth"
+	"github.com/tomeksdev/NexusHub/backend/internal/crypto"
 	"github.com/tomeksdev/NexusHub/backend/internal/middleware"
 	"github.com/tomeksdev/NexusHub/backend/internal/repository"
 )
 
-// AuthHandler owns login, refresh, logout, and password-change endpoints.
+// AuthHandler owns login, refresh, logout, and password-change endpoints
+// plus the TOTP enrollment / verify / disable flow. AEAD decrypts the
+// TOTP secret stored on the user row; the same instance that encrypts
+// peer private keys is reused so there's one master key to rotate.
 type AuthHandler struct {
 	Users      *repository.UserRepo
 	Sessions   *repository.SessionRepo
 	Audit      *repository.AuditRepo
 	JWT        *auth.JWTIssuer
+	AEAD       *crypto.AEAD
 	RefreshTTL time.Duration
 }
+
+// totpSecretAD is the additional-data constant passed to AEAD for
+// TOTP ciphertexts. Distinct from the peer-key AD so a ciphertext
+// copied between columns can't be decrypted in the wrong context.
+var totpSecretAD = []byte("users.totp_secret")
 
 type loginRequest struct {
 	Email    string `json:"email"    binding:"required,email"`
 	Password string `json:"password" binding:"required"`
+	// TOTPCode is required when the user has 2FA enabled. Omitting it
+	// on a 2FA-enabled account yields CodeTOTPRequired, which the
+	// frontend uses as a signal to collect the code and retry.
+	TOTPCode string `json:"totp_code"`
 }
 
 type tokenResponse struct {
@@ -97,6 +111,35 @@ func (h *AuthHandler) Login(c *gin.Context) {
 		h.auditLoginFailure(ctx, c, creds.ID, "bad password")
 		writeError(c, http.StatusUnauthorized, apierror.CodeInvalidCredentials, "invalid credentials")
 		return
+	}
+
+	// Second factor gate. Password was correct; if the user enrolled
+	// TOTP we require a valid code before issuing tokens.
+	//
+	// We distinguish "code missing" (CodeTOTPRequired — benign, the
+	// client hasn't collected it yet) from "code wrong" (Code
+	// TOTPInvalid — tick the failure counter, same lockout path as
+	// a bad password). This matches how most 2FA flows segment the
+	// UX vs. the security signals.
+	if creds.TOTPEnabled {
+		if req.TOTPCode == "" {
+			writeError(c, http.StatusUnauthorized, apierror.CodeTOTPRequired, "totp code required")
+			return
+		}
+		secret, derr := h.AEAD.Open(creds.TOTPSecretCipher, totpSecretAD)
+		if derr != nil {
+			slog.ErrorContext(ctx, "decrypt totp secret", "err", derr, "user_id", creds.ID)
+			writeError(c, http.StatusInternalServerError, apierror.CodeInternal, "internal error")
+			return
+		}
+		if !auth.ValidateTOTP(string(secret), req.TOTPCode) {
+			if markErr := h.Users.MarkLoginFailure(ctx, creds.ID); markErr != nil {
+				slog.ErrorContext(ctx, "mark login failure", "err", markErr)
+			}
+			h.auditLoginFailure(ctx, c, creds.ID, "bad totp")
+			writeError(c, http.StatusUnauthorized, apierror.CodeTOTPInvalid, "invalid totp code")
+			return
+		}
 	}
 
 	resp, err := h.issueSession(ctx, c, creds.ID, creds.Role)
@@ -300,4 +343,191 @@ func (h *AuthHandler) auditLoginFailure(ctx context.Context, c *gin.Context, use
 func clientIP(c *gin.Context) net.IP {
 	ip := net.ParseIP(c.ClientIP())
 	return ip
+}
+
+// ----- TOTP ----------------------------------------------------------------
+
+type totpEnrollResponse struct {
+	// Secret is the base32-encoded shared secret, for users who enter
+	// it into an authenticator app manually. Never displayed after
+	// verification succeeds.
+	Secret string `json:"secret"`
+	// OtpauthURI is the otpauth:// URL the frontend renders as a QR.
+	OtpauthURI string `json:"otpauth_uri"`
+	// AccountName is the label that appears in the authenticator app.
+	AccountName string `json:"account_name"`
+}
+
+type totpVerifyRequest struct {
+	Code string `json:"code" binding:"required,len=6"`
+}
+
+type totpDisableRequest struct {
+	Password string `json:"password" binding:"required"`
+	Code     string `json:"code"     binding:"required,len=6"`
+}
+
+// EnrollTOTP generates a fresh secret and stores it in the pending
+// state (secret set, enabled=false). The client renders the QR, the
+// user scans it, and the enrollment completes on the first successful
+// VerifyTOTP call. Calling Enroll again before Verify overwrites the
+// pending secret — useful when a user abandons setup mid-flow.
+func (h *AuthHandler) EnrollTOTP(c *gin.Context) {
+	principal, ok := middleware.PrincipalFrom(c)
+	if !ok {
+		writeError(c, http.StatusUnauthorized, apierror.CodeUnauthorized, "unauthenticated")
+		return
+	}
+	ctx := c.Request.Context()
+
+	// Use the user's email as the authenticator-app label so the
+	// same account shows up consistently across devices.
+	email, err := h.Users.GetEmail(ctx, principal.UserID)
+	if err != nil {
+		slog.ErrorContext(ctx, "totp enroll: get email", "err", err)
+		writeError(c, http.StatusInternalServerError, apierror.CodeInternal, "internal error")
+		return
+	}
+	enrollment, err := auth.GenerateTOTP(email)
+	if err != nil {
+		slog.ErrorContext(ctx, "totp enroll: generate", "err", err)
+		writeError(c, http.StatusInternalServerError, apierror.CodeInternal, "internal error")
+		return
+	}
+	cipher, err := h.AEAD.Seal([]byte(enrollment.Secret), totpSecretAD)
+	if err != nil {
+		slog.ErrorContext(ctx, "totp enroll: seal", "err", err)
+		writeError(c, http.StatusInternalServerError, apierror.CodeInternal, "internal error")
+		return
+	}
+	if err := h.Users.SetTOTPPending(ctx, principal.UserID, cipher); err != nil {
+		slog.ErrorContext(ctx, "totp enroll: persist", "err", err)
+		writeError(c, http.StatusInternalServerError, apierror.CodeInternal, "internal error")
+		return
+	}
+	h.Audit.Log(ctx, repository.AuditEntry{
+		ActorUserID: &principal.UserID, ActorIP: clientIP(c), ActorUA: c.Request.UserAgent(),
+		Action: "auth.totp_enroll", TargetType: "user", TargetID: principal.UserID.String(),
+		Result: repository.AuditResultSuccess,
+	})
+	c.JSON(http.StatusOK, totpEnrollResponse{
+		Secret:      enrollment.Secret,
+		OtpauthURI:  enrollment.OtpauthURI,
+		AccountName: enrollment.AccountName,
+	})
+}
+
+// VerifyTOTP confirms the code against the pending secret and flips
+// totp_enabled to true. 404 when the user has no pending enrollment;
+// 401 when the code is wrong.
+func (h *AuthHandler) VerifyTOTP(c *gin.Context) {
+	principal, ok := middleware.PrincipalFrom(c)
+	if !ok {
+		writeError(c, http.StatusUnauthorized, apierror.CodeUnauthorized, "unauthenticated")
+		return
+	}
+	var req totpVerifyRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		writeError(c, http.StatusBadRequest, apierror.CodeInvalidRequest, err.Error())
+		return
+	}
+	ctx := c.Request.Context()
+
+	_, cipher, err := h.Users.GetTOTP(ctx, principal.UserID)
+	if err != nil {
+		slog.ErrorContext(ctx, "totp verify: lookup", "err", err)
+		writeError(c, http.StatusInternalServerError, apierror.CodeInternal, "internal error")
+		return
+	}
+	if len(cipher) == 0 {
+		writeError(c, http.StatusNotFound, apierror.CodeTOTPNotEnrolled, "no pending enrollment")
+		return
+	}
+	secret, err := h.AEAD.Open(cipher, totpSecretAD)
+	if err != nil {
+		slog.ErrorContext(ctx, "totp verify: decrypt", "err", err)
+		writeError(c, http.StatusInternalServerError, apierror.CodeInternal, "internal error")
+		return
+	}
+	if !auth.ValidateTOTP(string(secret), req.Code) {
+		h.Audit.Log(ctx, repository.AuditEntry{
+			ActorUserID: &principal.UserID, ActorIP: clientIP(c), ActorUA: c.Request.UserAgent(),
+			Action: "auth.totp_verify", TargetType: "user", TargetID: principal.UserID.String(),
+			Result: repository.AuditResultFailure, ErrorMessage: "code mismatch",
+		})
+		writeError(c, http.StatusUnauthorized, apierror.CodeTOTPInvalid, "invalid totp code")
+		return
+	}
+	if err := h.Users.EnableTOTP(ctx, principal.UserID); err != nil {
+		slog.ErrorContext(ctx, "totp verify: enable", "err", err)
+		writeError(c, http.StatusInternalServerError, apierror.CodeInternal, "internal error")
+		return
+	}
+	h.Audit.Log(ctx, repository.AuditEntry{
+		ActorUserID: &principal.UserID, ActorIP: clientIP(c), ActorUA: c.Request.UserAgent(),
+		Action: "auth.totp_verify", TargetType: "user", TargetID: principal.UserID.String(),
+		Result: repository.AuditResultSuccess,
+	})
+	c.Status(http.StatusNoContent)
+}
+
+// DisableTOTP clears the secret and flips enabled=false after
+// re-verifying password + current code. Requiring both defeats a
+// stolen-session attacker from disabling 2FA on a victim's account
+// without the device.
+func (h *AuthHandler) DisableTOTP(c *gin.Context) {
+	principal, ok := middleware.PrincipalFrom(c)
+	if !ok {
+		writeError(c, http.StatusUnauthorized, apierror.CodeUnauthorized, "unauthenticated")
+		return
+	}
+	var req totpDisableRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		writeError(c, http.StatusBadRequest, apierror.CodeInvalidRequest, err.Error())
+		return
+	}
+	ctx := c.Request.Context()
+
+	hash, err := h.Users.GetPasswordHash(ctx, principal.UserID)
+	if err != nil {
+		writeError(c, http.StatusUnauthorized, apierror.CodeUnauthorized, "unauthenticated")
+		return
+	}
+	matches, err := auth.VerifyPassword(req.Password, hash)
+	if err != nil || !matches {
+		writeError(c, http.StatusUnauthorized, apierror.CodeInvalidCredentials, "password incorrect")
+		return
+	}
+
+	enabled, cipher, err := h.Users.GetTOTP(ctx, principal.UserID)
+	if err != nil {
+		slog.ErrorContext(ctx, "totp disable: lookup", "err", err)
+		writeError(c, http.StatusInternalServerError, apierror.CodeInternal, "internal error")
+		return
+	}
+	if !enabled || len(cipher) == 0 {
+		writeError(c, http.StatusNotFound, apierror.CodeTOTPNotEnrolled, "totp is not enabled")
+		return
+	}
+	secret, err := h.AEAD.Open(cipher, totpSecretAD)
+	if err != nil {
+		slog.ErrorContext(ctx, "totp disable: decrypt", "err", err)
+		writeError(c, http.StatusInternalServerError, apierror.CodeInternal, "internal error")
+		return
+	}
+	if !auth.ValidateTOTP(string(secret), req.Code) {
+		writeError(c, http.StatusUnauthorized, apierror.CodeTOTPInvalid, "invalid totp code")
+		return
+	}
+	if err := h.Users.ClearTOTP(ctx, principal.UserID); err != nil {
+		slog.ErrorContext(ctx, "totp disable: clear", "err", err)
+		writeError(c, http.StatusInternalServerError, apierror.CodeInternal, "internal error")
+		return
+	}
+	h.Audit.Log(ctx, repository.AuditEntry{
+		ActorUserID: &principal.UserID, ActorIP: clientIP(c), ActorUA: c.Request.UserAgent(),
+		Action: "auth.totp_disable", TargetType: "user", TargetID: principal.UserID.String(),
+		Result: repository.AuditResultSuccess,
+	})
+	c.Status(http.StatusNoContent)
 }
