@@ -1,0 +1,30 @@
+# Air config for `make backend-dev`. Installs via:
+#   go install github.com/air-verse/air@latest
+# Rebuilds + restarts the API on any .go change under ./backend. eBPF
+# sources are excluded because rebuilding the BPF bytecode requires
+# clang, not go build — run `make ebpf-gen` explicitly when those
+# change.
+
+root = "."
+tmp_dir = "tmp"
+
+[build]
+  cmd = "go build -o ./tmp/api ./cmd/api"
+  bin = "./tmp/api"
+  include_ext = ["go", "tpl", "tmpl", "html"]
+  exclude_dir = ["tmp", "bin", "vendor", "testdata"]
+  delay = 500
+  stop_on_error = true
+  log = "air-errors.log"
+
+[log]
+  time = true
+
+[color]
+  main = "magenta"
+  watcher = "cyan"
+  build = "yellow"
+  runner = "green"
+
+[misc]
+  clean_on_exit = true

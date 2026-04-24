@@ -25,11 +25,13 @@ Phases are sequential in priority but work can overlap where dependencies allow.
 - [x] Write `TODO.md` and update `README.md` for v2.0.0 (2026-04-17)
 - [x] Set up `main` + `dev` branches and push (2026-04-17)
 - [ ] Configure branch protection rules on GitHub (manual)
-- [ ] Remove legacy v1.0.0 files (`wg-server-install.sh`, `example.html`) once rewrite is self-sufficient
-- [ ] Add `.air.toml` for backend live-reload
-- [ ] Add issue templates (bug, feature, security disclosure redirect) under `.github/ISSUE_TEMPLATE/`
-- [ ] Add PR template under `.github/pull_request_template.md`
-- [ ] Add a `Makefile` with common dev tasks
+- [x] Remove legacy v1.0.0 files (`wg-server-install.sh`, `example.html`) once rewrite is self-sufficient (2026-04-23) <!-- completed 2026-04-23: deleted — v2.0.0 scaffolding superseded them months ago and git history keeps the originals if anyone wants to reference them -->
+- [x] Add `.air.toml` for backend live-reload (2026-04-23) <!-- completed 2026-04-23: backend/.air.toml builds cmd/api into tmp/api, watches .go/.tpl/.tmpl/.html, excludes tmp/bin/vendor/testdata. Install with `go install github.com/air-verse/air@latest`, run via `make backend-dev`. -->
+- [x] Add issue templates (bug, feature, security disclosure redirect) under `.github/ISSUE_TEMPLATE/` (2026-04-23) <!-- completed 2026-04-23: bug_report.yml (version+component dropdown+repro+logs), feature_request.yml (problem-first template with scope estimate), config.yml routes security reports to the private advisory form and general questions to Discussions. blank_issues_enabled=false forces triage through the templates. -->
+- [x] Add PR template under `.github/pull_request_template.md` (2026-04-23) <!-- completed 2026-04-23: summary + scope checkboxes + change bullets + test plan (make test / make lint / browser pass / integration) + reviewer notes + issue/ADR refs -->
+- [x] Add a `Makefile` with common dev tasks (2026-04-23) <!-- completed 2026-04-23: `make help` auto-generates from ## doc-comments. Targets: backend-{build,test,test-integration,lint,dev}, migrate-{up,down}, ebpf-{test,gen}, frontend-{install,dev,build,test,typecheck,lint}, aggregate `test`/`build`/`lint`, docker-{up,dev,down}, clean. Every Go invocation pins GOTOOLCHAIN=local + GOFLAGS=-mod=mod so the module cache can't auto-upgrade past Go 1.22. -->
+
+> Note: Branch protection stays manual — needs repo admin in the GitHub UI, not something to automate from code.
 
 ---
 
