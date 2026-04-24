@@ -12,7 +12,7 @@
   "dependencies": {
     "@refinedev/core": "^5.0.12",
     "@refinedev/react-hook-form": "^5.0.4",
-    "@tanstack/react-query": "^5.99.0",
+    "@tanstack/react-query": "^5.100.1",
     "@tanstack/react-table": "^8.21.3",
     "lucide-react": "^1.8.0",
     "react": "^19.2.4",
