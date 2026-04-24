@@ -9,11 +9,12 @@ import { LoginPage } from './pages/LoginPage'
 import { MetricsPage } from './pages/MetricsPage'
 import { PeersPage } from './pages/PeersPage'
 import { RulesPage } from './pages/RulesPage'
+import { SecurityPage } from './pages/SecurityPage'
 import { UsersPage } from './pages/UsersPage'
 
-type Page = 'peers' | 'interfaces' | 'rules' | 'users' | 'audit' | 'metrics'
+type Page = 'peers' | 'interfaces' | 'rules' | 'users' | 'audit' | 'metrics' | 'security'
 
-const NAV_ORDER: Page[] = ['peers', 'interfaces', 'rules', 'metrics', 'users', 'audit']
+const NAV_ORDER: Page[] = ['peers', 'interfaces', 'rules', 'metrics', 'users', 'audit', 'security']
 
 function App() {
   const { t } = useTranslation()
@@ -77,6 +78,7 @@ function App() {
         {page === 'metrics' && <MetricsPage />}
         {page === 'users' && <UsersPage />}
         {page === 'audit' && <AuditPage />}
+        {page === 'security' && <SecurityPage />}
       </main>
     </div>
   )

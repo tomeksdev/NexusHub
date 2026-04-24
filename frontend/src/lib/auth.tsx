@@ -21,7 +21,7 @@ export interface AuthState {
   role: Role | null
   email: string | null
   loading: boolean
-  signIn: (email: string, password: string) => Promise<void>
+  signIn: (email: string, password: string, totpCode?: string) => Promise<void>
   signOut: () => Promise<void>
 }
 
@@ -70,8 +70,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     })
   }, [])
 
-  const signIn = useCallback(async (e: string, password: string) => {
-    const res = await apiLogin(e, password)
+  const signIn = useCallback(async (e: string, password: string, totpCode?: string) => {
+    const res = await apiLogin(e, password, totpCode)
     const r = res.role as Role
     setRole(r)
     setEmail(e)

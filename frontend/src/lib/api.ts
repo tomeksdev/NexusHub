@@ -197,15 +197,28 @@ export interface LoginResponse {
   role: string
 }
 
-export async function login(email: string, password: string): Promise<LoginResponse> {
+// login posts credentials to the backend. When totpCode is omitted
+// and the user has 2FA enabled the server responds 401 with code
+// TOTP_REQUIRED; callers catch that and collect the code for a
+// retry. Same-signature retries with the code populated complete
+// the flow.
+export async function login(
+  email: string,
+  password: string,
+  totpCode?: string,
+): Promise<LoginResponse> {
+  const body: Record<string, string> = { email, password }
+  if (totpCode) body.totp_code = totpCode
   const resp = await fetch('/api/v1/auth/login', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ email, password }),
+    body: JSON.stringify(body),
   })
   if (!resp.ok) {
-    const body = await resp.json().catch(() => ({ error: 'login failed', code: 'UNAUTHORIZED' }))
-    throw new ApiError(resp.status, body)
+    const errBody = await resp
+      .json()
+      .catch(() => ({ error: 'login failed', code: 'UNAUTHORIZED' }))
+    throw new ApiError(resp.status, errBody)
   }
   const data: LoginResponse = await resp.json()
   setTokens(data.access_token, data.access_expires_at, data.refresh_token)

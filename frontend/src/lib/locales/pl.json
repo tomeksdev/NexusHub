@@ -10,7 +10,8 @@
     "rules": "Reguły",
     "metrics": "Metryki",
     "users": "Użytkownicy",
-    "audit": "Dziennik zdarzeń"
+    "audit": "Dziennik zdarzeń",
+    "security": "Bezpieczeństwo"
   },
   "common": {
     "loading": "Ładowanie…",
