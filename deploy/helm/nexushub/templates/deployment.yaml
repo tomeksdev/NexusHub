@@ -1,0 +1,124 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "nexushub.fullname" . }}
+  labels: {{- include "nexushub.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels: {{- include "nexushub.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "nexushub.selectorLabels" . | nindent 8 }}
+        {{- with .Values.podLabels }}{{- toYaml . | nindent 8 }}{{- end }}
+      annotations:
+        # Redeploy pods when the ConfigMap or Secret content changes
+        # so a `helm upgrade` that only bumps values actually rolls
+        # out. checksum/* annotations change whenever the rendered
+        # file content changes.
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        {{- if not .Values.secrets.existingSecret }}
+        checksum/secrets: {{ include (print $.Template.BasePath "/secret.yaml") . | sha256sum }}
+        {{- end }}
+        {{- with .Values.podAnnotations }}{{- toYaml . | nindent 8 }}{{- end }}
+    spec:
+      serviceAccountName: {{ include "nexushub.serviceAccountName" . }}
+      {{- with .Values.image.pullSecrets }}
+      imagePullSecrets: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext: {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      # hostNetwork is required for kernel-side WireGuard + eBPF
+      # because wgctrl talks to kernel netlink against the host
+      # network namespace, and XDP attach points at the host NIC.
+      # Default off — most operators run the kernel plane on the
+      # host as a systemd unit and use this chart as the API only.
+      {{- if .Values.dataPlane.enabled }}
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+      {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: api
+          image: {{ include "nexushub.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+          envFrom:
+            - configMapRef:
+                name: {{ include "nexushub.fullname" . }}
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "nexushub.postgresSecretName" . }}
+                  key: {{ .Values.postgres.urlKey }}
+            - name: JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "nexushub.appSecretName" . }}
+                  key: JWT_SECRET
+            - name: PEER_KEY_ENCRYPTION_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "nexushub.appSecretName" . }}
+                  key: PEER_KEY_ENCRYPTION_KEY
+          securityContext:
+            {{- $ctx := .Values.containerSecurityContext | deepCopy }}
+            {{- if .Values.dataPlane.enabled }}
+            {{- /* Data-plane mode grants back the caps the kernel
+                 sync needs. CapabilityBoundingSet stays tight at
+                 the values-configured list. */}}
+            {{- $_ := set $ctx "capabilities" (dict "drop" (list "ALL") "add" .Values.dataPlane.capabilities) }}
+            {{- /* hostNetwork + NET_ADMIN effectively requires
+                 running as root to read /proc/net. We keep the
+                 pod-level runAsNonRoot but flip allowPrivilege-
+                 Escalation off and readOnlyRootFilesystem stays
+                 on — defence in depth on a necessarily-powerful
+                 pod. */}}
+            {{- end }}
+            {{- toYaml $ctx | nindent 12 }}
+          resources: {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            # The binary itself writes nothing to disk, but /tmp is
+            # needed for Go's temp-file usage (e.g. OTLP exporter
+            # certificates, testcontainers). readOnlyRootFilesystem
+            # requires /tmp be a writable volume.
+            - name: tmp
+              mountPath: /tmp
+          # Probes. Startup gives migrations a grace window before
+          # readiness starts; readiness matches the same endpoint
+          # at a slower cadence. liveness is on the slowest timer
+          # because a dead API won't recover by being killed —
+          # restarts are operator-driven.
+          startupProbe:
+            httpGet:
+              path: {{ .Values.probes.startup.path }}
+              port: http
+            periodSeconds: {{ .Values.probes.startup.periodSeconds }}
+            failureThreshold: {{ .Values.probes.startup.failureThreshold }}
+          readinessProbe:
+            httpGet:
+              path: {{ .Values.probes.readiness.path }}
+              port: http
+            periodSeconds: {{ .Values.probes.readiness.periodSeconds }}
+          livenessProbe:
+            httpGet:
+              path: {{ .Values.probes.liveness.path }}
+              port: http
+            periodSeconds: {{ .Values.probes.liveness.periodSeconds }}
+      volumes:
+        - name: tmp
+          emptyDir:
+            medium: Memory
+            sizeLimit: 32Mi

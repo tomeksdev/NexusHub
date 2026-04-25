@@ -4,7 +4,14 @@ WORKDIR /build
 COPY backend/go.mod backend/go.sum ./backend/
 RUN cd backend && go mod download
 COPY backend/ ./backend/
-RUN cd backend && CGO_ENABLED=0 go build -ldflags="-s -w" -o /nexushub ./cmd/api/
+# Three binaries ship in the runtime image:
+#   /nexushub       — the API server (default entrypoint)
+#   /nexushub-migrate — the migration runner (Helm pre-install hook)
+#   /nexushub-seed  — the first-admin seeder (one-shot)
+# Sharing one build stage lets them reuse the module download cache.
+RUN cd backend && CGO_ENABLED=0 go build -ldflags="-s -w" -o /nexushub         ./cmd/api/ \
+ && cd backend && CGO_ENABLED=0 go build -ldflags="-s -w" -o /nexushub-migrate ./cmd/migrate/ \
+ && cd backend && CGO_ENABLED=0 go build -ldflags="-s -w" -o /nexushub-seed    ./cmd/seed/
 
 # Stage 2: Build frontend
 FROM node:20-bookworm-slim AS node-builder
@@ -24,7 +31,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 RUN groupadd -r nexushub && useradd -r -g nexushub -s /sbin/nologin nexushub
 WORKDIR /app
-COPY --from=go-builder /nexushub .
+COPY --from=go-builder /nexushub         ./nexushub
+COPY --from=go-builder /nexushub-migrate ./nexushub-migrate
+COPY --from=go-builder /nexushub-seed    ./nexushub-seed
 COPY --from=node-builder /build/dist ./frontend/dist
 COPY migrations/ ./migrations/
 RUN chown -R nexushub:nexushub /app
