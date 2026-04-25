@@ -16,26 +16,27 @@ project_name: nexushub
 
 before:
   hooks:
-    - cd cli && go mod tidy
+    # goreleaser runs hooks via exec — no shell, so `cd ... &&` doesn't
+    # work. -C runs go in the named directory.
+    - go -C cli mod tidy
 
 builds:
   - id: nexushub
     main: .
     dir: cli
     binary: nexushub
+    # CGO disabled for portable static binaries; GOTOOLCHAIN=local
+    # pins the Go minor so a release runner with newer Go doesn't
+    # silently bump us forward.
     env:
       - CGO_ENABLED=0
+      - GOTOOLCHAIN=local
     goos:
       - linux
       - darwin
     goarch:
       - amd64
       - arm64
-    # Pin the Go toolchain to the module-declared minor. Otherwise a
-    # release runner with Go 1.23 could produce binaries that panic
-    # on constructs the 1.22 staging env doesn't exercise yet.
-    env_files:
-      GOTOOLCHAIN: local
     ldflags:
       - -s -w
       - -X main.buildVersion={{ .Version }}

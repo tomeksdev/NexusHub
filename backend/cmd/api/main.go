@@ -135,6 +135,16 @@ func run() error {
 		}
 	}
 
+	// eBPF kernel runtime. Loads the bpf2go-generated spec, attaches
+	// optional hooks, starts the metrics + log pipelines. On hosts
+	// without CAP_BPF (or when bpf2go produced no usable spec) the
+	// returned stack carries a NoopSyncer so the handlers see a
+	// consistent interface either way.
+	connLogRepo := repository.NewConnectionLogRepo(pool)
+	ebpfStk := startEBPF(ctx, connLogRepo,
+		xdpInterfaceFromEnv(), tcInterfaceFromEnv(), slog.Default())
+	defer ebpfStk.Close()
+
 	router := handler.NewRouter(handler.Deps{
 		JWTIssuer:         jwtIssuer,
 		Users:             repository.NewUserRepo(pool),
@@ -145,6 +155,7 @@ func run() error {
 		Rules:             ruleRepo,
 		AEAD:              aead,
 		RefreshTTL:        cfg.JWTRefreshExpiry,
+		EBPFSync:          ebpfStk.syncer,
 		WG:                wgClient,
 		DefaultWGEndpoint: cfg.WGEndpoint,
 		LoginLimit: middleware.RateLimitConfig{

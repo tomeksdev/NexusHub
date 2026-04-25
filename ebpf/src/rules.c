@@ -341,7 +341,7 @@ ports_match(struct rule_meta *meta, __u16 sport_net, __u16 dport_net)
 }
 
 /* read_l4_ports pulls src/dst ports from TCP or UDP headers. Returns 1
- * on success and fills *sport/*dport in network order. Returns 0 if
+ * on success and fills the sport and dport pointers (network order). Returns 0 if
  * there's no usable L4 header — caller treats sport=dport=0, which
  * means port-restricted rules won't match (correct) but wildcard
  * rules still match (also correct).

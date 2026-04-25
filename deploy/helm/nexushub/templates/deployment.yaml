@@ -19,7 +19,10 @@ spec:
         # file content changes.
         checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
         {{- if not .Values.secrets.existingSecret }}
-        checksum/secrets: {{ include (print $.Template.BasePath "/secret.yaml") . | sha256sum }}
+        checksum/secret-app: {{ include (print $.Template.BasePath "/secret-app.yaml") . | sha256sum }}
+        {{- end }}
+        {{- if not .Values.postgres.existingSecret }}
+        checksum/secret-postgres: {{ include (print $.Template.BasePath "/secret-postgres.yaml") . | sha256sum }}
         {{- end }}
         {{- with .Values.podAnnotations }}{{- toYaml . | nindent 8 }}{{- end }}
     spec:

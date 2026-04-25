@@ -12,10 +12,11 @@ frontend/node_modules/
 frontend/dist/
 frontend/.vite/
 
-# eBPF
+# eBPF — bpf2go-generated files under ebpf/userspace/ are committed
+# so downstream packages compile without clang. Stray .o files outside
+# that directory (e.g. dev experiments) stay ignored.
 ebpf/**/*.o
-ebpf/**/*_bpfe*.go
-ebpf/**/*_bpfe*.o
+!ebpf/userspace/*.o
 
 # Environment
 .env

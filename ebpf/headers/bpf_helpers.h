@@ -13,6 +13,17 @@
 
 #define SEC(name) __attribute__((section(name), used))
 
+/* The always-inline attribute is load-bearing on the BPF target.
+ * The BPF backend can't lower stack-argument calls; helpers that
+ * take more than 5 parameters MUST be fully inlined or codegen
+ * fails with "stack arguments are not supported".
+ *
+ * linux/stddef.h (transitively included via linux/bpf.h) defines
+ * __always_inline as a bare `__inline__` — just a hint. We #undef
+ * + redefine so the BPF target gets the load-bearing attribute. */
+#undef __always_inline
+#define __always_inline inline __attribute__((always_inline))
+
 /* Map-definition macros as used in the modern libbpf ".maps" ELF section.
  * A map looks like:
  *
@@ -45,6 +56,18 @@ static __u64 (*bpf_ktime_get_ns)(void) =
 
 static long (*bpf_trace_printk)(const char *fmt, __u32 fmt_size, ...) =
     (void *) BPF_FUNC_trace_printk;
+
+/* Ring buffer helpers (kernel 5.8+). reserve() returns NULL when the
+ * buffer is full; the program must check before writing. submit()
+ * publishes the reserved record to userspace consumers. */
+static void *(*bpf_ringbuf_reserve)(void *ringbuf, __u64 size, __u64 flags) =
+    (void *) BPF_FUNC_ringbuf_reserve;
+
+static void (*bpf_ringbuf_submit)(void *data, __u64 flags) =
+    (void *) BPF_FUNC_ringbuf_submit;
+
+static void (*bpf_ringbuf_discard)(void *data, __u64 flags) =
+    (void *) BPF_FUNC_ringbuf_discard;
 
 /* Endian-swap builtins. On the BPF target, clang always emits the correct
  * code regardless of host endianness. */

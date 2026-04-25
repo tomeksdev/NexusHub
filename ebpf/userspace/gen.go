@@ -14,4 +14,9 @@
 // Requires clang ≥ 14.
 package userspace
 
-//go:generate go run github.com/cilium/ebpf/cmd/bpf2go -cc clang -target amd64,arm64 -cflags "-O2 -g -Wall -Werror" Rules ../src/rules.c -- -I../headers
+// On Debian-derived hosts (Ubuntu, Mint, the GH-Actions ubuntu-latest
+// runner) the kernel arch headers live under /usr/include/<triplet>/asm/
+// rather than /usr/include/asm/. We add both x86_64 and aarch64
+// triplet paths so the same generate works on either host arch — clang
+// silently ignores -I paths that don't exist.
+//go:generate go run github.com/cilium/ebpf/cmd/bpf2go -cc clang -target amd64,arm64 -cflags "-O2 -g -Wall -Werror" Rules ../src/rules.c -- -I../headers -I/usr/include/x86_64-linux-gnu -I/usr/include/aarch64-linux-gnu
