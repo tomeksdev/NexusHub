@@ -37,7 +37,7 @@ type RetentionConfig struct {
 	Now func() time.Time
 }
 
-// RunRetentionLoop blocks until ctx is cancelled, running one prune
+// RunRetentionLoop blocks until ctx is canceled, running one prune
 // pass per Interval. Each pass deletes rows older than
 // Now() - Retention. Errors are logged and swallowed — a transient
 // DB hiccup shouldn't bring the API down, and the next tick will

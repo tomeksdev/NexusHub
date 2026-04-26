@@ -199,7 +199,7 @@ func (s *ebpfStack) startConsumer(
 	}
 	s.consumer = consumer
 	go func() {
-		// Run blocks until ctx is cancelled or the reader is closed.
+		// Run blocks until ctx is canceled or the reader is closed.
 		// Either is a clean shutdown — the error is nil for both
 		// paths and only carries a payload on a real read failure.
 		if err := consumer.Run(ctx); err != nil {

@@ -196,7 +196,7 @@ func NewRouter(deps Deps) *gin.Engine {
 
 // auditDeny returns an OnDeny callback that emits a rate-limit denial to
 // the audit log. We deliberately use the request context (not Background)
-// so a cancelled request also cancels the audit write — a per-request
+// so a canceled request also cancels the audit write — a per-request
 // limiter denial is not worth keeping the DB connection alive past the
 // client disconnect.
 func auditDeny(a *repository.AuditRepo, action string) func(*gin.Context) {

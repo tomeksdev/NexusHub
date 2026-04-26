@@ -29,7 +29,7 @@ var ErrKeyLength = fmt.Errorf("master key must decode to %d bytes", KeyLen)
 // the nonce size — almost always a sign of a corrupted row or a wrong key.
 var ErrCiphertextTooShort = errors.New("ciphertext shorter than nonce")
 
-// AEAD holds an initialised AES-256-GCM cipher. It is safe for concurrent
+// AEAD holds an initialized AES-256-GCM cipher. It is safe for concurrent
 // use by multiple goroutines; all state beyond the constructor lives inside
 // the gcm.AEAD, which is itself concurrent-safe.
 type AEAD struct {

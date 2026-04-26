@@ -49,24 +49,24 @@ type PeerHandler struct {
 }
 
 type peerResponse struct {
-	ID                  uuid.UUID `json:"id"`
-	InterfaceID         uuid.UUID `json:"interface_id"`
+	ID                  uuid.UUID  `json:"id"`
+	InterfaceID         uuid.UUID  `json:"interface_id"`
 	OwnerUserID         *uuid.UUID `json:"owner_user_id,omitempty"`
-	Name                string    `json:"name"`
-	Description         *string   `json:"description,omitempty"`
-	PublicKey           string    `json:"public_key"`
-	AllowedIPs          []string  `json:"allowed_ips"`
-	AssignedIP          string    `json:"assigned_ip"`
-	Endpoint            *string   `json:"endpoint,omitempty"`
-	PersistentKeepalive *int      `json:"persistent_keepalive,omitempty"`
-	DNS                 []string  `json:"dns"`
-	Status              string    `json:"status"`
+	Name                string     `json:"name"`
+	Description         *string    `json:"description,omitempty"`
+	PublicKey           string     `json:"public_key"`
+	AllowedIPs          []string   `json:"allowed_ips"`
+	AssignedIP          string     `json:"assigned_ip"`
+	Endpoint            *string    `json:"endpoint,omitempty"`
+	PersistentKeepalive *int       `json:"persistent_keepalive,omitempty"`
+	DNS                 []string   `json:"dns"`
+	Status              string     `json:"status"`
 	LastHandshake       *time.Time `json:"last_handshake,omitempty"`
-	RxBytes             int64     `json:"rx_bytes"`
-	TxBytes             int64     `json:"tx_bytes"`
+	RxBytes             int64      `json:"rx_bytes"`
+	TxBytes             int64      `json:"tx_bytes"`
 	ExpiresAt           *time.Time `json:"expires_at,omitempty"`
-	CreatedAt           time.Time `json:"created_at"`
-	UpdatedAt           time.Time `json:"updated_at"`
+	CreatedAt           time.Time  `json:"created_at"`
+	UpdatedAt           time.Time  `json:"updated_at"`
 }
 
 func toPeerResponse(p *repository.Peer) peerResponse {
@@ -86,17 +86,17 @@ func toPeerResponse(p *repository.Peer) peerResponse {
 }
 
 type createPeerRequest struct {
-	InterfaceID         string   `json:"interface_id"        binding:"required,uuid"`
-	Name                string   `json:"name"                binding:"required"`
-	Description         *string  `json:"description"`
-	PublicKey           *string  `json:"public_key"`
-	AllowedIPs          []string `json:"allowed_ips"`
-	AssignedIP          *string  `json:"assigned_ip"`
-	Endpoint            *string  `json:"endpoint"`
-	PersistentKeepalive *int     `json:"persistent_keepalive"`
-	DNS                 []string `json:"dns"`
+	InterfaceID         string     `json:"interface_id"        binding:"required,uuid"`
+	Name                string     `json:"name"                binding:"required"`
+	Description         *string    `json:"description"`
+	PublicKey           *string    `json:"public_key"`
+	AllowedIPs          []string   `json:"allowed_ips"`
+	AssignedIP          *string    `json:"assigned_ip"`
+	Endpoint            *string    `json:"endpoint"`
+	PersistentKeepalive *int       `json:"persistent_keepalive"`
+	DNS                 []string   `json:"dns"`
 	ExpiresAt           *time.Time `json:"expires_at"`
-	OwnerUserID         *string  `json:"owner_user_id"`
+	OwnerUserID         *string    `json:"owner_user_id"`
 }
 
 // Create wires together: derive/generate keys, allocate IP, encrypt

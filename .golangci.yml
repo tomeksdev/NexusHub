@@ -16,6 +16,16 @@ linters:
   settings:
     misspell:
       locale: US
+    errcheck:
+      exclude-functions:
+        - fmt.Fprint
+        - fmt.Fprintf
+        - fmt.Fprintln
+        - (io.Closer).Close
+        - (*os.File).Close
+        - (*net/http.Response.Body).Close
+        - os.Remove
+        - os.RemoveAll
   exclusions:
     rules:
       - path: _test\.go

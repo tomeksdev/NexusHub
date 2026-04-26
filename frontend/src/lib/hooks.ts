@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState } from "react";
 
 // useEscapeKey fires cb when the user presses Escape while the hook is
 // mounted. Modals use this as the canonical "close" binding so every
@@ -7,14 +7,14 @@ import { useEffect, useState } from 'react'
 export function useEscapeKey(cb: () => void): void {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        e.stopPropagation()
-        cb()
+      if (e.key === "Escape") {
+        e.stopPropagation();
+        cb();
       }
-    }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [cb])
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [cb]);
 }
 
 // useNowEveryMinute returns a client-side "now" that ticks once a
@@ -24,10 +24,10 @@ export function useEscapeKey(cb: () => void): void {
 // the current page count, and the tick stops when the component
 // unmounts.
 export function useNowEveryMinute(): number {
-  const [now, setNow] = useState(() => Date.now())
+  const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
-    const id = setInterval(() => setNow(Date.now()), 60_000)
-    return () => clearInterval(id)
-  }, [])
-  return now
+    const id = setInterval(() => setNow(Date.now()), 60_000);
+    return () => clearInterval(id);
+  }, []);
+  return now;
 }

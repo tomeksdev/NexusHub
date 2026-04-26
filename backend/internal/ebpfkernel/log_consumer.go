@@ -41,7 +41,7 @@ type LogSink interface {
 // one reader; spawning multiple consumers on the same loader would
 // race on the Reader cursor.
 //
-// Run blocks until the context is cancelled or the reader is closed.
+// Run blocks until the context is canceled or the reader is closed.
 // Its error return is nil on clean shutdown (ringbuf.ErrClosed or
 // ctx.Err). Sink errors are logged and counted but not returned —
 // one bad insert can't halt the consumer, or the datapath would back
@@ -84,7 +84,7 @@ func newLogConsumer(reader logReader, resolver ruleResolver, sink LogSink, logge
 // Run pumps the ringbuf. Context cancellation asks the goroutine to
 // exit; it does so by closing the reader which unblocks the pending
 // Read() call with ringbuf.ErrClosed. Run waits for the close-driven
-// exit before returning so callers can synchronise on its return.
+// exit before returning so callers can synchronize on its return.
 func (c *LogConsumer) Run(ctx context.Context) error {
 	// Closer goroutine: translate ctx.Done into a reader close. We
 	// don't select directly on Read because it blocks on the kernel

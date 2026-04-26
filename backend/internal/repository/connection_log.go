@@ -40,9 +40,9 @@ type ConnectionLogEntry struct {
 	RecordedAt    time.Time
 	PeerID        *uuid.UUID
 	InterfaceID   *uuid.UUID
-	SrcIP         netip.Addr  // required
-	DstIP         netip.Addr  // optional: zero Addr => NULL
-	SrcPort       *int        // nil => NULL (non-TCP/UDP or unknown)
+	SrcIP         netip.Addr // required
+	DstIP         netip.Addr // optional: zero Addr => NULL
+	SrcPort       *int       // nil => NULL (non-TCP/UDP or unknown)
 	DstPort       *int
 	Protocol      string // "TCP", "UDP", "ICMP", or "" for NULL
 	BytesIn       int64

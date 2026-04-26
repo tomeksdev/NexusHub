@@ -23,11 +23,11 @@ var configCmd = &cobra.Command{
 // hashed credentials, the second because it's append-only event
 // data, not configuration.
 type ConfigSnapshot struct {
-	ExportedAt time.Time           `json:"exported_at"`
-	Server     string              `json:"server"`
-	Interfaces []client.Interface  `json:"interfaces"`
-	Peers      []client.Peer       `json:"peers"`
-	Rules      []client.Rule       `json:"rules"`
+	ExportedAt time.Time          `json:"exported_at"`
+	Server     string             `json:"server"`
+	Interfaces []client.Interface `json:"interfaces"`
+	Peers      []client.Peer      `json:"peers"`
+	Rules      []client.Rule      `json:"rules"`
 }
 
 var configExportFile string

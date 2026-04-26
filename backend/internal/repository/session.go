@@ -57,7 +57,7 @@ func (r *SessionRepo) CreateSession(
 	if err != nil {
 		return IssueResult{}, fmt.Errorf("begin: %w", err)
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }()
 
 	var sessionID uuid.UUID
 	if err := tx.QueryRow(ctx,
@@ -105,7 +105,7 @@ func (r *SessionRepo) RotateRefreshToken(
 	if err != nil {
 		return uuid.Nil, uuid.Nil, "", IssueResult{}, fmt.Errorf("begin: %w", err)
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }()
 
 	// Lock the row to prevent concurrent rotation races.
 	var (

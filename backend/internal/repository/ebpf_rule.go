@@ -122,8 +122,7 @@ func (r *RuleRepo) Create(ctx context.Context, p CreateRuleParams) (*Rule, error
 		        $8, $9, $10, $11,
 		        $12, $13, $14, $15, $16)
 		RETURNING id, created_at, updated_at`
-	var out Rule
-	out = Rule{
+	out := Rule{
 		Name: p.Name, Description: p.Description,
 		Action: p.Action, Direction: p.Direction, Protocol: p.Protocol,
 		SrcCIDR: p.SrcCIDR, DstCIDR: p.DstCIDR,
@@ -390,9 +389,9 @@ func (r *RuleRepo) scanOne(ctx context.Context, where string, args ...any) (*Rul
 
 func scanRule(s scannable) (*Rule, error) {
 	var (
-		rule       Rule
-		srcStr     *string
-		dstStr     *string
+		rule   Rule
+		srcStr *string
+		dstStr *string
 	)
 	err := s.Scan(
 		&rule.ID, &rule.Name, &rule.Description,

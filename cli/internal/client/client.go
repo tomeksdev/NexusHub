@@ -149,7 +149,7 @@ func (c *Client) Login(email, password, totpCode string) (*LoginResponse, error)
 	return &out, nil
 }
 
-// IsTOTPRequired is true when err came back from Login signalling the
+// IsTOTPRequired is true when err came back from Login signaling the
 // user has 2FA enabled and no code was supplied.
 func IsTOTPRequired(err error) bool {
 	var e *Error
@@ -239,21 +239,21 @@ func (c *Client) DeletePeer(id string) error {
 // Pointer fields distinguish "omit" from "zero" — priority=0 is
 // valid and means lowest priority, not unset.
 type CreateRuleRequest struct {
-	Name        string  `json:"name"`
-	Description string  `json:"description,omitempty"`
-	Action      string  `json:"action"`
-	Direction   string  `json:"direction,omitempty"`
-	Protocol    string  `json:"protocol,omitempty"`
-	SrcCIDR     string  `json:"src_cidr,omitempty"`
-	DstCIDR     string  `json:"dst_cidr,omitempty"`
-	SrcPortFrom *int    `json:"src_port_from,omitempty"`
-	SrcPortTo   *int    `json:"src_port_to,omitempty"`
-	DstPortFrom *int    `json:"dst_port_from,omitempty"`
-	DstPortTo   *int    `json:"dst_port_to,omitempty"`
-	RatePPS     *int    `json:"rate_pps,omitempty"`
-	RateBurst   *int    `json:"rate_burst,omitempty"`
-	Priority    *int    `json:"priority,omitempty"`
-	IsActive    *bool   `json:"is_active,omitempty"`
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
+	Action      string `json:"action"`
+	Direction   string `json:"direction,omitempty"`
+	Protocol    string `json:"protocol,omitempty"`
+	SrcCIDR     string `json:"src_cidr,omitempty"`
+	DstCIDR     string `json:"dst_cidr,omitempty"`
+	SrcPortFrom *int   `json:"src_port_from,omitempty"`
+	SrcPortTo   *int   `json:"src_port_to,omitempty"`
+	DstPortFrom *int   `json:"dst_port_from,omitempty"`
+	DstPortTo   *int   `json:"dst_port_to,omitempty"`
+	RatePPS     *int   `json:"rate_pps,omitempty"`
+	RateBurst   *int   `json:"rate_burst,omitempty"`
+	Priority    *int   `json:"priority,omitempty"`
+	IsActive    *bool  `json:"is_active,omitempty"`
 }
 
 // CreateRule posts a rule. The backend validates enum values and

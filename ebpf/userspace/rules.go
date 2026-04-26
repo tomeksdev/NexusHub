@@ -335,7 +335,7 @@ type LoaderStats struct {
 // on the packet hot path.
 func (l *RulesLoader) Stats() (LoaderStats, error) {
 	if l == nil || l.coll == nil {
-		return LoaderStats{}, errors.New("loader not initialised")
+		return LoaderStats{}, errors.New("loader not initialized")
 	}
 	pairs := []struct {
 		m   *ebpf.Map
@@ -509,7 +509,7 @@ func dropENOENT(err error) error {
 }
 
 // LookupSrcAddr returns the rule_id that a packet from addr would
-// hit via the src LPM map, honouring the longest-prefix-match the
+// hit via the src LPM map, honoring the longest-prefix-match the
 // kernel would perform. Returns (0, false, nil) when no prefix in
 // the trie covers the address. Used by tests and the reconciler's
 // drift-check path — never on the packet-processing hot path.

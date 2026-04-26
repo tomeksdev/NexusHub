@@ -107,7 +107,7 @@ func (e LogEvent) MarshalBinary() ([]byte, error) {
 
 // SrcIP returns the source address as a netip.Addr. For AFInet it
 // reads only the first 4 bytes; for AFInet6 it reads all 16. Returns
-// the zero Addr when the family byte is unrecognised — callers should
+// the zero Addr when the family byte is unrecognized — callers should
 // check with Addr.IsValid() before using.
 func (e LogEvent) SrcIP() netip.Addr {
 	return addrFromBytes(e.Family, e.SrcAddr)
@@ -168,7 +168,7 @@ func (e LogEvent) ActionString() string {
 // LogReader wraps a cilium/ebpf ringbuf.Reader so callers can iterate
 // log events without touching the underlying map. It is *not* safe
 // for concurrent Read — one reader goroutine per reader instance.
-// Close unblocks an in-flight Read by signalling the kernel-side
+// Close unblocks an in-flight Read by signaling the kernel-side
 // epoll waiter, so graceful shutdown is "Close then wait for Read
 // to return ringbuf.ErrClosed".
 type LogReader struct {

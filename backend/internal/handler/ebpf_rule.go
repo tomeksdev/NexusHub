@@ -277,14 +277,10 @@ func (h *RuleHandler) Get(c *gin.Context) {
 }
 
 // updateRuleRequest uses the cleared/set-to/leave-alone trichotomy via
-// JSON null + presence. Fields omitted from the JSON leave the column
-// alone; fields present with null clear the column; fields present
-// with a value overwrite. Gin's binding can't express that directly,
-// so we unmarshal into a map first and translate.
-type updateRuleRequest struct {
-	raw map[string]any
-}
-
+// Update applies a partial change. Fields omitted from the JSON leave
+// the column alone; fields present with null clear the column; fields
+// present with a value overwrite. Gin's binding can't express that
+// directly, so we unmarshal into a map first and translate.
 func (h *RuleHandler) Update(c *gin.Context) {
 	id, err := uuid.Parse(c.Param("id"))
 	if err != nil {
@@ -399,7 +395,7 @@ func (h *RuleHandler) CreateBinding(c *gin.Context) {
 
 	ctx := c.Request.Context()
 	var (
-		b  *repository.RuleBinding
+		b    *repository.RuleBinding
 		bErr error
 	)
 	if setPeer {

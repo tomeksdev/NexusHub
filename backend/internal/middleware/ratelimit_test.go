@@ -99,9 +99,9 @@ func TestRateLimitOnDenyCallback(t *testing.T) {
 		OnDeny: func(c *gin.Context) { calls++ },
 	})
 
-	hit(r, "3.3.3.3")                  // allowed
-	hit(r, "3.3.3.3")                  // denied #1
-	hit(r, "3.3.3.3")                  // denied #2
+	hit(r, "3.3.3.3") // allowed
+	hit(r, "3.3.3.3") // denied #1
+	hit(r, "3.3.3.3") // denied #2
 	if calls != 2 {
 		t.Errorf("OnDeny called %d times, want 2", calls)
 	}

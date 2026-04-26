@@ -84,8 +84,8 @@ func lpmSpec(name string, keySize uint32) *ebpf.MapSpec {
 	}
 }
 
-func ptrU16(v uint16) *uint16     { return &v }
-func ptrU32(v uint32) *uint32     { return &v }
+func ptrU16(v uint16) *uint16 { return &v }
+func ptrU32(v uint32) *uint32 { return &v }
 func ptrPrefix(s string) *netip.Prefix {
 	p := netip.MustParsePrefix(s)
 	return &p
@@ -99,8 +99,8 @@ func TestNewKernelSyncerRejectsNilLoader(t *testing.T) {
 
 func TestActionProtocolDirectionEncoding(t *testing.T) {
 	cases := []struct {
-		action, protocol, direction       string
-		wantA, wantP, wantD               uint8
+		action, protocol, direction string
+		wantA, wantP, wantD         uint8
 	}{
 		{"allow", "any", "ingress", 0, 0, 0},
 		{"deny", "tcp", "egress", 1, 1, 1},
@@ -333,4 +333,3 @@ func TestCloseClearsState(t *testing.T) {
 	// Loader is caller-owned; a second Close on the loader itself
 	// (via t.Cleanup) must still succeed — no double-free.
 }
-

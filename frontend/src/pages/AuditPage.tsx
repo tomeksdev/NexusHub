@@ -1,63 +1,67 @@
-import { useMemo, useState } from 'react'
-import { useQuery } from '@tanstack/react-query'
+import { useMemo, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 
-import { api, type PageEnvelope } from '../lib/api'
+import { api, type PageEnvelope } from "../lib/api";
 
 interface AuditEntry {
-  id: number
-  occurred_at: string
-  actor_user_id?: string | null
-  actor_ip?: string | null
-  actor_ua?: string | null
-  action: string
-  target_type: string
-  target_id?: string | null
-  metadata?: Record<string, unknown>
-  result: 'success' | 'failure' | 'denied'
-  error_message?: string | null
+  id: number;
+  occurred_at: string;
+  actor_user_id?: string | null;
+  actor_ip?: string | null;
+  actor_ua?: string | null;
+  action: string;
+  target_type: string;
+  target_id?: string | null;
+  metadata?: Record<string, unknown>;
+  result: "success" | "failure" | "denied";
+  error_message?: string | null;
 }
 
-const PAGE_SIZE = 50
+const PAGE_SIZE = 50;
 
 interface Filters {
-  action: string
-  result: '' | 'success' | 'failure' | 'denied'
-  since: string // yyyy-mm-ddThh:mm (local, from <input type="datetime-local">)
+  action: string;
+  result: "" | "success" | "failure" | "denied";
+  since: string; // yyyy-mm-ddThh:mm (local, from <input type="datetime-local">)
 }
 
 export function AuditPage() {
-  const [filters, setFilters] = useState<Filters>({ action: '', result: '', since: '' })
-  const [offset, setOffset] = useState(0)
+  const [filters, setFilters] = useState<Filters>({
+    action: "",
+    result: "",
+    since: "",
+  });
+  const [offset, setOffset] = useState(0);
 
   const qs = useMemo(() => {
-    const p = new URLSearchParams()
-    p.set('limit', String(PAGE_SIZE))
-    p.set('offset', String(offset))
-    if (filters.action) p.set('action', filters.action)
-    if (filters.result) p.set('result', filters.result)
+    const p = new URLSearchParams();
+    p.set("limit", String(PAGE_SIZE));
+    p.set("offset", String(offset));
+    if (filters.action) p.set("action", filters.action);
+    if (filters.result) p.set("result", filters.result);
     if (filters.since) {
       // datetime-local produces a naive local string; convert to UTC ISO for the server.
-      const iso = new Date(filters.since).toISOString()
-      p.set('since', iso)
+      const iso = new Date(filters.since).toISOString();
+      p.set("since", iso);
     }
-    return p.toString()
-  }, [filters, offset])
+    return p.toString();
+  }, [filters, offset]);
 
   const { data, isLoading, isError, error } = useQuery({
-    queryKey: ['audit', qs],
+    queryKey: ["audit", qs],
     queryFn: () => api<PageEnvelope<AuditEntry>>(`/api/v1/audit-log?${qs}`),
-  })
+  });
 
-  const items = data?.items ?? []
-  const total = data?.total ?? 0
-  const hasNext = offset + PAGE_SIZE < total
-  const hasPrev = offset > 0
+  const items = data?.items ?? [];
+  const total = data?.total ?? 0;
+  const hasNext = offset + PAGE_SIZE < total;
+  const hasPrev = offset > 0;
 
   function onFilterChange<K extends keyof Filters>(key: K, value: Filters[K]) {
-    setFilters((f) => ({ ...f, [key]: value }))
+    setFilters((f) => ({ ...f, [key]: value }));
     // Filter changes reset pagination — otherwise a client filtered to 3
     // items on page 5 sees an empty table and thinks the app is broken.
-    setOffset(0)
+    setOffset(0);
   }
 
   return (
@@ -72,7 +76,7 @@ export function AuditPage() {
           <label className="text-xs text-slate-400">Action</label>
           <input
             value={filters.action}
-            onChange={(e) => onFilterChange('action', e.target.value)}
+            onChange={(e) => onFilterChange("action", e.target.value)}
             placeholder="e.g. auth.login"
             className="rounded-md bg-slate-800 border border-slate-700 px-2 py-1 text-sm w-48"
           />
@@ -81,7 +85,9 @@ export function AuditPage() {
           <label className="text-xs text-slate-400">Result</label>
           <select
             value={filters.result}
-            onChange={(e) => onFilterChange('result', e.target.value as Filters['result'])}
+            onChange={(e) =>
+              onFilterChange("result", e.target.value as Filters["result"])
+            }
             className="rounded-md bg-slate-800 border border-slate-700 px-2 py-1 text-sm"
           >
             <option value="">any</option>
@@ -95,7 +101,7 @@ export function AuditPage() {
           <input
             type="datetime-local"
             value={filters.since}
-            onChange={(e) => onFilterChange('since', e.target.value)}
+            onChange={(e) => onFilterChange("since", e.target.value)}
             className="rounded-md bg-slate-800 border border-slate-700 px-2 py-1 text-sm"
           />
         </div>
@@ -104,9 +110,13 @@ export function AuditPage() {
       {isLoading ? (
         <p className="text-slate-400 text-sm">Loading…</p>
       ) : isError ? (
-        <p className="text-rose-400 text-sm">Failed to load: {(error as Error).message}</p>
+        <p className="text-rose-400 text-sm">
+          Failed to load: {(error as Error).message}
+        </p>
       ) : items.length === 0 ? (
-        <p className="text-slate-400 text-sm">No entries match the current filters.</p>
+        <p className="text-slate-400 text-sm">
+          No entries match the current filters.
+        </p>
       ) : (
         <div className="overflow-x-auto rounded-lg border border-slate-800">
           <table className="min-w-full text-sm">
@@ -126,19 +136,26 @@ export function AuditPage() {
                   <td className="px-4 py-2 text-slate-400 whitespace-nowrap">
                     {new Date(e.occurred_at).toLocaleString()}
                   </td>
-                  <td className="px-4 py-2 font-mono text-xs text-slate-200">{e.action}</td>
+                  <td className="px-4 py-2 font-mono text-xs text-slate-200">
+                    {e.action}
+                  </td>
                   <td className="px-4 py-2 font-mono text-xs text-slate-400">
                     {e.target_type}
-                    {e.target_id ? <span className="text-slate-500">:{shortID(e.target_id)}</span> : null}
+                    {e.target_id ? (
+                      <span className="text-slate-500">
+                        :{shortID(e.target_id)}
+                      </span>
+                    ) : null}
                   </td>
                   <td className="px-4 py-2 text-slate-400 font-mono text-xs">
-                    {e.actor_ip ?? (e.actor_user_id ? shortID(e.actor_user_id) : '—')}
+                    {e.actor_ip ??
+                      (e.actor_user_id ? shortID(e.actor_user_id) : "—")}
                   </td>
                   <td className="px-4 py-2">
                     <span className={resultBadge(e.result)}>{e.result}</span>
                   </td>
                   <td className="px-4 py-2 text-slate-500 text-xs truncate max-w-[30ch]">
-                    {e.error_message ?? ''}
+                    {e.error_message ?? ""}
                   </td>
                 </tr>
               ))}
@@ -150,7 +167,7 @@ export function AuditPage() {
       <div className="flex items-center justify-between text-sm">
         <span className="text-slate-500">
           {total === 0
-            ? ''
+            ? ""
             : `Showing ${offset + 1}–${Math.min(offset + items.length, total)} of ${total}`}
         </span>
         <div className="flex gap-2">
@@ -171,16 +188,16 @@ export function AuditPage() {
         </div>
       </div>
     </div>
-  )
+  );
 }
 
 function resultBadge(r: string): string {
-  const base = 'inline-flex px-2 py-0.5 rounded-full text-xs '
-  if (r === 'success') return base + 'bg-emerald-900/40 text-emerald-400'
-  if (r === 'failure') return base + 'bg-rose-900/40 text-rose-400'
-  return base + 'bg-amber-900/40 text-amber-400'
+  const base = "inline-flex px-2 py-0.5 rounded-full text-xs ";
+  if (r === "success") return base + "bg-emerald-900/40 text-emerald-400";
+  if (r === "failure") return base + "bg-rose-900/40 text-rose-400";
+  return base + "bg-amber-900/40 text-amber-400";
 }
 
 function shortID(id: string): string {
-  return id.length > 8 ? id.slice(0, 8) : id
+  return id.length > 8 ? id.slice(0, 8) : id;
 }

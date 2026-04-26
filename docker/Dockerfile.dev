@@ -2,9 +2,14 @@ FROM golang:1.22-bookworm
 RUN apt-get update && apt-get install -y --no-install-recommends \
     wireguard-tools iproute2 iptables clang llvm libbpf-dev \
     && rm -rf /var/lib/apt/lists/*
-RUN go install github.com/air-verse/air@latest
+# Pin air to the last release that supports Go 1.22 — newer air versions
+# require Go 1.25+ and the project pins to 1.22 per backend/go.mod.
+RUN go install github.com/air-verse/air@v1.52.3
 WORKDIR /app
-COPY backend/go.mod backend/go.sum ./
-RUN go mod download
+# Source is bind-mounted at runtime via docker-compose.dev.yml
+# (backend → /app). air handles `go mod download` on first build inside
+# the running container, so we don't pre-fetch here — backend's go.mod
+# uses `replace ../ebpf` which would need a multi-module copy that the
+# dev image doesn't really benefit from.
 EXPOSE 8080
 CMD ["air", "-c", ".air.toml"]

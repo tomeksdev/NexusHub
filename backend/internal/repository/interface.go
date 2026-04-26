@@ -44,7 +44,7 @@ type Interface struct {
 }
 
 // CreateInterfaceParams is the write-side input. Address takes a prefix so
-// callers must commit to the netmask up front; we don't synthesise one.
+// callers must commit to the netmask up front; we don't synthesize one.
 type CreateInterfaceParams struct {
 	Name       string
 	ListenPort int

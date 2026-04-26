@@ -1,17 +1,23 @@
 # Stage 1: Build Go backend
 FROM golang:1.22-bookworm AS go-builder
 WORKDIR /build
+# backend/go.mod has `replace github.com/tomeksdev/NexusHub/ebpf => ../ebpf`,
+# so go mod download needs ebpf/go.mod present too. Copy module manifests
+# for both modules first to maximize layer caching, then the sources.
 COPY backend/go.mod backend/go.sum ./backend/
+COPY ebpf/go.mod ebpf/go.sum ./ebpf/
 RUN cd backend && go mod download
 COPY backend/ ./backend/
+COPY ebpf/ ./ebpf/
 # Three binaries ship in the runtime image:
 #   /nexushub       — the API server (default entrypoint)
 #   /nexushub-migrate — the migration runner (Helm pre-install hook)
 #   /nexushub-seed  — the first-admin seeder (one-shot)
 # Sharing one build stage lets them reuse the module download cache.
-RUN cd backend && CGO_ENABLED=0 go build -ldflags="-s -w" -o /nexushub         ./cmd/api/ \
- && cd backend && CGO_ENABLED=0 go build -ldflags="-s -w" -o /nexushub-migrate ./cmd/migrate/ \
- && cd backend && CGO_ENABLED=0 go build -ldflags="-s -w" -o /nexushub-seed    ./cmd/seed/
+WORKDIR /build/backend
+RUN CGO_ENABLED=0 go build -ldflags="-s -w" -o /nexushub         ./cmd/api/ \
+ && CGO_ENABLED=0 go build -ldflags="-s -w" -o /nexushub-migrate ./cmd/migrate/ \
+ && CGO_ENABLED=0 go build -ldflags="-s -w" -o /nexushub-seed    ./cmd/seed/
 
 # Stage 2: Build frontend
 FROM node:20-bookworm-slim AS node-builder

@@ -42,10 +42,10 @@ const DefaultLimit = 50
 // the client didn't request a sort, in which case handlers fall back to
 // their own default ordering.
 type Params struct {
-	Limit      int
-	Offset     int
-	SortField  string
-	SortDesc   bool
+	Limit     int
+	Offset    int
+	SortField string
+	SortDesc  bool
 }
 
 // Parse pulls limit/offset/sort from the gin query string and clamps them

@@ -1,6 +1,6 @@
-import { useEffect, useId, useRef, type ReactNode } from 'react'
+import { useEffect, useId, useRef, type ReactNode } from "react";
 
-import { useEscapeKey } from '../lib/hooks'
+import { useEscapeKey } from "../lib/hooks";
 
 // Modal is the app's single dialog wrapper. It owns the a11y
 // scaffolding (role=dialog, aria-modal, aria-labelledby), Escape-to-
@@ -14,15 +14,15 @@ import { useEscapeKey } from '../lib/hooks'
 // this surface warrants. Most keyboard users stay within the form
 // anyway; the Escape binding covers the main escape hatch.
 interface ModalProps {
-  title: string
-  onClose: () => void
-  children: ReactNode
+  title: string;
+  onClose: () => void;
+  children: ReactNode;
   // Optional aria-describedby content; when present it renders as a
   // subtitle and is linked via aria-describedby for screen readers.
-  description?: string
+  description?: string;
   // Controls max width; defaults to 2xl. Options keep Tailwind-y so
   // future modals can go wider without touching the wrapper.
-  maxWidthClass?: string
+  maxWidthClass?: string;
 }
 
 export function Modal({
@@ -30,27 +30,27 @@ export function Modal({
   onClose,
   children,
   description,
-  maxWidthClass = 'max-w-2xl',
+  maxWidthClass = "max-w-2xl",
 }: ModalProps) {
-  const titleId = useId()
-  const descId = useId()
-  const contentRef = useRef<HTMLDivElement>(null)
+  const titleId = useId();
+  const descId = useId();
+  const contentRef = useRef<HTMLDivElement>(null);
 
-  useEscapeKey(onClose)
+  useEscapeKey(onClose);
 
   useEffect(() => {
     // Move initial focus into the dialog so screen readers announce
     // the title on open and keyboard users don't start in the
     // backdrop. We target the dialog container itself; the form's
     // autoFocus on the first input (when present) will take over.
-    contentRef.current?.focus()
-  }, [])
+    contentRef.current?.focus();
+  }, []);
 
   return (
     <div
       className="fixed inset-0 bg-slate-950/70 flex items-center justify-center p-4 z-50"
       onClick={(e) => {
-        if (e.target === e.currentTarget) onClose()
+        if (e.target === e.currentTarget) onClose();
       }}
     >
       <div
@@ -87,5 +87,5 @@ export function Modal({
         </div>
       </div>
     </div>
-  )
+  );
 }

@@ -1,52 +1,54 @@
-import { useState } from 'react'
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { QRCodeSVG } from 'qrcode.react'
+import { useState } from "react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { QRCodeSVG } from "qrcode.react";
 
-import { Modal } from '../components/Modal'
-import { ApiError, api, type PageEnvelope } from '../lib/api'
-import { useAuth } from '../lib/auth'
+import { Modal } from "../components/Modal";
+import { ApiError, api, type PageEnvelope } from "../lib/api";
+import { useAuth } from "../lib/auth";
 
 // The admin user list already carries totp_enabled per user. We reuse
 // that endpoint to find the current user's flag rather than adding a
 // dedicated /auth/whoami call — the list is small and the cache is
 // shared with UsersPage.
 interface UserRow {
-  id: string
-  email: string
-  totp_enabled: boolean
+  id: string;
+  email: string;
+  totp_enabled: boolean;
 }
 
 interface EnrollResponse {
-  secret: string
-  otpauth_uri: string
-  account_name: string
+  secret: string;
+  otpauth_uri: string;
+  account_name: string;
 }
 
 export function SecurityPage() {
-  const { email } = useAuth()
-  const qc = useQueryClient()
-  const [enrollData, setEnrollData] = useState<EnrollResponse | null>(null)
-  const [showDisable, setShowDisable] = useState(false)
+  const { email } = useAuth();
+  const qc = useQueryClient();
+  const [enrollData, setEnrollData] = useState<EnrollResponse | null>(null);
+  const [showDisable, setShowDisable] = useState(false);
 
   const { data: users } = useQuery({
-    queryKey: ['users'],
-    queryFn: () => api<PageEnvelope<UserRow>>('/api/v1/users?limit=100'),
-  })
+    queryKey: ["users"],
+    queryFn: () => api<PageEnvelope<UserRow>>("/api/v1/users?limit=100"),
+  });
   // Match by email — the principal's user_id isn't on the auth ctx
   // today, and adding a /me endpoint just for this screen would be
   // scope creep.
-  const me = users?.items.find((u) => u.email.toLowerCase() === email?.toLowerCase())
-  const totpEnabled = me?.totp_enabled ?? false
+  const me = users?.items.find(
+    (u) => u.email.toLowerCase() === email?.toLowerCase(),
+  );
+  const totpEnabled = me?.totp_enabled ?? false;
 
   const startEnroll = useMutation<EnrollResponse, ApiError>({
     mutationFn: () =>
-      api<EnrollResponse>('/api/v1/auth/totp/enroll', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+      api<EnrollResponse>("/api/v1/auth/totp/enroll", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({}),
       }),
     onSuccess: (data) => setEnrollData(data),
-  })
+  });
 
   return (
     <div className="p-6 space-y-6 max-w-2xl">
@@ -63,8 +65,8 @@ export function SecurityPage() {
             <h2 className="font-medium">Two-factor authentication</h2>
             <p className="text-xs text-slate-500 mt-0.5">
               {totpEnabled
-                ? 'Your account requires a 6-digit code at sign-in.'
-                : 'Protect your account with a time-based one-time password.'}
+                ? "Your account requires a 6-digit code at sign-in."
+                : "Protect your account with a time-based one-time password."}
             </p>
           </div>
           {totpEnabled ? (
@@ -91,12 +93,14 @@ export function SecurityPage() {
             disabled={startEnroll.isPending}
             className="px-3 py-1.5 rounded-md text-sm bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 focus-visible:outline-2 focus-visible:outline-indigo-400 focus-visible:outline-offset-2"
           >
-            {startEnroll.isPending ? 'Starting…' : 'Enable 2FA'}
+            {startEnroll.isPending ? "Starting…" : "Enable 2FA"}
           </button>
         )}
 
         {startEnroll.isError && (
-          <p className="text-sm text-rose-400">{(startEnroll.error as Error).message}</p>
+          <p className="text-sm text-rose-400">
+            {(startEnroll.error as Error).message}
+          </p>
         )}
       </section>
 
@@ -105,8 +109,8 @@ export function SecurityPage() {
           data={enrollData}
           onClose={() => setEnrollData(null)}
           onVerified={() => {
-            setEnrollData(null)
-            qc.invalidateQueries({ queryKey: ['users'] })
+            setEnrollData(null);
+            qc.invalidateQueries({ queryKey: ["users"] });
           }}
         />
       )}
@@ -115,13 +119,13 @@ export function SecurityPage() {
         <DisableModal
           onClose={() => setShowDisable(false)}
           onDisabled={() => {
-            setShowDisable(false)
-            qc.invalidateQueries({ queryKey: ['users'] })
+            setShowDisable(false);
+            qc.invalidateQueries({ queryKey: ["users"] });
           }}
         />
       )}
     </div>
-  )
+  );
 }
 
 function EnrollModal({
@@ -129,20 +133,20 @@ function EnrollModal({
   onClose,
   onVerified,
 }: {
-  data: EnrollResponse
-  onClose: () => void
-  onVerified: () => void
+  data: EnrollResponse;
+  onClose: () => void;
+  onVerified: () => void;
 }) {
-  const [code, setCode] = useState('')
+  const [code, setCode] = useState("");
   const verify = useMutation<void, ApiError>({
     mutationFn: () =>
-      api('/api/v1/auth/totp/verify', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+      api("/api/v1/auth/totp/verify", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ code }),
       }).then(() => undefined),
     onSuccess: onVerified,
-  })
+  });
 
   return (
     <Modal
@@ -152,7 +156,9 @@ function EnrollModal({
       maxWidthClass="max-w-lg"
     >
       <ol className="list-decimal list-inside text-sm text-slate-300 space-y-2">
-        <li>Scan the QR code (or enter the secret) in your authenticator app.</li>
+        <li>
+          Scan the QR code (or enter the secret) in your authenticator app.
+        </li>
         <li>Enter the 6-digit code the app displays to confirm.</li>
       </ol>
 
@@ -161,15 +167,19 @@ function EnrollModal({
           <QRCodeSVG value={data.otpauth_uri} size={180} />
         </div>
         <div className="text-center">
-          <p className="text-xs text-slate-500">Or enter this secret manually:</p>
-          <code className="text-xs font-mono text-slate-300 break-all">{data.secret}</code>
+          <p className="text-xs text-slate-500">
+            Or enter this secret manually:
+          </p>
+          <code className="text-xs font-mono text-slate-300 break-all">
+            {data.secret}
+          </code>
         </div>
       </div>
 
       <form
         onSubmit={(e) => {
-          e.preventDefault()
-          verify.mutate()
+          e.preventDefault();
+          verify.mutate();
         }}
         className="space-y-3"
       >
@@ -185,13 +195,13 @@ function EnrollModal({
           maxLength={6}
           required
           value={code}
-          onChange={(e) => setCode(e.target.value.replace(/\D/g, ''))}
+          onChange={(e) => setCode(e.target.value.replace(/\D/g, ""))}
           className="w-full px-3 py-1.5 rounded-md bg-slate-950 border border-slate-800 text-lg tracking-[0.5em] text-center font-mono focus-visible:outline-2 focus-visible:outline-indigo-500 focus-visible:outline-offset-1 focus:border-indigo-500"
         />
         {verify.isError && (
           <p className="text-sm text-rose-400">
-            {(verify.error as ApiError).code === 'TOTP_INVALID'
-              ? 'Code incorrect — try again.'
+            {(verify.error as ApiError).code === "TOTP_INVALID"
+              ? "Code incorrect — try again."
               : (verify.error as Error).message}
           </p>
         )}
@@ -208,32 +218,32 @@ function EnrollModal({
             disabled={verify.isPending || code.length !== 6}
             className="px-4 py-2 rounded-md text-sm bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 focus-visible:outline-2 focus-visible:outline-indigo-400 focus-visible:outline-offset-2"
           >
-            {verify.isPending ? 'Verifying…' : 'Enable'}
+            {verify.isPending ? "Verifying…" : "Enable"}
           </button>
         </div>
       </form>
     </Modal>
-  )
+  );
 }
 
 function DisableModal({
   onClose,
   onDisabled,
 }: {
-  onClose: () => void
-  onDisabled: () => void
+  onClose: () => void;
+  onDisabled: () => void;
 }) {
-  const [password, setPassword] = useState('')
-  const [code, setCode] = useState('')
+  const [password, setPassword] = useState("");
+  const [code, setCode] = useState("");
   const disable = useMutation<void, ApiError>({
     mutationFn: () =>
-      api('/api/v1/auth/totp/disable', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+      api("/api/v1/auth/totp/disable", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ password, code }),
       }).then(() => undefined),
     onSuccess: onDisabled,
-  })
+  });
 
   return (
     <Modal
@@ -244,13 +254,16 @@ function DisableModal({
     >
       <form
         onSubmit={(e) => {
-          e.preventDefault()
-          disable.mutate()
+          e.preventDefault();
+          disable.mutate();
         }}
         className="space-y-3"
       >
         <div>
-          <label htmlFor="disable-pw" className="block text-xs text-slate-400 mb-1">
+          <label
+            htmlFor="disable-pw"
+            className="block text-xs text-slate-400 mb-1"
+          >
             Password
           </label>
           <input
@@ -264,7 +277,10 @@ function DisableModal({
           />
         </div>
         <div>
-          <label htmlFor="disable-code" className="block text-xs text-slate-400 mb-1">
+          <label
+            htmlFor="disable-code"
+            className="block text-xs text-slate-400 mb-1"
+          >
             Authenticator code
           </label>
           <input
@@ -276,12 +292,14 @@ function DisableModal({
             maxLength={6}
             required
             value={code}
-            onChange={(e) => setCode(e.target.value.replace(/\D/g, ''))}
+            onChange={(e) => setCode(e.target.value.replace(/\D/g, ""))}
             className="w-full px-3 py-1.5 rounded-md bg-slate-950 border border-slate-800 text-lg tracking-[0.5em] text-center font-mono focus-visible:outline-2 focus-visible:outline-indigo-500 focus-visible:outline-offset-1 focus:border-indigo-500"
           />
         </div>
         {disable.isError && (
-          <p className="text-sm text-rose-400">{(disable.error as Error).message}</p>
+          <p className="text-sm text-rose-400">
+            {(disable.error as Error).message}
+          </p>
         )}
         <div className="flex justify-end gap-2">
           <button
@@ -296,10 +314,10 @@ function DisableModal({
             disabled={disable.isPending || !password || code.length !== 6}
             className="px-4 py-2 rounded-md text-sm bg-rose-700 hover:bg-rose-600 disabled:opacity-50 focus-visible:outline-2 focus-visible:outline-rose-400 focus-visible:outline-offset-2"
           >
-            {disable.isPending ? 'Disabling…' : 'Disable'}
+            {disable.isPending ? "Disabling…" : "Disable"}
           </button>
         </div>
       </form>
     </Modal>
-  )
+  );
 }

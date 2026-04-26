@@ -23,11 +23,11 @@ func TestParseDefaults(t *testing.T) {
 
 func TestParseClampLimit(t *testing.T) {
 	cases := map[string]int{
-		"limit=0":    1,
-		"limit=-5":   1,
-		"limit=500":  MaxLimit,
-		"limit=50":   50,
-		"limit=abc":  DefaultLimit,
+		"limit=0":   1,
+		"limit=-5":  1,
+		"limit=500": MaxLimit,
+		"limit=50":  50,
+		"limit=abc": DefaultLimit,
 	}
 	for q, want := range cases {
 		if got := Parse(ginCtx(q)).Limit; got != want {

@@ -86,7 +86,7 @@ func TestDecodePublicKey(t *testing.T) {
 	for _, bad := range []string{
 		"",
 		"too-short",
-		strings.Repeat("A", 44),       // decodes fine but not to 32 bytes? actually 'AAAA...A' padded — check shape only
+		strings.Repeat("A", 44), // decodes fine but not to 32 bytes? actually 'AAAA...A' padded — check shape only
 		"!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!=",
 	} {
 		if _, err := wg.DecodePublicKey(bad); err == nil && bad != strings.Repeat("A", 44) {

@@ -40,14 +40,14 @@ type Device struct {
 
 // Peer is our transport-agnostic peer view.
 type Peer struct {
-	PublicKey         string
-	PresharedKey      []byte // may be nil
-	Endpoint          string
-	AllowedIPs        []netip.Prefix
+	PublicKey           string
+	PresharedKey        []byte // may be nil
+	Endpoint            string
+	AllowedIPs          []netip.Prefix
 	PersistentKeepAlive time.Duration
-	LastHandshake     time.Time
-	RxBytes           int64
-	TxBytes           int64
+	LastHandshake       time.Time
+	RxBytes             int64
+	TxBytes             int64
 }
 
 // Config is the small subset of wgtypes.Config we ever need to write.
@@ -61,13 +61,13 @@ type Config struct {
 }
 
 type PeerConfig struct {
-	PublicKey         string
-	PresharedKey      []byte
-	Endpoint          string
-	AllowedIPs        []netip.Prefix
+	PublicKey           string
+	PresharedKey        []byte
+	Endpoint            string
+	AllowedIPs          []netip.Prefix
 	PersistentKeepAlive *time.Duration
-	Remove            bool
-	Replace           bool
+	Remove              bool
+	Replace             bool
 }
 
 // ----- Kernel-backed client ------------------------------------------------

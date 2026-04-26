@@ -195,7 +195,7 @@ var ruleToggleCmd = &cobra.Command{
 	Use:   "toggle <rule-id>",
 	Short: "Flip a rule's is_active flag",
 	Long: `Reads the rule's current is_active and PATCHes it to the
-opposite value. Useful during incident response: `+"`nexushub rule toggle <id>`"+`
+opposite value. Useful during incident response: ` + "`nexushub rule toggle <id>`" + `
 is the fastest way to disable a rule without deleting it.`,
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {

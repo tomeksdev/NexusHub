@@ -43,7 +43,7 @@ func runPeerList(cmd *cobra.Command, _ []string) error {
 
 	// The /peers endpoint requires interface_id. Auto-resolve to the
 	// first interface when the flag is absent — matches the frontend's
-	// default behaviour and keeps `nexushub peer list` usable on
+	// default behavior and keeps `nexushub peer list` usable on
 	// single-interface deployments without extra flags.
 	ifaceID := peerListIface
 	if ifaceID == "" {

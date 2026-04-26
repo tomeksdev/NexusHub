@@ -12,20 +12,20 @@
 // fallback (English). Once a user picks a language the choice is
 // remembered across reloads via localStorage.
 
-import i18next from 'i18next'
-import LanguageDetector from 'i18next-browser-languagedetector'
-import { initReactI18next } from 'react-i18next'
+import i18next from "i18next";
+import LanguageDetector from "i18next-browser-languagedetector";
+import { initReactI18next } from "react-i18next";
 
-import en from './locales/en.json'
-import pl from './locales/pl.json'
+import en from "./locales/en.json";
+import pl from "./locales/pl.json";
 
-export const LANGUAGES = ['en', 'pl'] as const
-export type Language = (typeof LANGUAGES)[number]
+export const LANGUAGES = ["en", "pl"] as const;
+export type Language = (typeof LANGUAGES)[number];
 
 export const LANGUAGE_LABELS: Record<Language, string> = {
-  en: 'English',
-  pl: 'Polski',
-}
+  en: "English",
+  pl: "Polski",
+};
 
 void i18next
   .use(LanguageDetector)
@@ -35,14 +35,14 @@ void i18next
       en: { translation: en },
       pl: { translation: pl },
     },
-    fallbackLng: 'en',
+    fallbackLng: "en",
     supportedLngs: LANGUAGES,
     interpolation: { escapeValue: false }, // React already escapes.
     detection: {
-      order: ['localStorage', 'navigator'],
-      lookupLocalStorage: 'nexushub.lang',
-      caches: ['localStorage'],
+      order: ["localStorage", "navigator"],
+      lookupLocalStorage: "nexushub.lang",
+      caches: ["localStorage"],
     },
-  })
+  });
 
-export default i18next
+export default i18next;

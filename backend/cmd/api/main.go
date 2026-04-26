@@ -111,7 +111,7 @@ func run() error {
 		slog.Warn("wgctrl unavailable — running DB-only", "err", werr)
 	} else {
 		wgClient = kc
-		defer kc.Close()
+		defer func() { _ = kc.Close() }()
 		mode := wg.DetectMode(kc, "")
 		slog.Info("wireguard mode detected", "mode", string(mode))
 

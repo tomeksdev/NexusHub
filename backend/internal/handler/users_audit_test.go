@@ -130,7 +130,7 @@ func TestListAuditIsNewestFirstByDefault(t *testing.T) {
 		t.Fatalf("expected >= 3 audit rows, got %d", resp.Total)
 	}
 	// The three seeded rows must appear in reverse insertion order — this
-	// is the "newest first" default behaviour the audit viewer depends on.
+	// is the "newest first" default behavior the audit viewer depends on.
 	var seenOrder []string
 	for _, it := range resp.Items {
 		if it.Action == "test.one" || it.Action == "test.two" || it.Action == "test.three" {

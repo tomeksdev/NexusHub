@@ -12,13 +12,13 @@ func TestTruncate(t *testing.T) {
 		n    int
 		want string
 	}{
-		"under":  {"hello", 10, "hello"},
-		"exact":  {"hello", 5, "hello"},
-		"over":   {"hello world", 6, "hello…"},
-		"oneN":   {"hello", 1, "h"},
-		"zeroN":  {"hello", 0, "hello"},
-		"runes":  {"café", 3, "ca…"},
-		"empty":  {"", 5, ""},
+		"under": {"hello", 10, "hello"},
+		"exact": {"hello", 5, "hello"},
+		"over":  {"hello world", 6, "hello…"},
+		"oneN":  {"hello", 1, "h"},
+		"zeroN": {"hello", 0, "hello"},
+		"runes": {"café", 3, "ca…"},
+		"empty": {"", 5, ""},
 	}
 	for name, c := range cases {
 		t.Run(name, func(t *testing.T) {

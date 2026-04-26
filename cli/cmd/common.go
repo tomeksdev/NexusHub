@@ -9,7 +9,7 @@ import (
 
 // clientFromFlags loads the config file and constructs an authenticated
 // client. Every subcommand that talks to the API calls this; keeping it
-// centralised means a fix to the auth-header flow lands everywhere.
+// centralized means a fix to the auth-header flow lands everywhere.
 func clientFromFlags(_ *cobra.Command) (*client.Client, *config.File, error) {
 	path, err := config.Path(flagConfig)
 	if err != nil {

@@ -67,22 +67,22 @@ type Syncer interface {
 // the kernel path). Every method returns nil.
 type NoopSyncer struct{}
 
-func (NoopSyncer) Apply(context.Context, Rule) error             { return nil }
-func (NoopSyncer) Delete(context.Context, uuid.UUID) error       { return nil }
-func (NoopSyncer) Reconcile(context.Context, []Rule) error       { return nil }
-func (NoopSyncer) Close() error                                  { return nil }
+func (NoopSyncer) Apply(context.Context, Rule) error       { return nil }
+func (NoopSyncer) Delete(context.Context, uuid.UUID) error { return nil }
+func (NoopSyncer) Reconcile(context.Context, []Rule) error { return nil }
+func (NoopSyncer) Close() error                            { return nil }
 
 // FakeSyncer records calls in memory. Tests inspect the recorded
 // slice to assert handlers invoked the syncer in lockstep with DB
 // writes. Safe for concurrent use.
 type FakeSyncer struct {
-	mu            sync.Mutex
-	Applied       []Rule
-	Deleted       []uuid.UUID
-	Reconciled    [][]Rule
-	ApplyErr      error
-	DeleteErr     error
-	ReconcileErr  error
+	mu           sync.Mutex
+	Applied      []Rule
+	Deleted      []uuid.UUID
+	Reconciled   [][]Rule
+	ApplyErr     error
+	DeleteErr    error
+	ReconcileErr error
 }
 
 func (f *FakeSyncer) Apply(_ context.Context, r Rule) error {

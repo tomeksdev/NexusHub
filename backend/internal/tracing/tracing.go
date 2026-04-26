@@ -10,15 +10,16 @@
 //     packages can create spans without re-importing otel.
 //
 // Env contract:
-//   OTEL_EXPORTER_OTLP_ENDPOINT — target for OTLP/gRPC (e.g.
-//     "otel-collector:4317"). Empty disables tracing entirely.
-//   OTEL_SERVICE_NAME           — service.name resource attribute;
-//     defaults to "nexushub".
-//   OTEL_TRACES_SAMPLER_ARG     — float 0..1 ratio for TraceIDRatio
-//     sampler; defaults to 1.0 (trace everything — suitable for
-//     staging/dev, operators should lower for production).
-//   OTEL_EXPORTER_OTLP_INSECURE — "true" to disable TLS on the
-//     exporter connection; defaults to secure.
+//
+//	OTEL_EXPORTER_OTLP_ENDPOINT — target for OTLP/gRPC (e.g.
+//	  "otel-collector:4317"). Empty disables tracing entirely.
+//	OTEL_SERVICE_NAME           — service.name resource attribute;
+//	  defaults to "nexushub".
+//	OTEL_TRACES_SAMPLER_ARG     — float 0..1 ratio for TraceIDRatio
+//	  sampler; defaults to 1.0 (trace everything — suitable for
+//	  staging/dev, operators should lower for production).
+//	OTEL_EXPORTER_OTLP_INSECURE — "true" to disable TLS on the
+//	  exporter connection; defaults to secure.
 package tracing
 
 import (
