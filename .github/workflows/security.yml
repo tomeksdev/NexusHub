@@ -59,7 +59,7 @@ jobs:
       - uses: actions/checkout@v6
 
       - name: Trivy FS scan
-        uses: aquasecurity/trivy-action@0.24.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           scan-type: fs
           scan-ref: .
@@ -93,7 +93,7 @@ jobs:
           tags: nexushub:scan
 
       - name: Trivy image scan
-        uses: aquasecurity/trivy-action@0.24.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: nexushub:scan
           format: sarif
