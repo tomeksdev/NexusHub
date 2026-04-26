@@ -109,6 +109,13 @@ build: backend-build cli-build frontend-build ## Build every deployable artifact
 lint: backend-lint frontend-lint ## Lint everything
 	cd frontend && npx tsc --noEmit
 
+# ---- Docs -----------------------------------------------------------------
+
+.PHONY: api-docs
+api-docs: ## Lint OpenAPI + render docs/api/index.html via redocly
+	redocly lint backend/internal/openapi/openapi.yaml
+	redocly build-docs backend/internal/openapi/openapi.yaml -o docs/api/index.html
+
 # ---- Docker ---------------------------------------------------------------
 
 .PHONY: docker-up

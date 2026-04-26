@@ -178,11 +178,11 @@ Phases are sequential in priority but work can overlap where dependencies allow.
 
 ## Phase 12 — Docs, release, launch
 
-- [ ] User guide: install, first peer, eBPF rules, backup (`docs/user-guide/`)
-- [ ] API reference generated from OpenAPI (`docs/api/`)
-- [ ] Deployment guide: Docker, bare-metal, k8s (`docs/deployment/`)
+- [x] User guide: install, first peer, eBPF rules, backup (`docs/user-guide/`) (2026-04-25) <!-- completed 2026-04-25: docs/user-guide/README.md — single comprehensive admin guide. Sections: first login + seeded password rotation, creating a WireGuard interface, adding peers (UI + CLI patterns), eBPF rules with worked examples (block-scanner deny, ICMP rate-limit, log-only SSH), TOTP enrollment + recovery story, audit log + observability pointers, backup/restore short version with link to the deep doc. -->
+- [x] API reference generated from OpenAPI (`docs/api/`) (2026-04-25) <!-- completed 2026-04-25: docs/api/index.html rendered via redocly build-docs from backend/internal/openapi/openapi.yaml (286 KiB single-file HTML, no external deps). Spec downgraded to OpenAPI 3.0.3 since no 3.1-only features were used (`nullable: true` and `const:` were the lint trips); `const: ok` on /health rewritten as `enum: [ok]`. Makefile gains `make api-docs` running `redocly lint` + `redocly build-docs`. docs/api/README.md updated to point at index.html and the embedded /api/v1/openapi.yaml endpoint. -->
+- [x] Deployment guide: Docker, bare-metal, k8s (`docs/deployment/`) (2026-04-25) <!-- completed 2026-04-25: docs/deployment/README.md is the new top-level deployment index — three-shape table (compose / bare-metal / Helm) with prerequisites, step-by-step install commands per shape, and links to the day-2 runbooks (backup-restore.md, observability.md, load-testing.md). Old observability-only README renamed to docs/deployment/observability.md and linked from the index. -->
 - [ ] Screenshots for README (`docs/assets/screenshots/`)
-- [ ] Migration guide from v1.0.0 Python WebGUI
+- [x] Migration guide from v1.0.0 Python WebGUI (2026-04-25) <!-- completed 2026-04-25: docs/migration-from-v1.md walks the operator through plan / export / import / cutover / decommission. Highlights what's incompatible (v1 used flat-file state + Python + HTTP basic; v2 uses Postgres + Go + JWT+TOTP), the manual import path until `nexushub config import` lands, and the rollback story (keep v1 reachable on a snapshot for a week). -->
 - [ ] Changelog via release-please
 - [ ] `v2.0.0` tag → docker-publish workflow pushes images
 - [ ] Announce: README badges updated, GitHub release notes, blog/socials
