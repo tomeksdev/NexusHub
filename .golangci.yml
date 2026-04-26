@@ -1,32 +1,38 @@
+version: "2"
+
 run:
   go: '1.22'
   timeout: 5m
 
 linters:
-  disable-all: true
+  default: none
   enable:
     - errcheck
     - govet
     - staticcheck
     - unused
-    - gosimple
     - ineffassign
     - misspell
+  settings:
+    misspell:
+      locale: US
+  exclusions:
+    rules:
+      - path: _test\.go
+        linters:
+          - errcheck
+          - gosec
+          - unused
+
+formatters:
+  enable:
     - gofmt
     - goimports
-
-linters-settings:
-  goimports:
-    local-prefixes: github.com/tomeksdev/wireguard-install-with-gui
-  misspell:
-    locale: US
+  settings:
+    goimports:
+      local-prefixes:
+        - github.com/tomeksdev/wireguard-install-with-gui
 
 issues:
-  exclude-rules:
-    - path: _test\.go
-      linters:
-        - errcheck
-        - gosec
-        - unused
   max-issues-per-linter: 0
   max-same-issues: 0
