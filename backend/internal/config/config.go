@@ -38,6 +38,14 @@ type Config struct {
 
 	// Master key used to encrypt wg_peers.private_key at rest. 32 bytes, base64.
 	PeerKeyEncryptionKey string `envconfig:"PEER_KEY_ENCRYPTION_KEY" required:"true"`
+
+	// AuditRetentionDays controls the age cutoff for the audit_log
+	// retention loop. 0 disables pruning entirely (useful for testing,
+	// or when compliance demands indefinite retention handled out of
+	// band). 90 days is the default — long enough for most incident
+	// investigations, short enough that the table stays scanable.
+	AuditRetentionDays int           `envconfig:"AUDIT_RETENTION_DAYS" default:"90"`
+	AuditRetentionScan time.Duration `envconfig:"AUDIT_RETENTION_SCAN" default:"1h"`
 }
 
 func Load() (*Config, error) {

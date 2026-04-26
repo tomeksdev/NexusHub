@@ -1,0 +1,62 @@
+{{- if .Values.migrations.enabled }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  # Use -migrate-<revision>-<commit-ish> as the suffix so each
+  # install + upgrade creates a fresh Job (Jobs are immutable and
+  # reusing a name conflicts). Helm's .Release.Revision is the
+  # monotonic counter we want.
+  name: {{ include "nexushub.fullname" . }}-migrate-{{ .Release.Revision }}
+  labels:
+    {{- include "nexushub.labels" . | nindent 4 }}
+    app.kubernetes.io/component: migrate
+  annotations:
+    # Run before the Deployment comes up, both on first install and
+    # every upgrade. Weight < 0 so this runs before any other
+    # install/upgrade hook (there aren't any today, but kept for
+    # composability with child charts).
+    helm.sh/hook: pre-install,pre-upgrade
+    helm.sh/hook-weight: "-5"
+    # Keep a small history of succeeded jobs so operators can cd
+    # into a failed one's logs. helm's default keeps all which
+    # eventually noise-floors the namespace.
+    helm.sh/hook-delete-policy: before-hook-creation
+spec:
+  backoffLimit: 2
+  activeDeadlineSeconds: {{ .Values.migrations.activeDeadlineSeconds }}
+  template:
+    metadata:
+      labels:
+        {{- include "nexushub.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: migrate
+    spec:
+      restartPolicy: Never
+      serviceAccountName: {{ include "nexushub.serviceAccountName" . }}
+      securityContext: {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: migrate
+          image: {{ include "nexushub.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          # docker/Dockerfile ships /app/nexushub-migrate next to the
+          # API binary. With WORKDIR=/app the default migrations
+          # path "./migrations" resolves to /app/migrations.
+          command: [/app/nexushub-migrate]
+          args: [up]
+          workingDir: /app
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "nexushub.postgresSecretName" . }}
+                  key: {{ .Values.postgres.urlKey }}
+          securityContext: {{- toYaml .Values.containerSecurityContext | nindent 12 }}
+          resources: {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir:
+            medium: Memory
+            sizeLimit: 16Mi
+{{- end }}

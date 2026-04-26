@@ -1,0 +1,16 @@
+# Patterns matched here are excluded from the chart package.
+# Default list + the README's image reference (served from the
+# repo's main docs assets, not shipped inside the chart archive).
+.DS_Store
+.git/
+.gitignore
+.bzr/
+.hg/
+.hgignore
+.svn/
+*.tmproj
+*.tgz
+*.swp
+*.bak
+*.tmp
+*~

@@ -31,7 +31,7 @@ formatters:
   settings:
     goimports:
       local-prefixes:
-        - github.com/tomeksdev/wireguard-install-with-gui
+        - github.com/tomeksdev/NexusHub
 
 issues:
   max-issues-per-linter: 0

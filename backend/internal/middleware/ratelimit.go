@@ -11,7 +11,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"golang.org/x/time/rate"
 
-	"github.com/tomeksdev/wireguard-install-with-gui/backend/internal/apierror"
+	"github.com/tomeksdev/NexusHub/backend/internal/apierror"
 )
 
 // RateLimitConfig tunes a token-bucket limiter. A single instance covers

@@ -16,11 +16,12 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/tomeksdev/wireguard-install-with-gui/backend/internal/auth"
-	"github.com/tomeksdev/wireguard-install-with-gui/backend/internal/dbtest"
-	"github.com/tomeksdev/wireguard-install-with-gui/backend/internal/handler"
-	mw "github.com/tomeksdev/wireguard-install-with-gui/backend/internal/middleware"
-	"github.com/tomeksdev/wireguard-install-with-gui/backend/internal/repository"
+	"github.com/tomeksdev/NexusHub/backend/internal/auth"
+	"github.com/tomeksdev/NexusHub/backend/internal/dbtest"
+	"github.com/tomeksdev/NexusHub/backend/internal/ebpf"
+	"github.com/tomeksdev/NexusHub/backend/internal/handler"
+	mw "github.com/tomeksdev/NexusHub/backend/internal/middleware"
+	"github.com/tomeksdev/NexusHub/backend/internal/repository"
 )
 
 const (
@@ -36,6 +37,9 @@ type env struct {
 	email  string
 	pass   string
 	role   string
+	// sync lets rule-handler tests assert the syncer was called in
+	// lockstep with DB writes. Other tests ignore it.
+	sync *ebpf.FakeSyncer
 }
 
 func setup(t *testing.T) *env {
@@ -48,19 +52,23 @@ func setup(t *testing.T) *env {
 		t.Fatalf("new issuer: %v", err)
 	}
 
+	sync := &ebpf.FakeSyncer{}
 	e := &env{
 		pool:  pool,
 		email: "user@example.com",
 		pass:  "correct-horse-battery-staple",
 		role:  "admin",
+		sync:  sync,
 	}
-	e.userID = createUser(t, pool, e.email, "u1", e.pass, e.role)
+	e.userID = createUser(t, pool, e.email, "user01", e.pass, e.role)
 
 	e.router = handler.NewRouter(handler.Deps{
 		JWTIssuer:  issuer,
 		Users:      repository.NewUserRepo(pool),
 		Sessions:   repository.NewSessionRepo(pool),
 		Audit:      repository.NewAuditRepo(pool),
+		Rules:      repository.NewRuleRepo(pool),
+		EBPFSync:   sync,
 		RefreshTTL: refreshTTL,
 		// Default: limits disabled so existing auth tests aren't flaky
 		// under bursts. TestLoginRateLimit builds its own router with limits on.
@@ -388,7 +396,7 @@ func TestLoginRateLimitRejectsBurst(t *testing.T) {
 	}
 	email := "rl@example.com"
 	pw := "rate-limit-password-123"
-	createUser(t, pool, email, "rl", pw, "admin")
+	createUser(t, pool, email, "ratelim", pw, "admin")
 
 	router := handler.NewRouter(handler.Deps{
 		JWTIssuer:  issuer,

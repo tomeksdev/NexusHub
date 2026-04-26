@@ -7,6 +7,8 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/tomeksdev/NexusHub/backend/internal/tracing"
 )
 
 const (
@@ -28,6 +30,10 @@ func NewPool(ctx context.Context, databaseURL string) (*pgxpool.Pool, error) {
 	cfg.MaxConnLifetime = maxConnLifetime
 	cfg.MaxConnIdleTime = maxConnIdleTime
 	cfg.ConnConfig.ConnectTimeout = connectTimeout
+	// Emit one OTEL span per query. When tracing is disabled (no OTEL
+	// endpoint configured), the tracer resolves to noop and the hook
+	// is effectively free.
+	cfg.ConnConfig.Tracer = tracing.NewPgxTracer()
 
 	pool, err := pgxpool.NewWithConfig(ctx, cfg)
 	if err != nil {

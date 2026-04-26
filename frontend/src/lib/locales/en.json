@@ -1,0 +1,53 @@
+{
+  "app": {
+    "title": "NexusHub",
+    "subtitle": "WireGuard manager",
+    "signOut": "Sign out"
+  },
+  "nav": {
+    "peers": "Peers",
+    "interfaces": "Interfaces",
+    "rules": "Rules",
+    "metrics": "Metrics",
+    "users": "Users",
+    "audit": "Audit log",
+    "security": "Security"
+  },
+  "common": {
+    "loading": "Loading…",
+    "loadFailed": "Failed to load: {{message}}",
+    "total": "{{count}} total",
+    "cancel": "Cancel",
+    "close": "Close",
+    "save": "Save",
+    "saving": "Saving…",
+    "create": "Create",
+    "delete": "Delete",
+    "edit": "Edit",
+    "confirmDelete": "Delete \"{{name}}\"? This cannot be undone."
+  },
+  "users": {
+    "title": "Users",
+    "empty": "No users yet.",
+    "col": {
+      "email": "Email",
+      "username": "Username",
+      "role": "Role",
+      "status": "Status",
+      "twoFA": "2FA",
+      "lastLogin": "Last login"
+    },
+    "status": {
+      "active": "active",
+      "locked": "locked",
+      "disabled": "disabled"
+    },
+    "twoFA": {
+      "on": "on",
+      "off": "off"
+    },
+    "lastLogin": {
+      "never": "never"
+    }
+  }
+}

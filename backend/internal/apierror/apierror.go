@@ -22,6 +22,12 @@ const (
 	CodeRefreshInvalid     = "REFRESH_INVALID"
 	CodeRefreshReused      = "REFRESH_REUSED"
 	CodeRateLimited        = "RATE_LIMITED"
+	CodeNotFound           = "NOT_FOUND"
+	CodeConflict           = "CONFLICT"
+	CodePoolExhausted      = "IP_POOL_EXHAUSTED"
+	CodeTOTPRequired       = "TOTP_REQUIRED"
+	CodeTOTPInvalid        = "TOTP_INVALID"
+	CodeTOTPNotEnrolled    = "TOTP_NOT_ENROLLED"
 	CodeInternal           = "INTERNAL"
 )
 

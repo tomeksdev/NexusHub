@@ -7,8 +7,8 @@ import (
 	"context"
 	"testing"
 
-	"github.com/tomeksdev/wireguard-install-with-gui/backend/internal/auth"
-	"github.com/tomeksdev/wireguard-install-with-gui/backend/internal/dbtest"
+	"github.com/tomeksdev/NexusHub/backend/internal/auth"
+	"github.com/tomeksdev/NexusHub/backend/internal/dbtest"
 )
 
 func TestSeedAdminCreatesSuperAdmin(t *testing.T) {

@@ -14,12 +14,24 @@ import (
 
 	"github.com/gin-gonic/gin"
 
-	"github.com/tomeksdev/wireguard-install-with-gui/backend/internal/auth"
-	"github.com/tomeksdev/wireguard-install-with-gui/backend/internal/config"
-	"github.com/tomeksdev/wireguard-install-with-gui/backend/internal/db"
-	"github.com/tomeksdev/wireguard-install-with-gui/backend/internal/handler"
-	"github.com/tomeksdev/wireguard-install-with-gui/backend/internal/middleware"
-	"github.com/tomeksdev/wireguard-install-with-gui/backend/internal/repository"
+	"github.com/tomeksdev/NexusHub/backend/internal/audit"
+	"github.com/tomeksdev/NexusHub/backend/internal/auth"
+	"github.com/tomeksdev/NexusHub/backend/internal/config"
+	"github.com/tomeksdev/NexusHub/backend/internal/crypto"
+	"github.com/tomeksdev/NexusHub/backend/internal/db"
+	"github.com/tomeksdev/NexusHub/backend/internal/handler"
+	"github.com/tomeksdev/NexusHub/backend/internal/metrics"
+	"github.com/tomeksdev/NexusHub/backend/internal/middleware"
+	"github.com/tomeksdev/NexusHub/backend/internal/repository"
+	"github.com/tomeksdev/NexusHub/backend/internal/tracing"
+	"github.com/tomeksdev/NexusHub/backend/internal/wg"
+)
+
+// Populated via -ldflags -X at build time. Falling back to "dev" keeps
+// `go run ./cmd/api` readable in development.
+var (
+	buildVersion = "dev"
+	buildCommit  = "unknown"
 )
 
 func main() {
@@ -43,23 +55,109 @@ func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
+	// Stand tracing up before the pool so query spans are wired from
+	// the first connection ping. When OTEL_EXPORTER_OTLP_ENDPOINT is
+	// unset, tracing.Init returns a no-op shutdown and the global
+	// provider stays at otel's noop — every span call goes nowhere.
+	shutdownTracing, err := tracing.Init(ctx, tracing.Config{Version: buildVersion})
+	if err != nil {
+		return fmt.Errorf("tracing init: %w", err)
+	}
+	defer func() {
+		flushCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := shutdownTracing(flushCtx); err != nil {
+			slog.Warn("tracing shutdown", "err", err)
+		}
+	}()
+
 	pool, err := db.NewPool(ctx, cfg.DatabaseURL)
 	if err != nil {
 		return err
 	}
 	defer pool.Close()
 
+	metrics.SetBuildInfo(buildVersion, buildCommit)
+	metrics.RegisterPoolCollector(pool)
+
 	jwtIssuer, err := auth.NewJWTIssuer(cfg.JWTSecret, cfg.JWTAccessExpiry)
 	if err != nil {
 		return fmt.Errorf("jwt issuer: %w", err)
 	}
 
+	aead, err := crypto.NewFromBase64(cfg.PeerKeyEncryptionKey)
+	if err != nil {
+		return fmt.Errorf("peer key encryption: %w", err)
+	}
+
+	ifaceRepo := repository.NewInterfaceRepo(pool)
+	peerRepo := repository.NewPeerRepo(pool)
+	ruleRepo := repository.NewRuleRepo(pool)
+	auditRepo := repository.NewAuditRepo(pool)
+
+	// Start the audit retention loop. Zero AuditRetentionDays (or
+	// a negative value) disables pruning — the loop exits
+	// immediately. The goroutine shuts down on ctx cancellation.
+	go audit.RunRetentionLoop(ctx, auditRepo, audit.RetentionConfig{
+		Retention: time.Duration(cfg.AuditRetentionDays) * 24 * time.Hour,
+		Interval:  cfg.AuditRetentionScan,
+	}, slog.Default())
+
+	// Try to open a netlink client. If we can't (no CAP_NET_ADMIN, no
+	// kernel module, containerised dev env), skip kernel sync and run
+	// DB-only — the handlers and reconciler are both nil-safe on wgClient.
+	var wgClient wg.Client
+	if kc, werr := wg.NewKernelClient(); werr != nil {
+		slog.Warn("wgctrl unavailable — running DB-only", "err", werr)
+	} else {
+		wgClient = kc
+		defer kc.Close()
+		mode := wg.DetectMode(kc, "")
+		slog.Info("wireguard mode detected", "mode", string(mode))
+
+		// Startup reconciliation: converge the kernel to DB state. Errors
+		// are logged per-interface and do not block API startup.
+		if dbs, rerr := loadDBInterfaces(ctx, aead, ifaceRepo, peerRepo); rerr != nil {
+			slog.Error("reconcile: load db state", "err", rerr)
+		} else {
+			wg.ReconcileStartup(ctx, wgClient, slog.Default(), dbs)
+			// Register the WG Prometheus collector with the interfaces
+			// we just reconciled. Interfaces added at runtime will not
+			// surface until restart — that matches the reconciler model
+			// where startup is the alignment point.
+			names := make([]string, 0, len(dbs))
+			for _, d := range dbs {
+				names = append(names, d.Name)
+			}
+			if len(names) > 0 {
+				metrics.Registry.MustRegister(wg.NewWGCollector(wgClient, names, slog.Default()))
+			}
+		}
+	}
+
+	// eBPF kernel runtime. Loads the bpf2go-generated spec, attaches
+	// optional hooks, starts the metrics + log pipelines. On hosts
+	// without CAP_BPF (or when bpf2go produced no usable spec) the
+	// returned stack carries a NoopSyncer so the handlers see a
+	// consistent interface either way.
+	connLogRepo := repository.NewConnectionLogRepo(pool)
+	ebpfStk := startEBPF(ctx, connLogRepo,
+		xdpInterfaceFromEnv(), tcInterfaceFromEnv(), slog.Default())
+	defer ebpfStk.Close()
+
 	router := handler.NewRouter(handler.Deps{
-		JWTIssuer:  jwtIssuer,
-		Users:      repository.NewUserRepo(pool),
-		Sessions:   repository.NewSessionRepo(pool),
-		Audit:      repository.NewAuditRepo(pool),
-		RefreshTTL: cfg.JWTRefreshExpiry,
+		JWTIssuer:         jwtIssuer,
+		Users:             repository.NewUserRepo(pool),
+		Sessions:          repository.NewSessionRepo(pool),
+		Audit:             auditRepo,
+		Interfaces:        ifaceRepo,
+		Peers:             peerRepo,
+		Rules:             ruleRepo,
+		AEAD:              aead,
+		RefreshTTL:        cfg.JWTRefreshExpiry,
+		EBPFSync:          ebpfStk.syncer,
+		WG:                wgClient,
+		DefaultWGEndpoint: cfg.WGEndpoint,
 		LoginLimit: middleware.RateLimitConfig{
 			Name:      "login",
 			PerMinute: cfg.RateLimitLoginPerMinute,
@@ -103,4 +201,60 @@ func run() error {
 	}
 	slog.Info("api stopped cleanly")
 	return nil
+}
+
+// loadDBInterfaces is the glue between the repository layer and the wg
+// reconciler's plain-data spec type. It decrypts every interface private
+// key and every active peer PSK before handing them off — the reconciler
+// only speaks raw bytes. Lives here rather than in wg/ or repository/ to
+// keep those packages free of a mutual import.
+func loadDBInterfaces(
+	ctx context.Context,
+	aead *crypto.AEAD,
+	ifaces *repository.InterfaceRepo,
+	peers *repository.PeerRepo,
+) ([]wg.DBInterface, error) {
+	rows, err := ifaces.List(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("list interfaces: %w", err)
+	}
+	out := make([]wg.DBInterface, 0, len(rows))
+	for _, iface := range rows {
+		priv, err := aead.Open(iface.PrivateKey, []byte("wg_interfaces.private_key"))
+		if err != nil {
+			slog.Warn("reconcile: skip interface, decrypt failed",
+				"iface", iface.Name, "err", err)
+			continue
+		}
+		dbi := wg.DBInterface{
+			Name: iface.Name, PrivateKey: priv, ListenPort: iface.ListenPort,
+		}
+		peerRows, err := peers.ListByInterface(ctx, iface.ID)
+		if err != nil {
+			slog.Warn("reconcile: skip interface, list peers failed",
+				"iface", iface.Name, "err", err)
+			continue
+		}
+		for _, p := range peerRows {
+			dp := wg.DBPeer{
+				PublicKey:  p.PublicKey,
+				Endpoint:   p.Endpoint,
+				AllowedIPs: p.AllowedIPs,
+				AssignedIP: p.AssignedIP,
+				Keepalive:  p.PersistentKeepalive,
+			}
+			if sealed, err := peers.ActivePSK(ctx, p.ID); err == nil && sealed != nil {
+				raw, oerr := aead.Open(sealed, []byte("wg_peer_preshared_keys.preshared_key"))
+				if oerr != nil {
+					slog.Warn("reconcile: skip psk, decrypt failed",
+						"peer", p.PublicKey, "err", oerr)
+				} else {
+					dp.PresharedKey = raw
+				}
+			}
+			dbi.Peers = append(dbi.Peers, dp)
+		}
+		out = append(out, dbi)
+	}
+	return out, nil
 }
