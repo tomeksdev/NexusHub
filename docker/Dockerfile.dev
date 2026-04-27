@@ -1,4 +1,4 @@
-FROM golang:1.22-bookworm
+FROM golang:1.26-bookworm
 RUN apt-get update && apt-get install -y --no-install-recommends \
     wireguard-tools iproute2 iptables clang llvm libbpf-dev \
     && rm -rf /var/lib/apt/lists/*

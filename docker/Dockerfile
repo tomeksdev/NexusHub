@@ -1,5 +1,5 @@
 # Stage 1: Build Go backend
-FROM golang:1.22-bookworm AS go-builder
+FROM golang:1.26-bookworm AS go-builder
 WORKDIR /build
 # backend/go.mod has `replace github.com/tomeksdev/NexusHub/ebpf => ../ebpf`,
 # so go mod download needs ebpf/go.mod present too. Copy module manifests
@@ -20,7 +20,7 @@ RUN CGO_ENABLED=0 go build -ldflags="-s -w" -o /nexushub         ./cmd/api/ \
  && CGO_ENABLED=0 go build -ldflags="-s -w" -o /nexushub-seed    ./cmd/seed/
 
 # Stage 2: Build frontend
-FROM node:20-bookworm-slim AS node-builder
+FROM node:25-bookworm-slim AS node-builder
 WORKDIR /build
 COPY frontend/package*.json ./
 RUN npm ci
