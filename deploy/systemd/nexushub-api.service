@@ -1,0 +1,70 @@
+[Unit]
+Description=NexusHub API — WireGuard VPN management
+# Ordering: the API needs Postgres before it starts, so declare a
+# soft dependency. On hosts where Postgres runs elsewhere (remote
+# managed DB, separate host) this Wants= is harmless — systemd
+# skips missing units.
+Documentation=https://github.com/tomeksdev/NexusHub
+After=network-online.target postgresql.service
+Wants=network-online.target
+# WireGuard kernel module. Systemd doesn't know it's loaded; the
+# api process handles the absence gracefully but we nudge the module
+# in at unit start via ExecStartPre below.
+Requires=network-online.target
+
+[Service]
+Type=simple
+User=nexushub
+Group=nexushub
+
+# Config lives in a single env file so operators rotate it without
+# touching the unit. Templating at install time keeps the unit
+# file itself identical across hosts.
+EnvironmentFile=/etc/nexushub/env
+
+# Working directory holds the wg-quick state we write during peer
+# reconciliation. Keep it out of /tmp so tmpfiles.d doesn't wipe it.
+WorkingDirectory=/var/lib/nexushub
+
+# Load WireGuard if the kernel hasn't already. Ignored on kernels
+# where wg is compiled-in. `-` prefix = don't fail the unit if the
+# probe fails (handled gracefully by the API at runtime).
+ExecStartPre=-/usr/sbin/modprobe wireguard
+ExecStart=/usr/local/bin/nexushub-api
+
+# CAP_NET_ADMIN + CAP_BPF are the minimum for wgctrl + eBPF rule
+# loading. CAP_NET_RAW is there so the API can open the tun device
+# on older kernels that predate CAP_NET_ADMIN-only mode. Everything
+# else dropped — no file/process/setuid privileges.
+AmbientCapabilities=CAP_NET_ADMIN CAP_BPF CAP_NET_RAW
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_BPF CAP_NET_RAW
+NoNewPrivileges=yes
+
+# Filesystem hardening. The API writes to /var/lib/nexushub (state)
+# and /var/log/nexushub (logs); everything else is read-only.
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=no          # needs /dev/net/tun for wg, and bpf()
+ReadWritePaths=/var/lib/nexushub /var/log/nexushub
+ReadOnlyPaths=/etc/nexushub
+
+# Restart policy — crash-only service. Restart on any non-zero
+# exit, delay long enough to not storm logs, cap at 3 attempts
+# per minute so genuine misconfigs surface as failed units rather
+# than looping silently.
+Restart=on-failure
+RestartSec=5s
+StartLimitBurst=3
+StartLimitIntervalSec=60s
+
+# Graceful shutdown: 15s matches the backend's own Shutdown timeout.
+# Systemd sends SIGTERM, waits, then SIGKILL if we haven't exited.
+TimeoutStopSec=20s
+KillSignal=SIGTERM
+
+# Syslog identity so journalctl -u nexushub-api is filterable.
+SyslogIdentifier=nexushub-api
+
+[Install]
+WantedBy=multi-user.target

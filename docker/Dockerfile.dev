@@ -4,7 +4,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 RUN go install github.com/air-verse/air@latest
 WORKDIR /app
-COPY backend/go.mod backend/go.sum ./
-RUN go mod download
+# Source is bind-mounted at runtime via docker-compose.dev.yml
+# (backend → /app). air handles `go mod download` on first build inside
+# the running container, so we don't pre-fetch here — backend's go.mod
+# uses `replace ../ebpf` which would need a multi-module copy that the
+# dev image doesn't really benefit from.
 EXPOSE 8080
 CMD ["air", "-c", ".air.toml"]

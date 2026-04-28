@@ -1,0 +1,43 @@
+# Caddyfile for the production compose stack. Caddy auto-provisions
+# an ACME cert for NEXUSHUB_HOST on first boot; point DNS at the
+# host before starting the stack or the ACME challenge will fail.
+
+{$NEXUSHUB_HOST} {
+    # /api/* goes to the backend over the compose network. reverse_proxy
+    # handles retry, keepalive, and X-Forwarded-* headers by default.
+    # WebSocket + SSE upgrades pass through unchanged.
+    handle_path /api/* {
+        reverse_proxy api:8080 {
+            # Preserve the original path including /api so the backend
+            # router (which expects /api/v1/...) sees the full prefix.
+            rewrite /api{uri}
+        }
+    }
+
+    # /metrics lives under /api/v1/ already — proxied above. The root
+    # serves the SPA bundle copied into /srv/nexushub by the
+    # frontend-init container.
+    handle {
+        root * /srv/nexushub
+        # try_files ensures deep links (e.g. /peers/abc123) fall through
+        # to index.html rather than 404'ing. The SPA router handles
+        # the rest client-side.
+        try_files {path} /index.html
+        file_server
+        # Cache static assets aggressively — the Vite build names them
+        # with content hashes so a new release is a cache bust by
+        # construction.
+        @assets path /assets/*
+        header @assets Cache-Control "public, max-age=31536000, immutable"
+        # index.html must stay fresh — otherwise a new SPA deploy
+        # doesn't roll out until the browser cache expires.
+        @html path /index.html /
+        header @html Cache-Control "no-cache"
+    }
+
+    encode zstd gzip
+    log {
+        output stdout
+        format json
+    }
+}
