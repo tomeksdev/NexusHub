@@ -106,7 +106,10 @@ func run(m *migrate.Migrate, cmd string, args []string) error {
 		if len(args) != 1 {
 			return errors.New("goto requires a target version")
 		}
-		v, err := strconv.ParseUint(args[0], 10, 64)
+		// Bitsize matches strconv.IntSize so we can't widen past `uint`
+		// when converting — silences CodeQL's incorrect-integer-conversion
+		// warning and rejects out-of-range version numbers up front.
+		v, err := strconv.ParseUint(args[0], 10, strconv.IntSize)
 		if err != nil {
 			return fmt.Errorf("goto version must be an unsigned integer: %w", err)
 		}
