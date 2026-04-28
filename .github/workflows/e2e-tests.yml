@@ -34,7 +34,7 @@ jobs:
       - name: Set up Go (for seed)
         uses: actions/setup-go@v6
         with:
-          go-version: '1.22'
+          go-version: '1.25'
           cache-dependency-path: backend/go.sum
 
       - name: Seed admin user

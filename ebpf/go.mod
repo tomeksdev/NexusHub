@@ -1,6 +1,6 @@
 module github.com/tomeksdev/NexusHub/ebpf
 
-go 1.22
+go 1.25
 
 require github.com/cilium/ebpf v0.16.0
 

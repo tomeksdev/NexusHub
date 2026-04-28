@@ -1,12 +1,12 @@
 # NexusHub development makefile. All commands expect to run from the
-# repo root. The backend module pins Go 1.22 and the module cache has
-# been known to auto-upgrade without an explicit toolchain pin, so we
-# force GOTOOLCHAIN=local + GOFLAGS=-mod=mod for every Go invocation.
+# repo root. The Go modules pin go 1.25 — GOTOOLCHAIN=auto lets Go
+# auto-fetch a matching toolchain on dev boxes that haven't installed
+# 1.25 locally. GOFLAGS=-mod=mod prevents accidental vendor-only mode.
 #
 # Run `make help` for the full list.
 
 SHELL := /bin/bash
-GO_ENV := GOTOOLCHAIN=local GOFLAGS=-mod=mod
+GO_ENV := GOTOOLCHAIN=auto GOFLAGS=-mod=mod
 
 # ---- Help (default) -------------------------------------------------------
 

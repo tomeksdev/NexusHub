@@ -8,7 +8,7 @@
 
 NexusHub v2.0.0 needs a relational datastore for users, sessions, WireGuard
 configuration, eBPF rule metadata, audit logs, and high-volume connection
-logs. The backend is Go 1.22+. We want:
+logs. The backend is Go 1.25+. We want:
 
 - Type-safe SQL (compile-time errors, not runtime reflection surprises).
 - A driver that is fast enough to meet the <100 ms query budget in CLAUDE.md.

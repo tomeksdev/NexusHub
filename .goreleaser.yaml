@@ -25,12 +25,12 @@ builds:
     main: .
     dir: cli
     binary: nexushub
-    # CGO disabled for portable static binaries; GOTOOLCHAIN=local
-    # pins the Go minor so a release runner with newer Go doesn't
-    # silently bump us forward.
+    # CGO disabled for portable static binaries; GOTOOLCHAIN=auto lets
+    # Go fetch the toolchain matching cli/go.mod's `go` directive on
+    # release runners that don't have it pre-installed.
     env:
       - CGO_ENABLED=0
-      - GOTOOLCHAIN=local
+      - GOTOOLCHAIN=auto
     goos:
       - linux
       - darwin
