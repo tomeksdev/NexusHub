@@ -10,6 +10,13 @@ on:
 permissions:
   contents: read
 
+# Credentials for the seeded super_admin. Shared with the Playwright
+# config via env; tests/e2e/tests/auth.spec.ts reads the same names.
+env:
+  NEXUSHUB_ADMIN_EMAIL: admin@example.com
+  NEXUSHUB_ADMIN_USERNAME: admin
+  NEXUSHUB_ADMIN_PASSWORD: TestPass1234!
+
 jobs:
   playwright:
     runs-on: ubuntu-latest
@@ -24,21 +31,38 @@ jobs:
         working-directory: docker
         run: docker compose up -d --build --wait
 
+      - name: Set up Go (for seed)
+        uses: actions/setup-go@v6
+        with:
+          go-version: '1.25'
+          cache-dependency-path: backend/go.sum
+
+      - name: Seed admin user
+        # Run the seed binary host-side against the compose-published
+        # Postgres port (5432). The compose api container is already
+        # healthy here; seeding just writes rows.
+        working-directory: backend
+        env:
+          DATABASE_URL: postgres://nexushub:nexushub@localhost:5432/nexushub?sslmode=disable
+        run: go run ./cmd/seed
+
       - name: Set up Node
         uses: actions/setup-node@v6
         with:
-          node-version: '20'
+          node-version: '22'
           cache: npm
-          cache-dependency-path: frontend/package-lock.json
+          cache-dependency-path: tests/e2e/package-lock.json
 
       - name: Install Playwright deps
-        working-directory: frontend
+        working-directory: tests/e2e
         run: |
           npm ci
-          npx playwright install --with-deps
+          npx playwright install --with-deps chromium
 
       - name: Run Playwright tests
         working-directory: tests/e2e
+        env:
+          NEXUSHUB_BASE_URL: http://localhost:8080
         run: npx playwright test
 
       - name: Upload Playwright report

@@ -11,7 +11,7 @@ permissions:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: tomeksdev/wireguard-install-with-gui
+  IMAGE_NAME: tomeksdev/nexushub
 
 jobs:
   build-and-push:
@@ -44,7 +44,7 @@ jobs:
             type=raw,value=latest
 
       - name: Build & push (multi-arch)
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           file: docker/Dockerfile

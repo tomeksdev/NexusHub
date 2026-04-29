@@ -1,0 +1,45 @@
+NexusHub {{ .Chart.AppVersion }} has been installed as {{ .Release.Name }} in namespace {{ .Release.Namespace }}.
+
+1. Check the API is up:
+   kubectl -n {{ .Release.Namespace }} rollout status deployment/{{ include "nexushub.fullname" . }}
+
+2. Seed the first super_admin user (one-shot):
+   kubectl -n {{ .Release.Namespace }} run nexushub-seed \
+     --rm -it --restart=Never \
+     --image={{ include "nexushub.image" . }} \
+     --env=DATABASE_URL="$(kubectl -n {{ .Release.Namespace }} get secret {{ include "nexushub.postgresSecretName" . }} -o jsonpath='{.data.{{ .Values.postgres.urlKey }}}' | base64 -d)" \
+     --env=NEXUSHUB_ADMIN_EMAIL=admin@example.com \
+     --env=NEXUSHUB_ADMIN_USERNAME=admin \
+     --env=NEXUSHUB_ADMIN_PASSWORD="$(openssl rand -base64 24)" \
+     --command -- /app/nexushub-seed
+   # Record the password it prints before closing the terminal!
+
+3. Reach the API:
+{{- if .Values.ingress.enabled }}
+{{- range .Values.ingress.hosts }}
+     https://{{ .host }}
+{{- end }}
+{{- else }}
+     kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "nexushub.fullname" . }} 8080:{{ .Values.service.port }}
+     open http://localhost:8080
+{{- end }}
+
+4. Read the chart's README for production guidance:
+     deploy/helm/nexushub/README.md
+
+{{- if eq .Values.secrets.existingSecret "" }}
+
+NOTE: The app Secret holding JWT_SECRET + PEER_KEY_ENCRYPTION_KEY
+is managed by this chart but annotated with
+`helm.sh/resource-policy: keep` so a `helm uninstall` will NOT
+delete it. Losing PEER_KEY_ENCRYPTION_KEY makes every stored peer
+private key undecryptable. Back it up:
+  kubectl -n {{ .Release.Namespace }} get secret {{ include "nexushub.appSecretName" . }} -o yaml > nexushub-secret-backup.yaml
+{{- end }}
+{{- if .Values.dataPlane.enabled }}
+
+WARNING: dataPlane.enabled is true. The pod runs with hostNetwork
+and NET_ADMIN/BPF capabilities, which effectively makes it root
+on the node. Make sure the node is trusted and the admission
+policy in the cluster allows this pod spec.
+{{- end }}

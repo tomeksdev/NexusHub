@@ -1,0 +1,100 @@
+# Production-leaning compose file: Caddy terminates TLS and serves
+# the frontend static bundle, nexushub-api serves /api/*, Postgres
+# persists to a named volume. Secrets come from .env in this
+# directory — generate it from docker/.env.example first.
+#
+# Start:   docker compose -f docker/docker-compose.prod.yml up -d
+# Logs:    docker compose -f docker/docker-compose.prod.yml logs -f
+# Backup:  scripts/backup.sh
+
+services:
+  api:
+    image: ghcr.io/tomeksdev/nexushub:${NEXUSHUB_TAG:-latest}
+    environment:
+      DATABASE_URL: postgres://nexushub:${POSTGRES_PASSWORD}@postgres:5432/nexushub?sslmode=disable
+      JWT_SECRET: ${JWT_SECRET}
+      PEER_KEY_ENCRYPTION_KEY: ${PEER_KEY_ENCRYPTION_KEY}
+      WG_ENDPOINT: ${WG_ENDPOINT}
+      GIN_MODE: release
+      AUDIT_RETENTION_DAYS: ${AUDIT_RETENTION_DAYS:-90}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    # NET_ADMIN for wgctrl; CAP_BPF for eBPF map ops. Everything
+    # else dropped — matches the systemd unit's capability set.
+    cap_add:
+      - NET_ADMIN
+      - BPF
+    cap_drop:
+      - ALL
+    restart: unless-stopped
+    # The api image carries /app/frontend/dist from the build. Share
+    # it with Caddy as a read-only volume so the frontend is served
+    # from the same artefacts the API release shipped.
+    volumes:
+      - frontend-dist:/app/frontend/dist:ro
+    # Expose only inside the compose network. Caddy reaches it via
+    # the "api" DNS name; nothing outside the stack can reach it
+    # directly.
+    expose:
+      - "8080"
+
+  # Dedicated init container — copies the frontend bundle out of
+  # the api image into a named volume that Caddy then mounts. Runs
+  # once per start; subsequent restarts are no-ops.
+  frontend-init:
+    image: ghcr.io/tomeksdev/nexushub:${NEXUSHUB_TAG:-latest}
+    command:
+      - sh
+      - -c
+      - |
+        set -e
+        # Populate the volume only if it's empty or the upstream
+        # bundle changed. Using a marker file avoids unnecessary
+        # copies on every restart.
+        if [ ! -f /target/.nexushub-version ] || \
+           [ "$(cat /target/.nexushub-version)" != "${NEXUSHUB_TAG:-latest}" ]; then
+          cp -a /app/frontend/dist/. /target/
+          echo "${NEXUSHUB_TAG:-latest}" > /target/.nexushub-version
+        fi
+    volumes:
+      - frontend-dist:/target
+    restart: "no"
+
+  caddy:
+    image: caddy:2-alpine
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - frontend-dist:/srv/nexushub:ro
+      - caddy-data:/data        # ACME account + issued certs
+      - caddy-config:/config
+    environment:
+      NEXUSHUB_HOST: ${NEXUSHUB_HOST:-nexushub.example.com}
+    depends_on:
+      - api
+      - frontend-init
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:16-bookworm
+    environment:
+      POSTGRES_USER: nexushub
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: nexushub
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U nexushub"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+  frontend-dist:
+  caddy-data:
+  caddy-config:

@@ -1,0 +1,72 @@
+name: Bug report
+description: Report something broken in NexusHub
+title: "[bug] "
+labels: ["bug", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to file a bug. Please include the details below so the fix lands faster.
+
+  - type: input
+    id: version
+    attributes:
+      label: NexusHub version
+      description: Output of `nexushub --version` or the Docker tag you're running.
+      placeholder: "v2.0.0-rc.3"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: component
+    attributes:
+      label: Component
+      options:
+        - Backend API
+        - Frontend UI
+        - eBPF / kernel data path
+        - CLI
+        - Docker / deployment
+        - Docs
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What did you do, what did you see, what did you expect to see?
+      placeholder: |
+        Steps to reproduce:
+        1. …
+        2. …
+
+        Expected: …
+        Actual: …
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs or screenshots
+      description: Paste structured log lines, stack traces, or attach screenshots. Scrub secrets before posting.
+      render: shell
+
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      description: Kernel version, OS, Go version, browser if frontend. Omit what doesn't apply.
+      placeholder: "Linux 6.8 / Go 1.22 / Firefox 127"
+
+  - type: checkboxes
+    id: terms
+    attributes:
+      label: Confirmations
+      options:
+        - label: I searched existing issues and this hasn't been reported.
+          required: true
+        - label: I am NOT reporting a security vulnerability here. (For security issues see SECURITY.md.)
+          required: true

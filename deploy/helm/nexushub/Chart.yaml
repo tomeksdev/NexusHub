@@ -1,0 +1,32 @@
+apiVersion: v2
+name: nexushub
+description: |
+  NexusHub — WireGuard VPN management dashboard with eBPF security
+  rules. This chart deploys the API against an external Postgres
+  (bring-your-own, managed service or in-cluster StatefulSet you
+  own separately). Kernel-side WireGuard and eBPF sync are disabled
+  by default because they require hostNetwork + privileged — see
+  values.yaml dataPlane.* to opt in.
+type: application
+# Chart version tracks the chart's own changes; pre-1.0 until the
+# chart API itself is stable. Bump independently from appVersion.
+version: 0.1.0
+# appVersion tracks the app image tag this chart is tested against.
+# Override image.tag in values.yaml to pin a specific release.
+appVersion: "2.0.0"
+kubeVersion: ">=1.26.0-0"
+home: https://github.com/tomeksdev/NexusHub
+sources:
+  - https://github.com/tomeksdev/NexusHub
+maintainers:
+  - name: tomeksdev
+    email: info@tomeksdev.com
+keywords:
+  - wireguard
+  - vpn
+  - ebpf
+  - security
+icon: https://raw.githubusercontent.com/tomeksdev/NexusHub/main/docs/assets/icon.png
+annotations:
+  artifacthub.io/license: MIT
+  artifacthub.io/category: networking

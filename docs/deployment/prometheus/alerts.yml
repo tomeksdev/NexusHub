@@ -1,0 +1,143 @@
+# NexusHub alerting rules.
+#
+# Load into Prometheus via rule_files: ["/etc/prometheus/nexushub.yml"]
+# and reload the config. Rules match the metric names exported by
+# backend/internal/metrics, backend/internal/wg, and
+# backend/internal/ebpfkernel.
+#
+# Severities:
+#   page     — wake someone up (production outage)
+#   ticket   — file a ticket, not urgent (capacity / drift)
+#
+# The `for:` durations are deliberately longer than a single Prometheus
+# scrape interval so one-off glitches don't flap. Tune per deployment.
+
+groups:
+  - name: nexushub.api
+    interval: 30s
+    rules:
+      - alert: NexusHubAPIDown
+        expr: absent(up{job="nexushub"}) or up{job="nexushub"} == 0
+        for: 2m
+        labels:
+          severity: page
+        annotations:
+          summary: "NexusHub API process unreachable for 2+ minutes"
+          description: "No `up` sample from the API scrape target. Check the process, health endpoint, and reverse proxy."
+
+      - alert: NexusHubAPIHighErrorRate
+        expr: |
+          sum(rate(nexushub_http_requests_total{status=~"5.."}[5m]))
+            /
+          sum(rate(nexushub_http_requests_total[5m]))
+          > 0.02
+        for: 10m
+        labels:
+          severity: page
+        annotations:
+          summary: "NexusHub API 5xx rate above 2%"
+          description: "More than 2% of requests returned 5xx over the last 5 minutes."
+
+      - alert: NexusHubAuthFailuresElevated
+        # Fires on sustained 401 rate against /auth/* endpoints — the
+        # rate-limiter middleware already sheds the worst of this, so
+        # a breach here usually means attackers are cycling identities.
+        expr: |
+          sum by (route) (
+            rate(nexushub_http_requests_total{route=~"/api/v1/auth/.*",status="401"}[5m])
+          ) > 0.5
+        for: 10m
+        labels:
+          severity: ticket
+        annotations:
+          summary: "Elevated 401s on {{ $labels.route }}"
+          description: "401 responses averaging >0.5/s over 5m — likely credential stuffing. Cross-check audit_log for login/failure rows."
+
+  - name: nexushub.db
+    interval: 30s
+    rules:
+      - alert: NexusHubDBPoolExhausted
+        # Fires when acquisitions are blocked on a full pool. A few
+        # seconds of saturation during a burst is fine; 5m sustained is
+        # a code or capacity issue.
+        expr: nexushub_db_pool_acquired_conns >= nexushub_db_pool_max_conns
+        for: 5m
+        labels:
+          severity: page
+        annotations:
+          summary: "DB pool fully acquired for 5+ minutes"
+          description: "Every connection in the pgxpool is in use — requests are serializing on pool.Acquire. Investigate long-running queries or bump MaxConns."
+
+      - alert: NexusHubDBPoolHighWatermark
+        expr: nexushub_db_pool_acquired_conns / nexushub_db_pool_max_conns > 0.8
+        for: 15m
+        labels:
+          severity: ticket
+        annotations:
+          summary: "DB pool >80% utilised for 15+ minutes"
+          description: "Steady-state pool pressure. Either the workload grew or a code path is holding connections longer than needed."
+
+  - name: nexushub.wireguard
+    interval: 30s
+    rules:
+      - alert: NexusHubWGDeviceDown
+        # wg_device_up flips to 0 when the scrape-time Device() call
+        # fails — interface deleted, netlink socket closed, etc.
+        expr: nexushub_wg_device_up == 0
+        for: 3m
+        labels:
+          severity: page
+        annotations:
+          summary: "WireGuard interface {{ $labels.interface }} unreachable"
+          description: "Device() has been failing for 3+ minutes on {{ $labels.interface }}. Peers on this interface have no tunnel."
+
+      - alert: NexusHubWGPeerHandshakeStale
+        # WireGuard's rekey-attempt window is ~180s; a peer whose last
+        # handshake is older than 10 minutes is almost certainly dead
+        # (client offline, NAT rebind failed, etc.). Ignore peers that
+        # never handshaked (metric value == 0) — those are new peers
+        # awaiting first connect.
+        expr: |
+          time() - nexushub_wg_peer_last_handshake_seconds > 600
+            and nexushub_wg_peer_last_handshake_seconds > 0
+        for: 10m
+        labels:
+          severity: ticket
+        annotations:
+          summary: "Peer {{ $labels.public_key }} on {{ $labels.interface }} idle 10m+"
+          description: "No successful handshake in the last 10 minutes. May indicate a client-side outage."
+
+      - alert: NexusHubWGScrapeErrors
+        # The collector logs the underlying error; the counter shape
+        # makes rate-of-change alertable.
+        expr: rate(nexushub_wg_scrape_errors_total[5m]) > 0
+        for: 5m
+        labels:
+          severity: ticket
+        annotations:
+          summary: "WG metrics scrape errors on {{ $labels.interface }}"
+          description: "Device() calls have been failing. The WG dashboard panels for this interface are stale."
+
+  - name: nexushub.ebpf
+    interval: 30s
+    rules:
+      - alert: NexusHubEBPFScrapeErrors
+        expr: rate(nexushub_ebpf_stats_errors_total[5m]) > 0
+        for: 5m
+        labels:
+          severity: ticket
+        annotations:
+          summary: "eBPF map Stats() scrape failing"
+          description: "MetricsCollector suppresses per-map series on Stats() failure; ebpf_map_entries/capacity are stale until this clears."
+
+      - alert: NexusHubEBPFMapNearCapacity
+        # Alerts before a map fills. rate_state_v4/v6 fill is the most
+        # common case — an operator oversizing their rate-limit rule
+        # set or attackers spraying unique sources.
+        expr: nexushub_ebpf_map_entries / nexushub_ebpf_map_capacity > 0.8
+        for: 15m
+        labels:
+          severity: ticket
+        annotations:
+          summary: "eBPF map {{ $labels.map }} >80% full"
+          description: "Consider raising MAX_* in ebpf/headers/nexushub.h and rebuilding, or inspect for spray attacks when {{ $labels.map }} is a rate_state_* map."

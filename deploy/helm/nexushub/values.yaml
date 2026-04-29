@@ -1,0 +1,202 @@
+# Default values for the NexusHub chart. Every field is documented
+# inline; the README references this file as the canonical config
+# surface.
+
+image:
+  repository: ghcr.io/tomeksdev/nexushub
+  # Defaults to Chart.yaml's appVersion when omitted. Pin to a
+  # specific tag in production.
+  tag: ""
+  pullPolicy: IfNotPresent
+  # Optional: pull secrets for private registries. Matches the
+  # deployment.spec.template.spec.imagePullSecrets shape.
+  pullSecrets: []
+
+# Replicas. The API is stateless — peer + rule state lives in
+# Postgres; the in-memory session cache is per-pod but auth flows
+# tolerate an access token minted on pod A being used against pod B
+# as long as the same JWT_SECRET is shared.
+replicaCount: 1
+
+podAnnotations: {}
+podLabels: {}
+
+# ---- Network + ingress ----------------------------------------------------
+
+service:
+  type: ClusterIP
+  port: 8080
+
+ingress:
+  # Off by default. Turn on + set hostname to expose via an ingress
+  # controller. TLS is expected to come from cert-manager or similar;
+  # the chart does NOT manage certificates itself.
+  enabled: false
+  className: ""
+  annotations: {}
+  #   cert-manager.io/cluster-issuer: letsencrypt-prod
+  hosts:
+    - host: nexushub.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+  #   - secretName: nexushub-tls
+  #     hosts:
+  #       - nexushub.example.com
+
+# ---- Database -------------------------------------------------------------
+
+# The chart does NOT deploy Postgres. Operators running on k8s should
+# use a managed Postgres (RDS, Cloud SQL, Neon, etc.) or a separately-
+# managed StatefulSet they own. This is a deliberate scope decision —
+# getting Postgres right in Helm (backups, HA, upgrades) is a whole
+# chart on its own.
+postgres:
+  # DSN in any form pgx v5 accepts (postgres://... or a key=value
+  # string). Required unless existingSecret is set.
+  url: ""
+  # Read the DSN from an existing Secret instead of the value above.
+  # The Secret must have a key whose name matches urlKey.
+  existingSecret: ""
+  urlKey: DATABASE_URL
+
+# ---- Secrets --------------------------------------------------------------
+
+# JWT_SECRET + PEER_KEY_ENCRYPTION_KEY are load-bearing: rotating
+# them invalidates every session (JWT) or makes every stored peer
+# key undecryptable (AEAD). The chart NEVER auto-generates these —
+# a regenerated value on helm upgrade would silently brick the
+# deployment. Supply them via existingSecret (preferred) or by
+# setting them in values.yaml (fine for evaluation, not for prod).
+secrets:
+  # Supply via an existing Secret (preferred for prod, works with
+  # external-secrets / sops / sealed-secrets). The Secret must carry
+  # two keys: JWT_SECRET and PEER_KEY_ENCRYPTION_KEY.
+  existingSecret: ""
+
+  # Inline values. Only used when existingSecret is empty. An empty
+  # value here produces a helm template error via required() — which
+  # is what you want: the chart fails loud rather than installing a
+  # broken deployment.
+  jwtSecret: ""
+  peerKeyEncryptionKey: ""
+
+# ---- App config -----------------------------------------------------------
+
+config:
+  # Public WireGuard endpoint the generated peer configs advertise.
+  wgEndpoint: ""
+  # Audit retention window (days). 0 disables pruning.
+  auditRetentionDays: 90
+  # Rate limits on auth endpoints.
+  rateLimitLoginPerMinute: 10
+  rateLimitLoginBurst: 5
+  rateLimitRefreshPerMinute: 60
+  rateLimitRefreshBurst: 20
+  # Token expiries. Bump with care — longer access tokens reduce
+  # refresh load but widen the stolen-token window.
+  jwtAccessExpiry: 15m
+  jwtRefreshExpiry: 168h
+
+# ---- Tracing (optional) ---------------------------------------------------
+
+tracing:
+  # OTLP/gRPC endpoint. Empty disables tracing (noop provider).
+  endpoint: ""
+  # Whether to use plaintext gRPC (in-cluster collector, usually yes).
+  insecure: true
+  serviceName: nexushub
+  # TraceIDRatioBased sampler arg. 1.0 = trace everything;
+  # 0.1 = sample 10%. Drop in production once you know the load.
+  samplerArg: "1.0"
+
+# ---- Data plane (WireGuard + eBPF) ---------------------------------------
+
+# Kernel-side sync needs hostNetwork + privileged (CAP_NET_ADMIN +
+# CAP_BPF on a pod that can see the host's WireGuard device and
+# attach XDP to the node's physical NIC). This is a deliberate
+# opt-in because it violates normal k8s isolation: pods that can
+# reconfigure the host network are effectively root on the node.
+#
+# Default: off. The API runs "DB-only" — peer CRUD writes to the
+# database, a separate on-node process (systemd unit from
+# deploy/systemd/) or a DaemonSet you build yourself does the
+# actual kernel sync.
+dataPlane:
+  enabled: false
+  # When enabled, the pod runs with hostNetwork=true and the caps
+  # below in its CapabilityBoundingSet + AmbientCapabilities.
+  capabilities:
+    - NET_ADMIN
+    - BPF
+    - NET_RAW
+
+# ---- Migrations -----------------------------------------------------------
+
+migrations:
+  # Run a pre-install + pre-upgrade Job that invokes
+  # `nexushub-api migrate up` against the configured DATABASE_URL.
+  # Turn off if you run migrations out-of-band (CI, GitOps, manual
+  # controller on a different cadence).
+  enabled: true
+  # Keep N history of the hook job. Helm defaults to keeping all.
+  historyLimit: 3
+  # Timeout per attempt. Migration runs are cheap — seconds at most
+  # for normal changes — so a 2 min cap catches pathological pg
+  # stalls without killing legitimate long-running migrations.
+  activeDeadlineSeconds: 120
+
+# ---- Pod security + placement --------------------------------------------
+
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
+
+# securityContext applied at the pod level. The container inherits
+# unless overridden by containerSecurityContext below.
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 10001
+  runAsGroup: 10001
+  fsGroup: 10001
+  seccompProfile:
+    type: RuntimeDefault
+
+containerSecurityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop: [ALL]
+  # Data plane mode adds capabilities back on top of this via a
+  # template merge — see templates/deployment.yaml.
+
+resources:
+  limits:
+    cpu: 500m
+    memory: 512Mi
+  requests:
+    cpu: 100m
+    memory: 128Mi
+
+# Probes match the HEALTHCHECK in the Dockerfile: /api/v1/health
+# returns immediately on a live API with a DB connection. Tune
+# failureThreshold for slow migrations — the startup probe exists
+# so k8s doesn't declare the pod Ready until migrations (if they're
+# hook-driven) have completed and the API is actually up.
+probes:
+  startup:
+    path: /api/v1/health
+    periodSeconds: 5
+    failureThreshold: 30 # 30 × 5s = 2.5 min grace
+  readiness:
+    path: /api/v1/health
+    periodSeconds: 10
+  liveness:
+    path: /api/v1/health
+    periodSeconds: 30
+
+nodeSelector: {}
+tolerations: []
+affinity: {}

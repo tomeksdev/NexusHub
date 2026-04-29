@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/tomeksdev/NexusHub/security/advisories/new
+    about: Do NOT file security issues publicly. Use the private advisory form — disclosure policy lives in SECURITY.md.
+  - name: Question or usage help
+    url: https://github.com/tomeksdev/NexusHub/discussions
+    about: Operator questions and general discussion belong in Discussions, not Issues.

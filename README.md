@@ -2,8 +2,8 @@
 
 > WireGuard VPN management dashboard with eBPF security rules
 
-[![Go](https://img.shields.io/badge/go-1.22-00ADD8?logo=go&logoColor=white)](https://go.dev)
-[![Node](https://img.shields.io/badge/node-20.x-339933?logo=node.js&logoColor=white)](https://nodejs.org)
+[![Go](https://img.shields.io/badge/go-1.25-00ADD8?logo=go&logoColor=white)](https://go.dev)
+[![Node](https://img.shields.io/badge/node-22.x-339933?logo=node.js&logoColor=white)](https://nodejs.org)
 [![License](https://img.shields.io/github/license/tomeksdev/NexusHub)](LICENSE)
 [![CI](https://github.com/tomeksdev/NexusHub/actions/workflows/ci.yml/badge.svg?branch=dev)](https://github.com/tomeksdev/NexusHub/actions/workflows/ci.yml)
 
@@ -45,7 +45,7 @@ _Screenshots will land in `docs/assets/screenshots/` as the UI comes together._
 
 | Layer           | Choice                                                               |
 | --------------- | -------------------------------------------------------------------- |
-| Backend         | Go 1.22, `chi`/`gin` router, `slog`, `pgx`                           |
+| Backend         | Go 1.25, `chi`/`gin` router, `slog`, `pgx`                           |
 | Database        | PostgreSQL 16                                                        |
 | Migrations      | `golang-migrate`                                                     |
 | WireGuard       | `wgctrl-go`                                                          |
