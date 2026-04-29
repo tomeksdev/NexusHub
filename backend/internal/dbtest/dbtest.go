@@ -133,8 +133,8 @@ func (s *sharedContainer) start() {
 	ctx, cancel := context.WithTimeout(context.Background(), startupTimeout)
 	defer cancel()
 
-	container, err := postgres.RunContainer(ctx,
-		testcontainers.WithImage(containerImage),
+	container, err := postgres.Run(ctx,
+		containerImage,
 		postgres.WithDatabase("postgres"),
 		postgres.WithUsername(dbUser),
 		postgres.WithPassword(dbPassword),
