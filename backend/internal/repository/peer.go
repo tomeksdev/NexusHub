@@ -32,9 +32,17 @@ type Peer struct {
 	OwnerUserID         *uuid.UUID
 	Name                string
 	Description         *string
-	PublicKey           string
-	PrivateKey          []byte // encrypted; may be nil
-	AllowedIPs          []netip.Prefix
+	PublicKey  string
+	PrivateKey []byte // encrypted; may be nil
+	// AllowedIPs is the SERVER-side filter — source IPs accepted from
+	// this peer / destinations routed to this peer. Asymmetric with the
+	// client view; see ClientAllowedIPs.
+	AllowedIPs []netip.Prefix
+	// ClientAllowedIPs is what gets written into the peer's exported
+	// .conf [Peer] AllowedIPs slot — destinations the client should
+	// route through the tunnel. Empty ⇒ renderer falls back to the
+	// interface CIDR.
+	ClientAllowedIPs    []netip.Prefix
 	AssignedIP          netip.Addr
 	Endpoint            *string
 	PersistentKeepalive *int
@@ -56,6 +64,7 @@ type CreatePeerParams struct {
 	PublicKey           string
 	PrivateKey          []byte // encrypted; may be nil
 	AllowedIPs          []netip.Prefix
+	ClientAllowedIPs    []netip.Prefix
 	AssignedIP          netip.Addr
 	Endpoint            *string
 	PersistentKeepalive *int
@@ -67,24 +76,27 @@ func (r *PeerRepo) Create(ctx context.Context, p CreatePeerParams) (*Peer, error
 	const q = `
 		INSERT INTO wg_peers
 		   (interface_id, owner_user_id, name, description,
-		    public_key, private_key, allowed_ips, assigned_ip,
-		    endpoint, persistent_keepalive, dns, expires_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7::cidr[], $8::inet,
-		        $9, $10, $11, $12)
+		    public_key, private_key, allowed_ips, client_allowed_ips,
+		    assigned_ip, endpoint, persistent_keepalive, dns, expires_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7::cidr[], $8::cidr[],
+		        $9::inet, $10, $11, $12, $13)
 		RETURNING id, status::text, created_at, updated_at,
 		          rx_bytes, tx_bytes`
 	allowed := prefixesToStrings(p.AllowedIPs)
+	clientAllowed := prefixesToStrings(p.ClientAllowedIPs)
 	out := Peer{
 		InterfaceID: p.InterfaceID, OwnerUserID: p.OwnerUserID,
 		Name: p.Name, Description: p.Description,
 		PublicKey: p.PublicKey, PrivateKey: p.PrivateKey,
-		AllowedIPs: p.AllowedIPs, AssignedIP: p.AssignedIP,
-		Endpoint: p.Endpoint, PersistentKeepalive: p.PersistentKeepalive,
+		AllowedIPs: p.AllowedIPs, ClientAllowedIPs: p.ClientAllowedIPs,
+		AssignedIP: p.AssignedIP,
+		Endpoint:   p.Endpoint, PersistentKeepalive: p.PersistentKeepalive,
 		DNS: p.DNS, ExpiresAt: p.ExpiresAt,
 	}
 	err := r.pool.QueryRow(ctx, q,
 		p.InterfaceID, p.OwnerUserID, p.Name, p.Description,
-		p.PublicKey, p.PrivateKey, allowed, p.AssignedIP.String(),
+		p.PublicKey, p.PrivateKey, allowed, clientAllowed,
+		p.AssignedIP.String(),
 		p.Endpoint, p.PersistentKeepalive, p.DNS, p.ExpiresAt,
 	).Scan(&out.ID, &out.Status, &out.CreatedAt, &out.UpdatedAt,
 		&out.RxBytes, &out.TxBytes)
@@ -265,7 +277,8 @@ func (r *PeerRepo) RotatePSK(ctx context.Context, peerID uuid.UUID, sealedPSK []
 const selectPeer = `
 	SELECT id, interface_id, owner_user_id, name, description,
 	       public_key, private_key,
-	       allowed_ips::text[], host(assigned_ip),
+	       allowed_ips::text[], client_allowed_ips::text[],
+	       host(assigned_ip),
 	       endpoint, persistent_keepalive, dns, status::text,
 	       last_handshake, rx_bytes, tx_bytes, expires_at,
 	       created_at, updated_at
@@ -282,14 +295,15 @@ func (r *PeerRepo) scanOne(ctx context.Context, where string, args ...any) (*Pee
 
 func scanPeer(s scannable) (*Peer, error) {
 	var (
-		p           Peer
-		allowedStrs []string
-		assignedStr string
+		p                 Peer
+		allowedStrs       []string
+		clientAllowedStrs []string
+		assignedStr       string
 	)
 	err := s.Scan(
 		&p.ID, &p.InterfaceID, &p.OwnerUserID, &p.Name, &p.Description,
 		&p.PublicKey, &p.PrivateKey,
-		&allowedStrs, &assignedStr,
+		&allowedStrs, &clientAllowedStrs, &assignedStr,
 		&p.Endpoint, &p.PersistentKeepalive, &p.DNS, &p.Status,
 		&p.LastHandshake, &p.RxBytes, &p.TxBytes, &p.ExpiresAt,
 		&p.CreatedAt, &p.UpdatedAt,
@@ -297,13 +311,13 @@ func scanPeer(s scannable) (*Peer, error) {
 	if err != nil {
 		return nil, err
 	}
-	p.AllowedIPs = make([]netip.Prefix, 0, len(allowedStrs))
-	for _, s := range allowedStrs {
-		pfx, perr := netip.ParsePrefix(s)
-		if perr != nil {
-			return nil, fmt.Errorf("parse allowed_ip %q: %w", s, perr)
-		}
-		p.AllowedIPs = append(p.AllowedIPs, pfx)
+	p.AllowedIPs, err = parsePrefixSlice(allowedStrs, "allowed_ip")
+	if err != nil {
+		return nil, err
+	}
+	p.ClientAllowedIPs, err = parsePrefixSlice(clientAllowedStrs, "client_allowed_ip")
+	if err != nil {
+		return nil, err
 	}
 	a, perr := netip.ParseAddr(assignedStr)
 	if perr != nil {
@@ -311,6 +325,18 @@ func scanPeer(s scannable) (*Peer, error) {
 	}
 	p.AssignedIP = a
 	return &p, nil
+}
+
+func parsePrefixSlice(in []string, label string) ([]netip.Prefix, error) {
+	out := make([]netip.Prefix, 0, len(in))
+	for _, s := range in {
+		pfx, err := netip.ParsePrefix(s)
+		if err != nil {
+			return nil, fmt.Errorf("parse %s %q: %w", label, s, err)
+		}
+		out = append(out, pfx)
+	}
+	return out, nil
 }
 
 func prefixesToStrings(in []netip.Prefix) []string {

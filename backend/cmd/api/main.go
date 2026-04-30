@@ -19,6 +19,7 @@ import (
 	"github.com/tomeksdev/NexusHub/backend/internal/config"
 	"github.com/tomeksdev/NexusHub/backend/internal/crypto"
 	"github.com/tomeksdev/NexusHub/backend/internal/db"
+	baseebpf "github.com/tomeksdev/NexusHub/backend/internal/ebpf"
 	"github.com/tomeksdev/NexusHub/backend/internal/handler"
 	"github.com/tomeksdev/NexusHub/backend/internal/metrics"
 	"github.com/tomeksdev/NexusHub/backend/internal/middleware"
@@ -107,6 +108,16 @@ func run() error {
 	// kernel module, containerised dev env), skip kernel sync and run
 	// DB-only — the handlers and reconciler are both nil-safe on wgClient.
 	var wgClient wg.Client
+	// linkManager is the rtnetlink side. Cheap to construct (no
+	// resources held until called) so we always wire it; the operator
+	// may have run NexusHub in an env without CAP_NET_ADMIN, in which
+	// case the per-call netlink syscalls fail and the handlers log
+	// without aborting.
+	linkManager := wg.NewNetlinkManager()
+	// wgIfaceNames is the list of DB-known WireGuard interface names
+	// after the startup reconcile. eBPF startup uses it to auto-attach
+	// TC (one program per interface) without an env var.
+	var wgIfaceNames []string
 	if kc, werr := wg.NewKernelClient(); werr != nil {
 		slog.Warn("wgctrl unavailable — running DB-only", "err", werr)
 	} else {
@@ -120,17 +131,17 @@ func run() error {
 		if dbs, rerr := loadDBInterfaces(ctx, aead, ifaceRepo, peerRepo); rerr != nil {
 			slog.Error("reconcile: load db state", "err", rerr)
 		} else {
-			wg.ReconcileStartup(ctx, wgClient, slog.Default(), dbs)
+			wg.ReconcileStartup(ctx, wgClient, linkManager, slog.Default(), dbs)
 			// Register the WG Prometheus collector with the interfaces
 			// we just reconciled. Interfaces added at runtime will not
 			// surface until restart — that matches the reconciler model
 			// where startup is the alignment point.
-			names := make([]string, 0, len(dbs))
+			wgIfaceNames = make([]string, 0, len(dbs))
 			for _, d := range dbs {
-				names = append(names, d.Name)
+				wgIfaceNames = append(wgIfaceNames, d.Name)
 			}
-			if len(names) > 0 {
-				metrics.Registry.MustRegister(wg.NewWGCollector(wgClient, names, slog.Default()))
+			if len(wgIfaceNames) > 0 {
+				metrics.Registry.MustRegister(wg.NewWGCollector(wgClient, wgIfaceNames, slog.Default()))
 			}
 		}
 	}
@@ -141,9 +152,37 @@ func run() error {
 	// returned stack carries a NoopSyncer so the handlers see a
 	// consistent interface either way.
 	connLogRepo := repository.NewConnectionLogRepo(pool)
+	// TC interfaces: every WG iface from the DB, plus the operator
+	// override if set (de-duped inside startEBPF). XDP stays
+	// env-driven because the WAN NIC isn't something the API can
+	// derive safely.
+	tcIfaces := append([]string(nil), wgIfaceNames...)
+	if extra := tcInterfaceFromEnv(); extra != "" {
+		tcIfaces = append(tcIfaces, extra)
+	}
 	ebpfStk := startEBPF(ctx, connLogRepo,
-		xdpInterfaceFromEnv(), tcInterfaceFromEnv(), slog.Default())
+		xdpInterfaceFromEnv(), tcIfaces, slog.Default())
 	defer ebpfStk.Close()
+
+	// Seed the kernel maps from the active rules in PostgreSQL so the
+	// datapath enforces what the DB says it should — without this,
+	// every restart leaves the kernel empty until the operator
+	// re-touches each rule via the API. Errors are logged and
+	// swallowed; the handlers still work, the kernel just trails the
+	// DB until next manual sync.
+	if active, err := ruleRepo.ActiveSnapshot(ctx); err != nil {
+		slog.Warn("ebpf rule snapshot failed — kernel will trail DB", "err", err)
+	} else if len(active) > 0 {
+		syncRules := make([]baseebpf.Rule, 0, len(active))
+		for i := range active {
+			syncRules = append(syncRules, handler.ToSyncRule(&active[i]))
+		}
+		if err := ebpfStk.syncer.Reconcile(ctx, syncRules); err != nil {
+			slog.Warn("ebpf rule reconcile at startup failed", "err", err, "n", len(syncRules))
+		} else {
+			slog.Info("ebpf rules reconciled to kernel", "count", len(syncRules))
+		}
+	}
 
 	router := handler.NewRouter(handler.Deps{
 		JWTIssuer:         jwtIssuer,
@@ -157,6 +196,7 @@ func run() error {
 		RefreshTTL:        cfg.JWTRefreshExpiry,
 		EBPFSync:          ebpfStk.syncer,
 		WG:                wgClient,
+		WGLinks:           linkManager,
 		DefaultWGEndpoint: cfg.WGEndpoint,
 		LoginLimit: middleware.RateLimitConfig{
 			Name:      "login",
@@ -228,6 +268,7 @@ func loadDBInterfaces(
 		}
 		dbi := wg.DBInterface{
 			Name: iface.Name, PrivateKey: priv, ListenPort: iface.ListenPort,
+			Address: iface.Address,
 		}
 		peerRows, err := peers.ListByInterface(ctx, iface.ID)
 		if err != nil {

@@ -39,7 +39,7 @@ func AllocateIP(ifaceCIDR netip.Prefix, used []netip.Addr) (netip.Addr, error) {
 	usedSet[network] = struct{}{}
 	usedSet[ifaceCIDR.Addr()] = struct{}{}
 	if isV4 {
-		if b, ok := broadcast(ifaceCIDR); ok {
+		if b, ok := Broadcast(ifaceCIDR); ok {
 			usedSet[b] = struct{}{}
 		}
 	}
@@ -89,7 +89,9 @@ func advance(a netip.Addr) (netip.Addr, bool) {
 	return netip.Addr{}, false
 }
 
-func broadcast(p netip.Prefix) (netip.Addr, bool) {
+// Broadcast returns the IPv4 broadcast address for p, if one exists. For
+// IPv6 prefixes or single-host /31 / /32 it returns ok=false.
+func Broadcast(p netip.Prefix) (netip.Addr, bool) {
 	if !p.Addr().Is4() {
 		return netip.Addr{}, false
 	}

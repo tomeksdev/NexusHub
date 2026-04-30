@@ -1,6 +1,8 @@
+import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 
 import { api, type PageEnvelope } from "../lib/api";
+import { InterfaceCreateModal } from "./InterfaceCreateModal";
 
 interface WGInterface {
   id: string;
@@ -28,6 +30,7 @@ interface WGStatus {
 }
 
 export function InterfacesPage() {
+  const [showCreate, setShowCreate] = useState(false);
   const list = useQuery({
     queryKey: ["interfaces"],
     queryFn: () =>
@@ -61,12 +64,22 @@ export function InterfacesPage() {
     <div className="p-6 space-y-4">
       <header className="flex items-baseline justify-between">
         <h1 className="text-xl font-semibold">Interfaces</h1>
-        {status.data && (
-          <span className="text-sm text-slate-400">
-            mode:{" "}
-            <span className="font-mono text-slate-300">{status.data.mode}</span>
-          </span>
-        )}
+        <div className="flex items-center gap-3">
+          {status.data && (
+            <span className="text-sm text-slate-400">
+              mode:{" "}
+              <span className="font-mono text-slate-300">
+                {status.data.mode}
+              </span>
+            </span>
+          )}
+          <button
+            onClick={() => setShowCreate(true)}
+            className="px-3 py-1.5 rounded-md bg-sky-600 hover:bg-sky-500 text-sm font-medium focus-visible:outline-2 focus-visible:outline-sky-400 focus-visible:outline-offset-2"
+          >
+            + New interface
+          </button>
+        </div>
       </header>
       {items.length === 0 ? (
         <p className="text-slate-400 text-sm">No interfaces configured.</p>
@@ -120,6 +133,12 @@ export function InterfacesPage() {
             </tbody>
           </table>
         </div>
+      )}
+      {showCreate && (
+        <InterfaceCreateModal
+          onClose={() => setShowCreate(false)}
+          onCreated={() => setShowCreate(false)}
+        />
       )}
     </div>
   );

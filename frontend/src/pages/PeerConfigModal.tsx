@@ -65,9 +65,44 @@ export function PeerConfigModal({ peerId, peerName, onClose }: Props) {
 
   async function copy() {
     if (!conf) return;
-    await navigator.clipboard.writeText(conf);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 1500);
+    // navigator.clipboard is only defined on secure contexts (https or
+    // localhost). Bare-metal installs commonly run over plain http on a
+    // LAN — fall back to the execCommand path so Copy still works there.
+    try {
+      if (
+        typeof navigator !== "undefined" &&
+        navigator.clipboard?.writeText &&
+        window.isSecureContext
+      ) {
+        await navigator.clipboard.writeText(conf);
+      } else {
+        legacyCopy(conf);
+      }
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  }
+
+  function legacyCopy(text: string) {
+    const ta = document.createElement("textarea");
+    ta.value = text;
+    // Off-screen rather than display:none — selection requires the
+    // element to be in the layout tree.
+    ta.style.position = "fixed";
+    ta.style.top = "-9999px";
+    ta.setAttribute("readonly", "");
+    document.body.appendChild(ta);
+    try {
+      ta.select();
+      // execCommand is deprecated but still the only path that works in
+      // a plain-http context. The dom-deprecations rule isn't worth a
+      // ts-ignore over.
+      document.execCommand("copy");
+    } finally {
+      document.body.removeChild(ta);
+    }
   }
 
   function download() {

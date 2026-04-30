@@ -16,6 +16,7 @@ interface CreatePayload {
   description?: string;
   assigned_ip?: string;
   allowed_ips?: string[];
+  client_allowed_ips?: string[];
   endpoint?: string;
   dns?: string[];
   persistent_keepalive?: number;
@@ -34,6 +35,7 @@ export function PeerCreateModal({ interfaceID, onClose, onCreated }: Props) {
   const [allowedIPs, setAllowedIPs] = useState("");
   const [endpoint, setEndpoint] = useState("");
   const [keepalive, setKeepalive] = useState("");
+  const [clientAllowedIPs, setClientAllowedIPs] = useState("");
 
   const mut = useMutation<PeerResponse, ApiError>({
     mutationFn: () => {
@@ -47,6 +49,11 @@ export function PeerCreateModal({ interfaceID, onClose, onCreated }: Props) {
         .map((s) => s.trim())
         .filter(Boolean);
       if (ips.length > 0) body.allowed_ips = ips;
+      const clientIPs = clientAllowedIPs
+        .split(",")
+        .map((s) => s.trim())
+        .filter(Boolean);
+      if (clientIPs.length > 0) body.client_allowed_ips = clientIPs;
       if (endpoint.trim()) body.endpoint = endpoint.trim();
       const ka = parseInt(keepalive, 10);
       if (!Number.isNaN(ka) && ka > 0) body.persistent_keepalive = ka;
@@ -108,13 +115,24 @@ export function PeerCreateModal({ interfaceID, onClose, onCreated }: Props) {
           </Field>
         </div>
         <Field
-          label="Allowed IPs"
-          hint="Comma-separated. Defaults to the assigned /32."
+          label="Allowed IPs (server-side)"
+          hint="Source IPs the server accepts from this peer. Defaults to the assigned /32."
         >
           <input
             value={allowedIPs}
             onChange={(e) => setAllowedIPs(e.target.value)}
             placeholder="10.0.0.0/24, 10.1.0.0/16"
+            className={inputCls}
+          />
+        </Field>
+        <Field
+          label="Client AllowedIPs (in exported .conf)"
+          hint="Destinations the peer routes through the tunnel. Empty ⇒ interface CIDR (split-tunnel). Use 0.0.0.0/0, ::/0 for full-tunnel."
+        >
+          <input
+            value={clientAllowedIPs}
+            onChange={(e) => setClientAllowedIPs(e.target.value)}
+            placeholder="0.0.0.0/0, ::/0"
             className={inputCls}
           />
         </Field>

@@ -19,6 +19,7 @@ type DBInterface struct {
 	Name       string
 	PrivateKey []byte // raw (already decrypted)
 	ListenPort int
+	Address    netip.Prefix
 	Peers      []DBPeer
 }
 
@@ -33,8 +34,10 @@ type DBPeer struct {
 
 // ReconcileStartup is a convenience entry point used from cmd/api/main on
 // boot: it converts DB rows to InterfaceSpec values and delegates to
-// Reconciler. Errors are logged; nothing here should block startup.
-func ReconcileStartup(ctx context.Context, client Client, log *slog.Logger, dbs []DBInterface) {
+// Reconciler. Errors are logged; nothing here should block startup. links
+// is optional — pass nil on hosts where the operator manages link
+// lifecycle out of band.
+func ReconcileStartup(ctx context.Context, client Client, links LinkManager, log *slog.Logger, dbs []DBInterface) {
 	if client == nil || len(dbs) == 0 {
 		return
 	}
@@ -44,6 +47,7 @@ func ReconcileStartup(ctx context.Context, client Client, log *slog.Logger, dbs 
 			Name:       d.Name,
 			PrivateKey: d.PrivateKey,
 			ListenPort: d.ListenPort,
+			Address:    d.Address,
 		}
 		for _, p := range d.Peers {
 			ps := PeerSpec{
@@ -67,7 +71,7 @@ func ReconcileStartup(ctx context.Context, client Client, log *slog.Logger, dbs 
 		}
 		specs = append(specs, spec)
 	}
-	r := &Reconciler{Client: client, Logger: log}
+	r := &Reconciler{Client: client, Links: links, Logger: log}
 	_ = r.Reconcile(ctx, specs)
 }
 

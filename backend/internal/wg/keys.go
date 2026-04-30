@@ -82,11 +82,20 @@ func GeneratePresharedKey() ([]byte, error) {
 	return psk, nil
 }
 
-// EncodePublicKey is a small helper so callers don't have to import
-// encoding/base64 alongside this package.
-func EncodePublicKey(raw []byte) string {
+// EncodeKey base64-encodes a 32-byte WireGuard key (private, public, or
+// preshared — they share an encoding) so callers don't have to import
+// encoding/base64. The previous name `EncodePublicKey` lied at call
+// sites that handed it a private or preshared key; this is the
+// neutral spelling.
+func EncodeKey(raw []byte) string {
 	return base64.StdEncoding.EncodeToString(raw)
 }
+
+// EncodePublicKey is retained as an alias for callers that already
+// import the older spelling. New code should use EncodeKey.
+//
+// Deprecated: use EncodeKey.
+func EncodePublicKey(raw []byte) string { return EncodeKey(raw) }
 
 // DecodePublicKey validates shape (44 chars, decodes to 32 bytes) and
 // returns the raw scalar. Returns ErrInvalidPublicKey on any failure.

@@ -98,7 +98,15 @@ export function PeersPage() {
                 rx_bytes: number;
                 tx_bytes: number;
               }>;
-          const list = Array.isArray(payload) ? payload : [payload];
+          // The backend sends `data: null` for an empty snapshot (Go's nil
+          // slice marshals to JSON null, not []). Normalize both that and
+          // any null entries that slip through so we don't crash on
+          // `p.public_key` against a null `p`.
+          const raw = payload == null ? [] : Array.isArray(payload) ? payload : [payload];
+          const list = raw.filter(
+            (p): p is NonNullable<typeof p> => p != null && typeof p.public_key === "string",
+          );
+          if (list.length === 0) return;
           setLive((prev) => {
             const next = { ...prev };
             for (const p of list) {

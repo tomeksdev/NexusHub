@@ -222,14 +222,52 @@ type RulesLoader struct {
 	logEvents *ebpf.Map // nil if the collection omits the ringbuf (tests)
 }
 
-// NewRulesLoader builds the collection from spec, pulls handles for
-// every map the program declares, and returns a ready-to-use loader.
-// The caller owns Close() — failing to call it leaks kernel resources.
+// LoaderOptions controls how NewRulesLoaderWithOptions instantiates the
+// underlying ebpf.Collection. Zero value matches the historical
+// NewRulesLoader behaviour: anonymous maps, no pinning, every restart
+// gets a fresh set.
+type LoaderOptions struct {
+	// PinPath, when non-empty, pins every map in the spec under
+	// <PinPath>/<map_name> via cilium/ebpf's PinByName. If a pin
+	// already exists at that path the existing map is reused — the
+	// kernel-side state survives an API restart and external tools
+	// (bpftool) see the same map set as the running process. Empty
+	// disables pinning entirely.
+	PinPath string
+}
+
+// NewRulesLoader is the historical constructor, equivalent to
+// NewRulesLoaderWithOptions with a zero LoaderOptions. Tests use this
+// shape because pinning requires bpffs which the test harness doesn't
+// provide.
 func NewRulesLoader(spec *ebpf.CollectionSpec) (*RulesLoader, error) {
+	return NewRulesLoaderWithOptions(spec, LoaderOptions{})
+}
+
+// NewRulesLoaderWithOptions builds the collection from spec, applies
+// the supplied options, pulls handles for every map the program
+// declares, and returns a ready-to-use loader. The caller owns Close()
+// — failing to call it leaks kernel resources (and on a pinned
+// deployment, leaves the bpffs entries behind for the next process to
+// reattach to).
+func NewRulesLoaderWithOptions(spec *ebpf.CollectionSpec, opts LoaderOptions) (*RulesLoader, error) {
 	if spec == nil {
 		return nil, errors.New("nil spec")
 	}
-	coll, err := ebpf.NewCollection(spec)
+	collOpts := ebpf.CollectionOptions{}
+	if opts.PinPath != "" {
+		// PinByName tells the kernel loader to pin (or reuse) each map
+		// at <PinPath>/<map_name>. Mark every map in the spec; the
+		// loader will skip programs and rely on the runtime pinning
+		// helper. We mutate the per-map spec rather than the whole
+		// collection so optional maps (rule_hits, log_events) still
+		// follow the same rule.
+		for _, ms := range spec.Maps {
+			ms.Pinning = ebpf.PinByName
+		}
+		collOpts.Maps.PinPath = opts.PinPath
+	}
+	coll, err := ebpf.NewCollectionWithOptions(spec, collOpts)
 	if err != nil {
 		return nil, fmt.Errorf("new collection: %w", err)
 	}

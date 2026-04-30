@@ -80,6 +80,11 @@ func (h *PeerEventsHandler) Events(c *gin.Context) {
 
 	state := map[string]peerSnapshot{} // key = iface|pubkey
 	initial := h.pollAll(ctx, state, true)
+	// Coerce nil → [] so JSON marshals to an empty array, not null —
+	// frontends iterating the snapshot would otherwise crash on `null`.
+	if initial == nil {
+		initial = []peerEvent{}
+	}
 	writeSSE(c.Writer, flusher, "snapshot", initial)
 
 	ticker := time.NewTicker(interval)

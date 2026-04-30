@@ -15,7 +15,19 @@ export interface SSEHandlers {
 }
 
 export async function sseStream(path: string, h: SSEHandlers): Promise<void> {
-  const token = await getAccessTokenForStream();
+  // getAccessTokenForStream may reject if the refresh token is reused or
+  // invalid (api.ts already calls clearTokens in that case, which routes
+  // the AuthProvider back to the login page). Catching here keeps the
+  // failure from surfacing as an uncaught promise rejection in the
+  // browser console while the unmount races the redirect.
+  let token: string | null;
+  try {
+    token = await getAccessTokenForStream();
+  } catch (err) {
+    h.onError?.(err);
+    h.onClose?.();
+    return;
+  }
   let resp: Response;
   try {
     resp = await fetch(path, {

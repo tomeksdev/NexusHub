@@ -22,10 +22,16 @@ import (
 type InterfaceHandler struct {
 	Interfaces *repository.InterfaceRepo
 	AEAD       *crypto.AEAD
-	// Client brings the device up in the kernel after a DB insert and
-	// tears it down on delete. Nil in tests and dev environments without
-	// the kernel module.
+	// Client pushes private key + listen port + peers into the kernel
+	// device once it exists. Nil in tests and dev environments without
+	// the WG kernel module loaded.
 	Client wg.Client
+	// Links creates / deletes the kernel link itself. wgctrl can only
+	// configure existing devices, so without this every Create lands
+	// in the DB but nothing reaches the kernel. Nil ⇒ skip the
+	// rtnetlink steps (acceptable for tests and for hosts where the
+	// operator manages link lifecycle out-of-band).
+	Links wg.LinkManager
 }
 
 type interfaceResponse struct {
@@ -114,11 +120,22 @@ func (h *InterfaceHandler) Create(c *gin.Context) {
 		return
 	}
 
-	// Bring the kernel device up with the fresh keys + port. Most netlink
-	// backends implicitly create a wg device on first ConfigureDevice
-	// call; on platforms that don't (older kernels, some userspace impls)
-	// the operator will need to `ip link add dev <name> type wireguard`
-	// first — we log rather than fail so the API row still lands.
+	// Bring the kernel device up. Order matters: rtnetlink creates +
+	// addresses + ups the link, then wgctrl pushes the private key /
+	// listen port over generic netlink. Failures here are logged rather
+	// than rolled back — the DB row is the source of truth and the
+	// startup reconciler will converge on next API restart.
+	if h.Links != nil {
+		if err := h.Links.EnsureLink(out.Name); err != nil {
+			slog.WarnContext(c, "kernel ensure link", "err", err, "iface", out.Name)
+		}
+		if err := h.Links.EnsureAddress(out.Name, out.Address); err != nil {
+			slog.WarnContext(c, "kernel ensure address", "err", err, "iface", out.Name)
+		}
+		if err := h.Links.EnsureUp(out.Name); err != nil {
+			slog.WarnContext(c, "kernel link up", "err", err, "iface", out.Name)
+		}
+	}
 	if h.Client != nil {
 		port := out.ListenPort
 		kcfg := wg.Config{
@@ -126,7 +143,7 @@ func (h *InterfaceHandler) Create(c *gin.Context) {
 			ListenPort: &port,
 		}
 		if err := h.Client.ConfigureDevice(out.Name, kcfg); err != nil {
-			slog.WarnContext(c, "kernel create interface", "err", err, "iface", out.Name)
+			slog.WarnContext(c, "kernel configure interface", "err", err, "iface", out.Name)
 		}
 	}
 	c.JSON(http.StatusCreated, toInterfaceResponse(out))
@@ -202,6 +219,14 @@ func (h *InterfaceHandler) Delete(c *gin.Context) {
 		cfg := wg.Config{ReplacePeers: true}
 		if err := h.Client.ConfigureDevice(name, cfg); err != nil {
 			slog.WarnContext(ctx, "kernel clear interface peers", "err", err, "iface", name)
+		}
+	}
+	// Tear the rtnetlink link down. Done after the wgctrl peer-clear so
+	// in-flight handshakes see a closed door rather than a still-up
+	// device with no auth.
+	if h.Links != nil && name != "" {
+		if err := h.Links.DeleteLink(name); err != nil {
+			slog.WarnContext(ctx, "kernel delete link", "err", err, "iface", name)
 		}
 	}
 	c.Status(http.StatusNoContent)

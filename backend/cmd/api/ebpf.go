@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net"
 	"os"
+	"path/filepath"
 
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/link"
@@ -18,6 +19,13 @@ import (
 	"github.com/tomeksdev/NexusHub/backend/internal/repository"
 	"github.com/tomeksdev/NexusHub/ebpf/userspace"
 )
+
+// bpfPinDir is the bpffs subdirectory NexusHub pins maps under. Lives
+// directly on /sys/fs/bpf so external tooling (bpftool, the systemd
+// nexushub-uninstall handler) finds it at a stable path. Operators
+// running multiple NexusHub instances on one host need a downstream
+// fix — we don't namespace by listen port today.
+const bpfPinDir = "/sys/fs/bpf/nexushub"
 
 // ebpfStack bundles the kernel-side runtime (loader + syncer +
 // optional consumer + program attachments). main.go owns the
@@ -44,10 +52,17 @@ type ebpfStack struct {
 // where every field may be a no-op equivalent — the caller never has
 // to nil-check syncer. Errors are logged, not propagated; the API
 // runs DB-only when the kernel can't be reached.
+//
+// xdpIface stays env-driven (NEXUSHUB_XDP_IFACE) — auto-detecting the
+// default-route NIC is a foot-gun on hosts with multiple uplinks.
+// tcIfaces is the slice of WireGuard interface names from the DB that
+// the caller has already reconciled; we attach the TC program to each
+// one. NEXUSHUB_TC_IFACE remains as an override for operators running
+// a single hand-managed wg device.
 func startEBPF(
 	ctx context.Context,
 	logs *repository.ConnectionLogRepo,
-	xdpIface, tcIface string,
+	xdpIface string, tcIfaces []string,
 	logger *slog.Logger,
 ) *ebpfStack {
 	st := &ebpfStack{syncer: baseebpf.NoopSyncer{}}
@@ -75,12 +90,22 @@ func startEBPF(
 		logger.Warn("ebpf disabled — bpf2go spec load failed", "err", err)
 		return st
 	}
-	loader, err := userspace.NewRulesLoader(spec)
+
+	// Try to enable bpffs pinning. If the directory can't be created
+	// (no bpffs mount, no permission), fall back to anonymous maps so
+	// the API still loads — operators get an unpinned datapath rather
+	// than no datapath. Operators who care about persistence will see
+	// the warning and fix the mount.
+	pinPath := ensureBPFPinDir(logger)
+
+	loader, err := userspace.NewRulesLoaderWithOptions(spec, userspace.LoaderOptions{PinPath: pinPath})
 	if err != nil {
 		// Most common cause: the kernel rejected one of the maps
-		// (verifier complaint, missing helper). The log here is
-		// the only signal — move on without kernel sync.
-		logger.Warn("ebpf disabled — loader init failed", "err", err)
+		// (verifier complaint, missing helper) or the pin path
+		// already holds maps from an older binary with an
+		// incompatible signature. The log here is the only signal —
+		// move on without kernel sync.
+		logger.Warn("ebpf disabled — loader init failed", "err", err, "pin_path", pinPath)
 		return st
 	}
 	st.loader = loader
@@ -91,8 +116,19 @@ func startEBPF(
 	if xdpIface != "" {
 		st.attachXDP(loader, xdpIface, logger)
 	}
-	if tcIface != "" {
-		st.attachTC(loader, tcIface, logger)
+	// Attach TC to every supplied WG interface. De-dup defensively
+	// so an operator who sets NEXUSHUB_TC_IFACE to a name that
+	// happens to be in the DB doesn't double-attach.
+	seen := map[string]struct{}{}
+	for _, name := range tcIfaces {
+		if name == "" {
+			continue
+		}
+		if _, dup := seen[name]; dup {
+			continue
+		}
+		seen[name] = struct{}{}
+		st.attachTC(loader, name, logger)
 	}
 
 	// Wire the syncer + metrics collector + log consumer.
@@ -262,6 +298,29 @@ func (s *dbLogSink) Handle(ctx context.Context, ev userspace.LogEvent, matched *
 		entry.DstPort = &p
 	}
 	return s.logs.Insert(ctx, entry)
+}
+
+// ensureBPFPinDir creates the pin directory under /sys/fs/bpf so the
+// loader can place maps there. Returns the path on success; "" when
+// the directory can't be created (no bpffs mount, EACCES, or the
+// kernel doesn't expose bpffs at all). The empty-string return is the
+// signal the loader uses to fall back to anonymous maps.
+func ensureBPFPinDir(logger *slog.Logger) string {
+	// /sys/fs/bpf must already be a bpffs mount — making one ourselves
+	// would require CAP_SYS_ADMIN and would surprise operators who
+	// have it mounted elsewhere. We just check the parent exists.
+	parent := filepath.Dir(bpfPinDir)
+	if _, err := os.Stat(parent); err != nil {
+		logger.Warn("bpffs not present — disabling map pinning",
+			"path", parent, "err", err)
+		return ""
+	}
+	if err := os.MkdirAll(bpfPinDir, 0o700); err != nil {
+		logger.Warn("could not create bpf pin dir — disabling map pinning",
+			"path", bpfPinDir, "err", err)
+		return ""
+	}
+	return bpfPinDir
 }
 
 // xdpInterfaceFromEnv reads NEXUSHUB_XDP_IFACE (default empty —

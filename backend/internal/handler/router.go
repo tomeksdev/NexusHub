@@ -39,6 +39,11 @@ type Deps struct {
 	// environments without the kernel module — handlers skip kernel sync
 	// and remain DB-only.
 	WG wg.Client
+	// WGLinks creates / brings up / tears down the kernel link itself
+	// via rtnetlink. Separate from WG (which is generic-netlink via
+	// wgctrl) because the two subsystems are. Nil ⇒ handlers skip the
+	// link-management step.
+	WGLinks wg.LinkManager
 	// DefaultWGEndpoint and DefaultWGDNS feed the wg-quick config
 	// renderer's fall-back chain (peer → interface → default). They're
 	// sourced from WG_ENDPOINT and the interface DNS column respectively.
@@ -120,7 +125,8 @@ func NewRouter(deps Deps) *gin.Engine {
 	// download a config they didn't create.
 	if deps.Interfaces != nil && deps.Peers != nil && deps.AEAD != nil {
 		ifaceH := &InterfaceHandler{
-			Interfaces: deps.Interfaces, AEAD: deps.AEAD, Client: deps.WG,
+			Interfaces: deps.Interfaces, AEAD: deps.AEAD,
+			Client: deps.WG, Links: deps.WGLinks,
 		}
 		peerH := &PeerHandler{
 			Peers: deps.Peers, Interfaces: deps.Interfaces, AEAD: deps.AEAD,

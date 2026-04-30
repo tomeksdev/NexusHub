@@ -84,9 +84,12 @@ func toRuleResponse(r *repository.Rule) ruleResponse {
 	}
 }
 
-// toSyncRule flattens a repo rule to the shape the syncer wants. Lives
+// ToSyncRule flattens a repo rule to the shape the syncer wants. Lives
 // here (handler layer) so neither repository nor ebpf packages need
-// to know about each other.
+// to know about each other. Exported so cmd/api/main.go can use it
+// during startup reconcile without re-deriving the same conversion.
+func ToSyncRule(r *repository.Rule) ebpf.Rule { return toSyncRule(r) }
+
 func toSyncRule(r *repository.Rule) ebpf.Rule {
 	u16 := func(v *int) *uint16 {
 		if v == nil {
