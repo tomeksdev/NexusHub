@@ -23,7 +23,7 @@ require (
 	go.opentelemetry.io/otel/sdk v1.43.0
 	go.opentelemetry.io/otel/trace v1.43.0
 	golang.org/x/crypto v0.50.0
-	golang.org/x/time v0.12.0
+	golang.org/x/time v0.15.0
 	golang.zx2c4.com/wireguard/wgctrl v0.0.0-20241231184526-a9ab2273dd10
 )
 
