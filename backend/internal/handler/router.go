@@ -141,6 +141,7 @@ func NewRouter(deps Deps) *gin.Engine {
 		admin.GET("/interfaces", ifaceH.List)
 		admin.POST("/interfaces", ifaceH.Create)
 		admin.GET("/interfaces/:id", ifaceH.Get)
+		admin.PATCH("/interfaces/:id", ifaceH.Update)
 		admin.DELETE("/interfaces/:id", ifaceH.Delete)
 
 		admin.GET("/peers", peerH.List)

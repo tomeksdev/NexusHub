@@ -124,32 +124,33 @@ export function PeerConfigModal({ peerId, peerName, onClose }: Props) {
       maxWidthClass="max-w-3xl"
     >
       {error ? (
-        <div className="text-rose-400 text-sm">Failed to load: {error}</div>
+        <div className="text-danger text-sm">Failed to load: {error}</div>
       ) : !conf || !qrUrl ? (
-        <div className="text-slate-400 text-sm">Loading…</div>
+        <div className="text-muted text-sm">Loading…</div>
       ) : (
         <div className="grid md:grid-cols-[1fr_auto] gap-5">
           <div className="min-w-0">
-            <pre className="bg-slate-950 border border-slate-800 rounded-md p-3 text-xs font-mono text-slate-300 overflow-auto max-h-80 whitespace-pre-wrap break-all">
+            <pre
+              className="rounded-md p-3 text-xs font-mono overflow-auto max-h-80 whitespace-pre-wrap break-all"
+              style={{
+                background: "#111",
+                border: "1px solid var(--color-line-strong)",
+                color: "var(--color-text)",
+              }}
+            >
               {conf}
             </pre>
             <div className="flex gap-2 mt-3">
-              <button
-                onClick={copy}
-                className="px-3 py-1.5 rounded-md bg-slate-800 hover:bg-slate-700 text-sm focus-visible:outline-2 focus-visible:outline-indigo-500 focus-visible:outline-offset-2"
-              >
+              <button onClick={copy} className="btn-ghost">
                 {copied ? "Copied" : "Copy"}
               </button>
-              <button
-                onClick={download}
-                className="px-3 py-1.5 rounded-md bg-slate-800 hover:bg-slate-700 text-sm focus-visible:outline-2 focus-visible:outline-indigo-500 focus-visible:outline-offset-2"
-              >
+              <button onClick={download} className="btn-ghost">
                 Download .conf
               </button>
               <button
                 onClick={rotatePSK}
                 disabled={rotating}
-                className="px-3 py-1.5 rounded-md bg-amber-900/40 text-amber-300 hover:bg-amber-900/60 disabled:opacity-50 text-sm ml-auto focus-visible:outline-2 focus-visible:outline-amber-400 focus-visible:outline-offset-2"
+                className="btn-primary ml-auto"
               >
                 {rotating ? "Rotating…" : "Rotate PSK"}
               </button>
@@ -161,7 +162,7 @@ export function PeerConfigModal({ peerId, peerName, onClose }: Props) {
               alt="WireGuard config QR"
               className="w-56 h-56 rounded-md bg-white p-2"
             />
-            <p className="text-xs text-slate-500">
+            <p className="text-faint text-xs">
               Scan in the WireGuard mobile app
             </p>
           </div>

@@ -112,6 +112,14 @@ func (h *InterfaceHandler) Create(c *gin.Context) {
 	if err != nil {
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+			// Disambiguate the two unique constraints — operators
+			// hitting a port conflict get a different message than
+			// the name-clash case so they can fix the right field.
+			if pgErr.ConstraintName == "wg_interfaces_listen_port_unique" {
+				writeError(c, http.StatusConflict, "LISTEN_PORT_CONFLICT",
+					"listen port already in use by another location")
+				return
+			}
 			writeError(c, http.StatusConflict, apierror.CodeConflict, "interface name already exists")
 			return
 		}
@@ -144,6 +152,17 @@ func (h *InterfaceHandler) Create(c *gin.Context) {
 		}
 		if err := h.Client.ConfigureDevice(out.Name, kcfg); err != nil {
 			slog.WarnContext(c, "kernel configure interface", "err", err, "iface", out.Name)
+		}
+		// Read-back: confirm the kernel actually accepted the port we
+		// asked for. wgctrl can pick a different port silently when
+		// the requested one is in use by something netlink doesn't
+		// see (e.g. a non-WG UDP socket). Surfacing the drift in the
+		// API response means the UI can warn instead of lying.
+		if live, derr := h.Client.Device(out.Name); derr == nil &&
+			live.ListenPort != 0 && live.ListenPort != out.ListenPort {
+			slog.WarnContext(c, "kernel listen-port drift after create",
+				"iface", out.Name,
+				"requested", out.ListenPort, "actual", live.ListenPort)
 		}
 	}
 	c.JSON(http.StatusCreated, toInterfaceResponse(out))
@@ -183,6 +202,104 @@ func (h *InterfaceHandler) Get(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, toInterfaceResponse(iface))
+}
+
+// updateInterfaceRequest is the PATCH-shaped payload. Pointer-to-
+// pointer for optional columns so the JSON decoder can distinguish
+// "absent" (don't touch) from "null" (clear) — gin's binding gives us
+// the latter via explicit JSON null with the inner pointer nil.
+type updateInterfaceRequest struct {
+	ListenPort *int      `json:"listen_port"`
+	Address    *string   `json:"address"`
+	DNS        *[]string `json:"dns"`
+	MTU        **int     `json:"mtu,omitempty"`
+	Endpoint   **string  `json:"endpoint,omitempty"`
+	PostUp     **string  `json:"post_up,omitempty"`
+	PostDown   **string  `json:"post_down,omitempty"`
+	IsActive   *bool     `json:"is_active"`
+}
+
+// Update applies a partial change to a wg_interfaces row. Name and key
+// material are intentionally not editable — renaming a kernel link
+// requires a delete + recreate, and rotating the server private key
+// invalidates every peer's PSK in one shot. Both are fixable by the
+// operator deleting the location and recreating it.
+func (h *InterfaceHandler) Update(c *gin.Context) {
+	id, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		writeError(c, http.StatusBadRequest, apierror.CodeInvalidRequest, "invalid id")
+		return
+	}
+	var req updateInterfaceRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		writeError(c, http.StatusBadRequest, apierror.CodeInvalidRequest, err.Error())
+		return
+	}
+
+	params := repository.UpdateInterfaceParams{
+		ListenPort: req.ListenPort,
+		DNS:        req.DNS,
+		MTU:        req.MTU,
+		Endpoint:   req.Endpoint,
+		PostUp:     req.PostUp,
+		PostDown:   req.PostDown,
+		IsActive:   req.IsActive,
+	}
+	if req.Address != nil {
+		pfx, err := netip.ParsePrefix(*req.Address)
+		if err != nil {
+			writeError(c, http.StatusBadRequest, apierror.CodeInvalidRequest, "address must be a CIDR")
+			return
+		}
+		params.Address = &pfx
+	}
+	if req.ListenPort != nil &&
+		(*req.ListenPort < 1 || *req.ListenPort > 65535) {
+		writeError(c, http.StatusBadRequest, apierror.CodeInvalidRequest,
+			"listen_port must be 1–65535")
+		return
+	}
+
+	ctx := c.Request.Context()
+	out, err := h.Interfaces.Update(ctx, id, params)
+	if errors.Is(err, repository.ErrInterfaceNotFound) {
+		writeError(c, http.StatusNotFound, apierror.CodeNotFound, "interface not found")
+		return
+	}
+	if err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+			// Unique constraint hit — most likely the listen_port one
+			// (migration 009). Surface as 409 with a code the
+			// frontend can branch on.
+			writeError(c, http.StatusConflict, "LISTEN_PORT_CONFLICT",
+				"listen port already in use by another location")
+			return
+		}
+		slog.ErrorContext(ctx, "update interface", "err", err)
+		writeError(c, http.StatusInternalServerError, apierror.CodeInternal, "internal error")
+		return
+	}
+
+	// Push the changed knobs into the kernel. Address / port changes
+	// are the operator-visible bits the rtnetlink + wgctrl layers
+	// need to know about. Failures are logged; the DB row is
+	// authoritative and the reconciler will re-converge on restart.
+	if h.Links != nil && req.Address != nil {
+		if err := h.Links.EnsureAddress(out.Name, out.Address); err != nil {
+			slog.WarnContext(ctx, "kernel ensure address on update", "err", err, "iface", out.Name)
+		}
+	}
+	if h.Client != nil && req.ListenPort != nil {
+		port := out.ListenPort
+		if err := h.Client.ConfigureDevice(out.Name, wg.Config{
+			ListenPort: &port,
+		}); err != nil {
+			slog.WarnContext(ctx, "kernel apply listen port", "err", err, "iface", out.Name)
+		}
+	}
+
+	c.JSON(http.StatusOK, toInterfaceResponse(out))
 }
 
 func (h *InterfaceHandler) Delete(c *gin.Context) {

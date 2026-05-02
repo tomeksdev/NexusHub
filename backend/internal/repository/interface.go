@@ -152,6 +152,77 @@ func (r *InterfaceRepo) ListPage(ctx context.Context, limit, offset int, sortFie
 	return items, total, nil
 }
 
+// UpdateInterfaceParams is the PATCH-shaped param set. Only non-nil
+// fields are written; the caller decides what changes by leaving
+// untouched fields as nil. Optional columns (mtu/endpoint/post_up/post_down)
+// use pointer-to-pointer semantics so the caller can pick between
+// "leave alone" (nil) and "clear to NULL" (non-nil pointer to nil
+// inner pointer). The handler resolves the difference.
+type UpdateInterfaceParams struct {
+	ListenPort *int
+	Address    *netip.Prefix
+	DNS        *[]string
+	// Pointer-to-pointer: nil = unset, &nil = clear to NULL,
+	// &(non-nil) = set to value.
+	MTU      **int
+	Endpoint **string
+	PostUp   **string
+	PostDown **string
+	IsActive *bool
+}
+
+func (r *InterfaceRepo) Update(ctx context.Context, id uuid.UUID, p UpdateInterfaceParams) (*Interface, error) {
+	sets := []string{}
+	args := []any{id}
+	idx := 2
+	add := func(expr string, v any) {
+		sets = append(sets, fmt.Sprintf("%s = $%d", expr, idx))
+		args = append(args, v)
+		idx++
+	}
+	if p.ListenPort != nil {
+		add("listen_port", *p.ListenPort)
+	}
+	if p.Address != nil {
+		// Cast through ::inet so a "10.7.0.1/24" string parses cleanly.
+		sets = append(sets, fmt.Sprintf("address = $%d::inet", idx))
+		args = append(args, p.Address.String())
+		idx++
+	}
+	if p.DNS != nil {
+		add("dns", *p.DNS)
+	}
+	if p.MTU != nil {
+		add("mtu", *p.MTU)
+	}
+	if p.Endpoint != nil {
+		add("endpoint", *p.Endpoint)
+	}
+	if p.PostUp != nil {
+		add("post_up", *p.PostUp)
+	}
+	if p.PostDown != nil {
+		add("post_down", *p.PostDown)
+	}
+	if p.IsActive != nil {
+		add("is_active", *p.IsActive)
+	}
+	if len(sets) == 0 {
+		// No-op update — return the current row so callers can render
+		// it without a follow-up GET.
+		return r.GetByID(ctx, id)
+	}
+	q := fmt.Sprintf(`UPDATE wg_interfaces SET %s WHERE id = $1`, joinComma(sets))
+	cmd, err := r.pool.Exec(ctx, q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("update interface: %w", err)
+	}
+	if cmd.RowsAffected() == 0 {
+		return nil, ErrInterfaceNotFound
+	}
+	return r.GetByID(ctx, id)
+}
+
 func (r *InterfaceRepo) Delete(ctx context.Context, id uuid.UUID) error {
 	cmd, err := r.pool.Exec(ctx, `DELETE FROM wg_interfaces WHERE id = $1`, id)
 	if err != nil {

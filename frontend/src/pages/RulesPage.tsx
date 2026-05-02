@@ -25,12 +25,18 @@ export interface Rule {
   updated_at: string;
 }
 
-const actionBadge: Record<Rule["action"], string> = {
-  allow: "bg-emerald-500/15 text-emerald-300 border-emerald-500/30",
-  deny: "bg-rose-500/15 text-rose-300 border-rose-500/30",
-  rate_limit: "bg-amber-500/15 text-amber-300 border-amber-500/30",
-  log: "bg-sky-500/15 text-sky-300 border-sky-500/30",
-};
+function actionBadgeClass(a: Rule["action"]): string {
+  switch (a) {
+    case "allow":
+      return "status-badge ok";
+    case "deny":
+      return "status-badge critical";
+    case "rate_limit":
+      return "status-badge warning";
+    case "log":
+      return "status-badge muted";
+  }
+}
 
 function summarisePorts(from?: number, to?: number): string {
   if (from == null && to == null) return "*";
@@ -54,7 +60,6 @@ export function RulesPage() {
     mutationFn: (r: Rule) =>
       api(`/api/v1/rules/${r.id}`, {
         method: "PATCH",
-        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ is_active: !r.is_active }),
       }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["rules"] }),
@@ -72,10 +77,10 @@ export function RulesPage() {
   };
 
   if (isLoading)
-    return <div className="p-6 text-slate-400">Loading rules…</div>;
+    return <div className="p-6 text-muted">Loading rules…</div>;
   if (isError)
     return (
-      <div className="p-6 text-rose-400">
+      <div className="p-6 text-danger">
         Failed to load: {(error as Error).message}
       </div>
     );
@@ -83,121 +88,113 @@ export function RulesPage() {
   const items = data?.items ?? [];
 
   return (
-    <div className="p-6 space-y-4">
-      <header className="flex items-baseline justify-between">
+    <div className="space-y-6">
+      <div className="topbar">
         <div>
-          <h1 className="text-xl font-semibold">eBPF rules</h1>
-          <p className="text-xs text-slate-500 mt-0.5">
-            Rules apply in descending priority order. Kernel enforcement is a
-            no-op until the eBPF loader is wired in production (Phase 5).
+          <h1 className="page-title">eBPF rules</h1>
+          <p className="text-faint text-xs mt-1">
+            Rules apply in descending priority order.
           </p>
         </div>
-        <div className="flex items-center gap-3">
-          <span className="text-sm text-slate-500">
-            {data?.total ?? 0} total
-          </span>
+        <div className="topbar-actions">
+          <span className="text-muted text-sm">{data?.total ?? 0} total</span>
           <button
+            type="button"
             onClick={() => setCreating(true)}
-            className="px-3 py-1.5 rounded-md text-sm bg-indigo-600 hover:bg-indigo-500"
+            className="btn-primary"
           >
-            New rule
+            + New rule
           </button>
         </div>
-      </header>
+      </div>
 
       {items.length === 0 ? (
-        <p className="text-slate-400 text-sm">
-          No rules yet. Click <strong>New rule</strong> to create the first.
-        </p>
+        <div className="panel">
+          <p className="text-muted">
+            No rules yet. Click <strong>New rule</strong> to create the first.
+          </p>
+        </div>
       ) : (
-        <div className="overflow-x-auto rounded-lg border border-slate-800">
-          <table className="min-w-full text-sm">
-            <thead className="bg-slate-900 text-slate-400 text-left">
+        <div className="data-table">
+          <table>
+            <thead>
               <tr>
-                <th className="px-4 py-2 font-medium">Priority</th>
-                <th className="px-4 py-2 font-medium">Name</th>
-                <th className="px-4 py-2 font-medium">Action</th>
-                <th className="px-4 py-2 font-medium">Direction</th>
-                <th className="px-4 py-2 font-medium">Protocol</th>
-                <th className="px-4 py-2 font-medium">Source</th>
-                <th className="px-4 py-2 font-medium">Destination</th>
-                <th className="px-4 py-2 font-medium">Active</th>
-                <th className="px-4 py-2 font-medium"></th>
+                <th>Priority</th>
+                <th>Name</th>
+                <th>Action</th>
+                <th>Direction</th>
+                <th>Protocol</th>
+                <th>Source</th>
+                <th>Destination</th>
+                <th>Active</th>
+                <th aria-label="Actions" />
               </tr>
             </thead>
             <tbody>
               {items.map((r) => (
-                <tr
-                  key={r.id}
-                  className="border-t border-slate-800 hover:bg-slate-900/50"
-                >
-                  <td className="px-4 py-2 text-slate-400">{r.priority}</td>
-                  <td className="px-4 py-2">
+                <tr key={r.id}>
+                  <td className="text-muted">{r.priority}</td>
+                  <td>
                     <div className="font-medium">{r.name}</div>
                     {r.description && (
-                      <div className="text-xs text-slate-500">
-                        {r.description}
-                      </div>
+                      <div className="text-faint text-xs">{r.description}</div>
                     )}
                   </td>
-                  <td className="px-4 py-2">
-                    <span
-                      className={
-                        "inline-block px-2 py-0.5 rounded border text-xs " +
-                        actionBadge[r.action]
-                      }
-                    >
+                  <td>
+                    <span className={actionBadgeClass(r.action)}>
+                      <span className="dot" />
                       {r.action}
                       {r.action === "rate_limit" && r.rate_pps && (
-                        <span className="ml-1 text-slate-400">
-                          {r.rate_pps}/s
-                        </span>
+                        <span className="ml-1">{r.rate_pps}/s</span>
                       )}
                     </span>
                   </td>
-                  <td className="px-4 py-2 text-slate-400">{r.direction}</td>
-                  <td className="px-4 py-2 text-slate-400">
+                  <td className="text-muted">{r.direction}</td>
+                  <td className="text-muted">
                     {r.protocol}
                     {(r.protocol === "tcp" || r.protocol === "udp") && (
-                      <span className="ml-1 text-slate-500 text-xs">
+                      <span className="text-faint text-xs ml-1">
                         :{summarisePorts(r.src_port_from, r.src_port_to)}→
                         {summarisePorts(r.dst_port_from, r.dst_port_to)}
                       </span>
                     )}
                   </td>
-                  <td className="px-4 py-2 font-mono text-xs text-slate-400">
-                    {r.src_cidr ?? <span className="text-slate-500">any</span>}
+                  <td className="font-mono text-xs text-muted">
+                    {r.src_cidr ?? <span className="text-faint">any</span>}
                   </td>
-                  <td className="px-4 py-2 font-mono text-xs text-slate-400">
-                    {r.dst_cidr ?? <span className="text-slate-500">any</span>}
+                  <td className="font-mono text-xs text-muted">
+                    {r.dst_cidr ?? <span className="text-faint">any</span>}
                   </td>
-                  <td className="px-4 py-2">
+                  <td>
                     <button
+                      type="button"
                       onClick={() => toggleMut.mutate(r)}
                       disabled={toggleMut.isPending}
                       className={
-                        "px-2 py-0.5 rounded text-xs border " +
-                        (r.is_active
-                          ? "bg-emerald-500/15 text-emerald-300 border-emerald-500/30"
-                          : "bg-slate-800 text-slate-500 border-slate-700")
+                        r.is_active ? "status-badge ok" : "status-badge muted"
                       }
                     >
+                      <span className="dot" />
                       {r.is_active ? "on" : "off"}
                     </button>
                   </td>
-                  <td className="px-4 py-2 text-right space-x-2 whitespace-nowrap">
-                    <button
-                      onClick={() => setEditing(r)}
-                      className="text-slate-400 hover:text-slate-200 text-xs"
-                    >
-                      Edit
-                    </button>
-                    <button
-                      onClick={() => onDelete(r)}
-                      className="text-rose-400 hover:text-rose-300 text-xs"
-                    >
-                      Delete
-                    </button>
+                  <td className="text-right whitespace-nowrap">
+                    <div className="inline-flex gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setEditing(r)}
+                        className="btn-ghost"
+                      >
+                        Edit
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => onDelete(r)}
+                        className="btn-danger"
+                      >
+                        Delete
+                      </button>
+                    </div>
                   </td>
                 </tr>
               ))}

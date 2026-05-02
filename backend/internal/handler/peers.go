@@ -250,6 +250,23 @@ func (h *PeerHandler) Create(c *gin.Context) {
 			bits = 128
 		}
 		allowed = []netip.Prefix{netip.PrefixFrom(assigned, bits)}
+	} else {
+		// Reject configurations where the assigned address can't enter
+		// via any allowed prefix. The kernel would silently drop those
+		// peers' packets at the WG ingress check; surfacing it at
+		// create time saves the operator a debugging session.
+		covered := false
+		for _, p := range allowed {
+			if p.Contains(assigned) {
+				covered = true
+				break
+			}
+		}
+		if !covered {
+			writeError(c, http.StatusBadRequest, apierror.CodeInvalidRequest,
+				"assigned_ip is not contained in any allowed_ips prefix")
+			return
+		}
 	}
 
 	dns := req.DNS

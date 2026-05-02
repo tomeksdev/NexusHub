@@ -57,24 +57,24 @@ export function LoginPage() {
   }
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-slate-950 text-slate-100">
+    <div className="min-h-screen flex items-center justify-center px-4">
       <form
         onSubmit={onSubmit}
-        className="w-full max-w-sm rounded-xl bg-slate-900 border border-slate-800 p-8 space-y-4 shadow-2xl"
+        className="panel w-full max-w-sm space-y-4"
       >
-        <h1 className="text-2xl font-semibold">NexusHub</h1>
-        <p className="text-sm text-slate-400">
-          {needsTOTP
-            ? "Enter the 6-digit code from your authenticator app."
-            : "Sign in to continue."}
-        </p>
+        <div>
+          <h1 className="text-2xl font-bold text-white">NexusHub</h1>
+          <p className="text-muted text-sm mt-1">
+            {needsTOTP
+              ? "Enter the 6-digit code from your authenticator app."
+              : "Sign in to continue."}
+          </p>
+        </div>
 
         {!needsTOTP && (
           <>
-            <div className="space-y-1">
-              <label htmlFor="email" className="text-sm text-slate-300">
-                Email
-              </label>
+            <label className="field-label">
+              <span className="field-label-text">Email</span>
               <input
                 id="email"
                 type="email"
@@ -82,13 +82,11 @@ export function LoginPage() {
                 required
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
-                className="w-full rounded-md bg-slate-800 border border-slate-700 px-3 py-2 text-sm focus-visible:outline-2 focus-visible:outline-sky-500 focus-visible:outline-offset-1 focus:border-sky-500"
+                className="field-input"
               />
-            </div>
-            <div className="space-y-1">
-              <label htmlFor="password" className="text-sm text-slate-300">
-                Password
-              </label>
+            </label>
+            <label className="field-label">
+              <span className="field-label-text">Password</span>
               <input
                 id="password"
                 type="password"
@@ -96,17 +94,15 @@ export function LoginPage() {
                 required
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
-                className="w-full rounded-md bg-slate-800 border border-slate-700 px-3 py-2 text-sm focus-visible:outline-2 focus-visible:outline-sky-500 focus-visible:outline-offset-1 focus:border-sky-500"
+                className="field-input"
               />
-            </div>
+            </label>
           </>
         )}
 
         {needsTOTP && (
-          <div className="space-y-1">
-            <label htmlFor="totp" className="text-sm text-slate-300">
-              Authenticator code
-            </label>
+          <label className="field-label">
+            <span className="field-label-text">Authenticator code</span>
             <input
               id="totp"
               ref={totpRef}
@@ -118,7 +114,7 @@ export function LoginPage() {
               required
               value={totpCode}
               onChange={(e) => setTotpCode(e.target.value.replace(/\D/g, ""))}
-              className="w-full rounded-md bg-slate-800 border border-slate-700 px-3 py-2 text-lg tracking-[0.5em] text-center font-mono focus-visible:outline-2 focus-visible:outline-sky-500 focus-visible:outline-offset-1 focus:border-sky-500"
+              className="field-input text-center text-lg tracking-[0.5em] font-mono"
             />
             <button
               type="button"
@@ -127,19 +123,19 @@ export function LoginPage() {
                 setTotpCode("");
                 setErr(null);
               }}
-              className="text-xs text-slate-500 hover:text-slate-300"
+              className="text-faint hover:text-muted text-xs mt-2"
             >
               ← Use a different account
             </button>
-          </div>
+          </label>
         )}
 
-        {err && <p className="text-sm text-rose-400">{err}</p>}
+        {err && <p className="text-danger text-sm">{err}</p>}
 
         <button
           type="submit"
           disabled={busy || (needsTOTP && totpCode.length !== 6)}
-          className="w-full rounded-md bg-sky-600 hover:bg-sky-500 disabled:bg-slate-700 disabled:text-slate-400 px-4 py-2 text-sm font-medium focus-visible:outline-2 focus-visible:outline-sky-400 focus-visible:outline-offset-2"
+          className="btn-primary w-full"
         >
           {busy ? "Signing in…" : needsTOTP ? "Verify" : "Sign in"}
         </button>

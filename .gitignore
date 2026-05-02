@@ -40,3 +40,8 @@ docker/.env
 # Coverage
 coverage/
 *.coverprofile
+
+# Local design / planning references — kept on disk to inform work
+# but never pushed to GitHub.
+/Claude - Project Plan.md
+/example.html

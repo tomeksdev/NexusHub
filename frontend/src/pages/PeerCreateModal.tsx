@@ -82,7 +82,7 @@ export function PeerCreateModal({ interfaceID, onClose, onCreated }: Props) {
             value={name}
             onChange={(e) => setName(e.target.value)}
             placeholder="alice-laptop"
-            className={inputCls}
+            className="field-input"
             autoFocus
             required
           />
@@ -92,7 +92,7 @@ export function PeerCreateModal({ interfaceID, onClose, onCreated }: Props) {
             value={description}
             onChange={(e) => setDescription(e.target.value)}
             placeholder="optional"
-            className={inputCls}
+            className="field-input"
           />
         </Field>
         <div className="grid grid-cols-2 gap-3">
@@ -101,7 +101,7 @@ export function PeerCreateModal({ interfaceID, onClose, onCreated }: Props) {
               value={assignedIP}
               onChange={(e) => setAssignedIP(e.target.value)}
               placeholder="auto-allocate"
-              className={inputCls}
+              className="field-input"
             />
           </Field>
           <Field label="Persistent keepalive (s)">
@@ -110,7 +110,7 @@ export function PeerCreateModal({ interfaceID, onClose, onCreated }: Props) {
               onChange={(e) => setKeepalive(e.target.value)}
               placeholder="e.g. 25"
               inputMode="numeric"
-              className={inputCls}
+              className="field-input"
             />
           </Field>
         </div>
@@ -122,7 +122,7 @@ export function PeerCreateModal({ interfaceID, onClose, onCreated }: Props) {
             value={allowedIPs}
             onChange={(e) => setAllowedIPs(e.target.value)}
             placeholder="10.0.0.0/24, 10.1.0.0/16"
-            className={inputCls}
+            className="field-input"
           />
         </Field>
         <Field
@@ -133,7 +133,7 @@ export function PeerCreateModal({ interfaceID, onClose, onCreated }: Props) {
             value={clientAllowedIPs}
             onChange={(e) => setClientAllowedIPs(e.target.value)}
             placeholder="0.0.0.0/0, ::/0"
-            className={inputCls}
+            className="field-input"
           />
         </Field>
         <Field
@@ -144,12 +144,12 @@ export function PeerCreateModal({ interfaceID, onClose, onCreated }: Props) {
             value={endpoint}
             onChange={(e) => setEndpoint(e.target.value)}
             placeholder="vpn.example.com:51820"
-            className={inputCls}
+            className="field-input"
           />
         </Field>
 
         {mut.isError && (
-          <p className="text-rose-400 text-sm">
+          <p className="text-danger text-sm">
             {mut.error instanceof ApiError
               ? mut.error.message
               : "Failed to create peer"}
@@ -157,17 +157,13 @@ export function PeerCreateModal({ interfaceID, onClose, onCreated }: Props) {
         )}
 
         <div className="flex justify-end gap-2 pt-2">
-          <button
-            type="button"
-            onClick={onClose}
-            className="px-3 py-1.5 rounded-md text-slate-300 hover:bg-slate-800 text-sm focus-visible:outline-2 focus-visible:outline-indigo-500 focus-visible:outline-offset-2"
-          >
+          <button type="button" onClick={onClose} className="btn-ghost">
             Cancel
           </button>
           <button
             type="submit"
             disabled={mut.isPending || !name.trim()}
-            className="px-3 py-1.5 rounded-md bg-sky-600 hover:bg-sky-500 disabled:opacity-50 disabled:hover:bg-sky-600 text-sm font-medium focus-visible:outline-2 focus-visible:outline-sky-400 focus-visible:outline-offset-2"
+            className="btn-primary"
           >
             {mut.isPending ? "Creating…" : "Create"}
           </button>
@@ -176,9 +172,6 @@ export function PeerCreateModal({ interfaceID, onClose, onCreated }: Props) {
     </Modal>
   );
 }
-
-const inputCls =
-  "w-full rounded-md bg-slate-800 border border-slate-700 px-2 py-1.5 text-sm focus-visible:outline-2 focus-visible:outline-sky-500 focus-visible:outline-offset-1 focus:border-sky-500";
 
 function Field({
   label,
@@ -192,15 +185,13 @@ function Field({
   children: React.ReactNode;
 }) {
   return (
-    <label className="block">
-      <span className="text-xs text-slate-400 mb-1 inline-block">
+    <label className="field-label">
+      <span className="field-label-text">
         {label}
-        {required && <span className="text-rose-400 ml-0.5">*</span>}
+        {required && <span className="text-danger ml-0.5">*</span>}
       </span>
       {children}
-      {hint && (
-        <span className="text-xs text-slate-500 block mt-1">{hint}</span>
-      )}
+      {hint && <span className="field-hint">{hint}</span>}
     </label>
   );
 }

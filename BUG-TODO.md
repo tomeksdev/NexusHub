@@ -1,173 +1,251 @@
-# NexusHub Pre-Release Bug Triage & Fix Plan
+# NexusHub Pre-Release Punch List — Round 2
 
-Source: bare-metal test of `dev` branch. Production-readiness verdict: **NOT READY**.
+Source: second bare-metal test of `dev` branch + the original v2.0.0 project
+plan I was supposed to be following from the start. Production verdict: **NOT
+READY**.
 
-This file is the working punch list. Tick items as they land on `dev`.
+This file replaces the old triage list. The previous round closed the
+kernel-link and frontend-crash blockers, but the *design* and *menu structure*
+that landed do not match the v2.0.0 plan, and a second wave of bugs surfaced
+once the basic flow worked.
 
----
+## Reference files (local only, gitignored)
 
-## Root-cause summary
+These two are kept in the working tree to inform the redesign and are NOT
+pushed to GitHub (see `.gitignore`):
 
-Three things are actually broken under the hood. Everything in the test report
-collapses into one of them.
-
-### 1. Kernel-side WireGuard creation does not work
-
-`wgctrl.ConfigureDevice` only configures **existing** WG devices — it does not
-create them. The current code in `backend/internal/handler/interfaces.go:117-130`
-and `backend/internal/wg/reconcile.go:74-81` has comments asserting that
-"ConfigureDevice creates the device implicitly". That is wrong on every
-mainline backend.
-
-To actually bring `wg0` up you need three steps the code never performs:
-
-1. `ip link add wg0 type wireguard` (rtnetlink, `RTM_NEWLINK` with
-   `IFLA_INFO_KIND="wireguard"`).
-2. `ip address add <iface.address> dev wg0` (rtnetlink, `RTM_NEWADDR`).
-3. `ip link set wg0 up` (rtnetlink, `RTM_SETLINK` with `IFF_UP`).
-
-`wgctrl` only steps in **after** step 1 to push private key + listen port +
-peers. That is why `wg show wg0 public-key` returned `(none)` in the report —
-the device never existed; the netlink call to read it returned ENODEV; the
-DB row is just metadata.
-
-### 2. eBPF maps are anonymous and unpinned
-
-CLAUDE.md says programs and maps must be pinned at `/sys/fs/bpf/nexushub/`.
-There are zero references to bpffs anywhere in the codebase. Every API restart
-loads fresh, anonymous maps; every out-of-band `bpftool` invocation creates a
-different set. That explains the "duplicate maps" finding and the lack of
-enforcement persistence.
-
-### 3. Frontend has three small but loud bugs
-
-Null pointer on the SSE payload, uncaught refresh-token rejection, and
-`navigator.clipboard` undefined on HTTP. None of them are architectural.
+- `Claude - Project Plan.md` — the full v2.0.0 vision (menu hierarchy,
+  Locations terminology, RBAC plan).
+- `example.html` — the target design system (sidebar `#1e1e1e`, body
+  `#1a1a1a`, accent `#FF4C4C`, card-based layout, status badges).
 
 ---
 
-## Pass 1 — Frontend + config-generation fixes
+## Pass A — UI redesign + menu restructure
 
-Tractable without system-level testing. After this pass the UI is usable and
-exported `.conf` files are correct.
+The current Tailwind/slate UI is generic. Operators expect the dashboard
+described in the project plan and prototyped in `example.html`.
 
-- [x] **#1 — Fix PeersPage SSE null-pointer crash** (`frontend/src/pages/PeersPage.tsx:105`).
-  Guard against payload entries missing `public_key`. Catch the SSE auth-refresh
-  rejection so a reused refresh token doesn't crash the page.
-- [x] **#2 — Handle refresh-token failure cleanly.** When `refresh()` throws
-  `refresh token reused` / `invalid refresh token`, the UI must clear tokens
-  and redirect to `/login`. Currently `getAccessTokenForStream` lets the
-  rejection escape into the SSE init.
-- [x] **#3 — Clipboard fallback for insecure (HTTP) contexts**
-  (`frontend/src/pages/PeerConfigModal.tsx:68`). `navigator.clipboard` is
-  `undefined` on `http://`. Fall back to a hidden `<textarea>` + `execCommand("copy")`.
-- [x] **#4 — Add "Create Interface" UI.** `InterfacesPage` has no creation
-  affordance. Add `InterfaceCreateModal` (`name`, `listen_port`, `address` CIDR,
-  `dns`, `mtu`, `endpoint`, `post_up`, `post_down`) hitting `POST /api/v1/interfaces`.
-- [x] **#5 — Fix wg-quick config generation.** Two sub-bugs in
-  `backend/internal/handler/peers.go:507-557`:
-  - `wg.EncodePublicKey(raw)` is reused to base64-encode a peer's *private* key.
-    Semantically harmless (both halves are 32 bytes → 44-char b64), but the
-    function name lies. Rename to `wg.EncodeKey` or split.
-  - `[Peer] AllowedIPs` in the **client's** `.conf` is currently populated
-    from the server-side `allowed_ips` (which means "what source IPs the
-    server accepts from this peer"). On the client that field means
-    "destinations to route through the tunnel" — they are not the same thing.
-    Default split-tunnel = interface CIDR; full-tunnel = `0.0.0.0/0,::/0`.
-    Add a `client_allowed_ips` column so operators control this per peer
-    (`@confirm` — needs migration).
-- [x] **#6 — Validate peer-create payload.** `parsePrefixes` silently drops
-  invalid CIDRs in `allowed_ips`. Reject the request instead. Validate
-  `endpoint` is `host:port`, `persistent_keepalive ∈ [0, 65535]`, explicit
-  `assigned_ip` is not the network/broadcast/interface address.
+### A1 — Apply the `example.html` design system  ✅
+- [x] Body `#1a1a1a`, sidebar `#1e1e1e`, cards `#2a2a2a`, accent `#FF4C4C`
+- [ ] Sidebar fixed 280 px, single accent color for active/hover, no slate
+- [ ] Top bar with page title + actions + clock badge (rounded card, 1.5 rem
+      padding)
+- [ ] Stat cards with colored left border (`primary` indigo / `success` green
+      / `warning` amber / `danger` red)
+- [ ] Status badges: `ok` / `warning` / `critical` with pulsing dot
+- [ ] Tables in dark cards with hover row tint
+- [ ] Custom-tab pill row for in-page section switches
+- [ ] Replace existing `slate-*` Tailwind utilities throughout with the
+      new palette (or migrate to a small CSS-variable theme so we stop
+      hand-editing class strings every time the palette shifts)
 
----
+### A2 — Restructure sidebar to match the project plan  ✅
+Admin menu (current is flat — needs sections):
+```
+Main
+├── Locations         (CRUD WG endpoints + status indicators + peer counts)
+├── Users             (mgmt, role, 2FA status, invite)
+└── Monitoring        (real-time charts, connection logs, per-peer stats)
 
-## Pass 2 — Kernel datapath (the actual release blockers)
+Configuration
+├── Global Config     (app name, default DNS, SMTP, feature toggles)
+├── Groups            (CRUD groups, assign users + locations)
+└── Access Rules      (per-group/location/user allow/deny w/ priority)
 
-Needs validation on a real Linux host with the WireGuard kernel module loaded.
-The Go test harness can run unit tests but cannot exercise rtnetlink against
-a live kernel.
+Security
+└── eBPF Rules        (CRUD eBPF, apply/unapply, compilation status)
 
-- [x] **#7 — Create kernel WireGuard link via netlink.** Add an `ensureLink()`
-  step to the WG client that:
-  1. Looks up the link by name; if absent, creates it with
-     `IFLA_INFO_KIND="wireguard"`.
-  2. Adds the interface address from the DB row if missing.
-  3. Sets `IFF_UP` if down.
+Profile
+├── My Profile        (name, email, password, 2FA TOTP+WebAuthn)
+└── Support           (docs, system info, version, health)
+```
 
-  Wire it into `InterfaceHandler.Create` (before the existing
-  `ConfigureDevice` call) and into the startup reconciler. Also handle
-  delete: `RTM_DELLINK` after the DB row is gone.
+User menu:
+```
+Main
+├── My Config         (own peers, .conf, QR, enable/disable)
+└── Monitoring        (own stats for allowed locations only)
 
-  **Open question — netlink dep choice** (`@confirm`):
-  - `github.com/vishvananda/netlink` — heavyweight, covers every type of
-    link, well-known.
-  - `github.com/mdlayher/wireguardctrl` style + `mdlayher/rtnetlink` —
-    leaner, single-purpose, matches the style of `wgctrl-go`.
+Profile
+├── My Profile        (name, email, password, 2FA, recovery codes)
+└── Support           (docs, contact admin)
+```
 
-- [x] **#8 — Pin eBPF maps to `/sys/fs/bpf/nexushub`.** Set
-  `MapOptions.PinPath` when loading the spec. Mkdir the directory at
-  startup with `0700`. Programs already attach via `link.AttachXDP` /
-  `link.AttachTCX` — those handles persist for the process lifetime, but
-  pinning the **maps** is what gives external `bpftool` a stable view.
+- [ ] Render sidebar with section headers (`Main`, `Configuration`,
+      `Security`, `Profile`) instead of one flat list
+- [ ] Branch the sidebar items by role (`super_admin`/`admin` vs `user`)
+- [ ] Active route highlight with `#FF4C4C` left border + background
 
-  Document the lifecycle in `docs/deployment/`: maps survive API restart;
-  `nexushub uninstall` is responsible for `rm -rf /sys/fs/bpf/nexushub`.
+### A3 — Rename "Interfaces" → "Locations" in the UI  ✅
+The DB table stays `wg_interfaces` — that's the kernel-level primitive — but
+the operator concept per the plan is "Locations" (a server endpoint with a
+public host + listen port + peers). Pure label rename in the frontend.
 
-- [x] **#9 — Reconcile DB → kernel eBPF rules at startup.** `KernelSyncer`
-  handles incremental updates from API calls but no code walks the
-  `ebpf_rules` + `ebpf_rule_bindings` tables at startup and seeds the
-  kernel maps. Add an `InitialSync(ctx)` called after `RulesLoader` is up
-  and before the HTTP listener accepts traffic.
+- [ ] All UI strings: `Interfaces` → `Locations`
+- [ ] Routes: `/interfaces` → `/locations` (with redirect from old path so
+      bookmarks don't 404)
+- [ ] No DB / API rename in this pass — the v1 endpoint stays
+      `/api/v1/interfaces`. Adding a `/locations` alias is a follow-up if
+      the SDK ever needs it.
 
-- [x] **#10 — Auto-attach eBPF programs.** Today XDP/TC attach is gated on
-  `NEXUSHUB_XDP_IFACE` / `NEXUSHUB_TC_IFACE`. Default behaviour should be:
-  - **TC** auto-attached to every WG interface listed in the DB after
-    reconcile (we know they exist by the time we get here).
-  - **XDP** stays opt-in via env (`@confirm` — auto-detecting the
-    default-route NIC is a foot-gun for hosts with multiple uplinks).
+### A4 — Remove i18n  ✅
+The plan doesn't include multi-language. The current `react-i18next` setup
+adds bundle weight, indirection, and forces every label through a
+`t()` lookup with no real benefit.
 
----
+- [ ] Strip `react-i18next` + `i18next` + `i18next-browser-languagedetector`
+      from `package.json`
+- [ ] Replace `t("foo")` calls with literal English strings
+- [ ] Delete `src/lib/i18n.ts`, `src/lib/locales/`, the `LanguageSwitcher`
+      component
+- [ ] Remove the `i18n` import side-effect from `main.tsx`
 
-## Working components (don't regress these)
+### A5 — Profile + Support pages  ✅
+Currently nothing under `/profile`. Plan calls for these as the role-anchor
+pages.
 
-- Backend builds + unit tests pass
-- API auth + JWT refresh (when not crashing the UI)
-- Peer creation in DB
-- eBPF program load (just not attach/persist)
-- eBPF map populate (just not pinned)
-- WireGuard handshake (after manual `ip link add` / `ip addr add` / `ip link set up`)
+- [ ] `My Profile` page: read-only name/email + change password + 2FA setup
+      (already exists as `SecurityPage` — fold it in here)
+- [ ] `Support` page: docs links, system info, version (read from
+      `/api/v1/health` build info), DB pool / WG mode read-outs
 
----
+### A6 — Dashboard landing page  (deferred)
+Per `example.html`, the landing should be a dashboard with KPI stat cards +
+charts, not a peer list. Even if the v2.0.0 plan doesn't strictly require a
+Dashboard route, this is what the design example shows; the user has flagged
+"current looks generic" as a blocker.
 
-## Pre-release acceptance tests
-
-A v2.0.0 tag cannot ship until every box below is checked on a real bare-metal
-host (not in CI, not in compose).
-
-- [ ] Interface created via UI ⇒ `ip link show wg0` reports the link, UP, with
-      the configured address.
-- [ ] `wg show wg0 public-key` returns the interface's public key.
-- [ ] Peer created via UI ⇒ visible in `wg show wg0` immediately, no manual
-      `wg-quick` step.
-- [ ] eBPF programs visible in `bpftool net` after API start.
-- [ ] eBPF maps visible at `/sys/fs/bpf/nexushub/` and survive API restart.
-- [ ] Adding a deny rule in the UI blocks matching traffic within ≤1 second
-      and `rule_hits` for that rule increments.
-- [ ] Reboot ⇒ systemd brings API up ⇒ DB rules re-applied to kernel maps ⇒
-      enforcement still works without manual intervention.
-- [ ] PeersPage opens cleanly on a stale refresh token (redirects to login,
-      no console crash).
-- [ ] Copy `.conf` button works on `http://` (insecure context).
-- [ ] Exported `.conf` `[Peer] AllowedIPs` matches operator intent
-      (split-tunnel / full-tunnel) — not the server-side `allowed_ips`.
+- [ ] Add `/` Dashboard route with stat cards (peers online, locations up,
+      eBPF rule hits/min, traffic last 24h) + a 24-h traffic chart
+- [ ] Sidebar `Main` section starts with `Dashboard` for admin
 
 ---
 
-## Decisions (locked in 2026-04-29)
+## Pass B — Critical bug fixes
 
-- **#5** — `client_allowed_ips` peer column will be added (migration 008).
-- **#7** — Netlink dep is `github.com/vishvananda/netlink`.
-- **#10** — TC auto-attached to every DB-listed WG interface after reconcile;
-  XDP stays opt-in via `NEXUSHUB_XDP_IFACE` (no default-route auto-detect).
+### B1 — Interface edit + delete  ✅
+- [ ] Backend: add `PATCH /api/v1/interfaces/:id` (port, address, dns, mtu,
+      endpoint, post_up, post_down — never the keys)
+- [ ] Backend: confirm `DELETE /api/v1/interfaces/:id` actually works on
+      bare metal. Last report said "cannot delete" — verify the netlink
+      `DeleteLink` path runs and reports the failure if it doesn't
+- [ ] Frontend: `LocationEditModal` (form mirroring create, name + keys
+      read-only)
+- [ ] Frontend: delete button in the table with confirm dialog
+
+### B2 — Port handling: kernel ↔ DB ↔ UI  ✅
+Bug report says "Wrong port assigned" + "UI shows incorrect port vs kernel".
+Two suspect paths:
+- Create flow may be passing the DB-stored port back without confirming the
+  kernel accepted it. If kernel rejected and silently picked a different one,
+  the UI lies.
+- Reconciler doesn't re-read the live `Device.ListenPort` after applying.
+
+- [ ] Have `InterfaceHandler.Create` re-fetch the kernel device after
+      `ConfigureDevice` and surface a 500 if `live.ListenPort != requested`
+- [ ] Wire a `wg/status` poll into the Locations table so the live port is
+      visible alongside the configured port; show a drift badge if they
+      differ
+- [ ] Add a backend test that asserts `live.ListenPort == iface.ListenPort`
+      after Create against `wg.FakeClient`
+
+### B3 — Port conflict validation  ✅
+- [ ] DB: unique constraint on `wg_interfaces.listen_port` (migration 009)
+- [ ] Backend: 409 with `LISTEN_PORT_CONFLICT` code when the constraint
+      violates, surfaced as a user-readable error in the modal
+
+### B4 — Peer status / handshake / RX-TX desync  ✅
+Bug report: "No handshake shown, RX/TX = 0, but actually active in backend".
+Root candidates: peer-events SSE never wires up the live counters into the
+DB peer row; the table renders the DB peer as the source of truth and the
+SSE merge is partial. Need to investigate.
+
+- [ ] Repro: create peer, complete handshake, watch what the SSE actually
+      emits (`event: peer` payloads should carry `last_handshake` /
+      `rx_bytes` / `tx_bytes`)
+- [ ] Confirm `PeersPage` merges live state on top of the DB row (it does
+      today via the `live` map keyed by public key — verify it's keyed on
+      the right field after the recent `null`-filtering fix)
+- [ ] Backfill: periodic job that polls every device and writes the
+      cumulative counters back to `wg_peers` so a fresh page load shows
+      non-zero values without waiting for an SSE tick
+- [ ] If the SSE works fine and the issue is page-load latency, surface a
+      "live data loading…" indicator instead of zeros
+
+### B5 — AllowedIPs validation  ✅
+Already partially fixed in round 1 (`parsePrefixesStrict`). The new report
+calls out "Wrong config generated" — likely the asymmetric `[Peer]
+AllowedIPs` issue we addressed in round 1 wasn't enough.
+
+- [ ] Confirm the round-1 `client_allowed_ips` column makes it into the
+      exported `.conf` correctly on bare metal
+- [ ] Add a server-side check that rejects creates where `assigned_ip` is
+      outside every `allowed_ips` entry (today nothing prevents the
+      operator from setting `allowed_ips=10.0.0.0/24` and `assigned_ip=
+      192.168.5.1`)
+
+---
+
+## Pass C — Deferred (NOT in this batch)
+
+The project plan describes a much bigger v2.0.0 surface than what got built.
+Calling these out so the gap is visible — none of these ship as part of
+addressing this report:
+
+- `users.first_name` / `users.last_name` columns + invite-via-email flow
+- `email_tokens` table + SMTP config + verification / reset / invite emails
+- `groups` + `group_users` + `group_locations` model + CRUD + UI
+- `access_rules` table + priority-ordered evaluation engine + UI
+- `global_config` table + Global Config admin page
+- `locations.description` / `locations.max_peers` (stay on
+  `wg_interfaces` for now)
+- WebAuthn (TOTP is in; WebAuthn is in the plan but not implemented)
+- Connection-event streaming into `connection_logs` from the WG poller
+  (only eBPF logs land there today)
+
+These are tracked for a follow-up phase; please confirm prioritization
+once Passes A + B are green.
+
+---
+
+## Acceptance — what "ready to ship" looks like
+
+A v2.0.0 tag cannot land until every box passes on a real bare-metal host.
+Round-1 boxes that still need verification stay on the list; new criteria
+mark `(R2)`.
+
+- [ ] (R2) Sidebar matches `example.html` palette + section headers
+- [ ] (R2) Admin sees `Locations / Users / Monitoring / Global Config /
+      Groups / Access Rules / eBPF Rules / My Profile / Support`
+- [ ] (R2) User sees only `My Config / Monitoring / My Profile / Support`
+- [ ] (R2) i18n stripped; bundle smaller; no `t()` calls remain
+- [ ] (R2) Edit + delete work for a Location end-to-end
+- [ ] (R2) Two locations cannot share a listen port (UI surfaces the
+      conflict)
+- [ ] (R2) Configured port matches `wg show <iface>` listen port in every
+      case
+- [ ] (R2) Peer table shows non-zero handshake + RX/TX within ≤30 s of an
+      active peer connecting
+- [ ] Interface created via UI ⇒ `ip link show wg0` reports the link, UP,
+      with the configured address (round-1 carry-over)
+- [ ] eBPF maps visible at `/sys/fs/bpf/nexushub/` and survive API restart
+      (round-1 carry-over)
+- [ ] Adding a deny rule blocks matching traffic ≤1 s and `rule_hits`
+      increments (round-1 carry-over)
+
+---
+
+## Decisions needed before I start coding
+
+1. **Dashboard route** (A6) — add it now or skip and let `Locations` be the
+   landing page? The plan doesn't strictly require it; the design example
+   does.
+2. **Drop i18n today** (A4) or keep the scaffolding silent for a future
+   re-add? My read is full removal — re-adding later is cheap.
+3. **`wg_interfaces` → `locations` DB rename** — do later (separate
+   migration phase) or never (stay technical-name in DB, "Locations" in
+   UI)? My read is later/never — the rename has zero functional value and
+   risks breaking integrations.
+
+Send a one-line answer to each and I'll start at A1.

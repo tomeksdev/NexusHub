@@ -209,6 +209,49 @@ func (r *PeerRepo) AssignedIPsByInterface(ctx context.Context, ifaceID uuid.UUID
 	return out, rows.Err()
 }
 
+// PeerLiveStats is one row of counters from the WG kernel poller.
+// Public-key keyed because that's what the kernel reports; the repo
+// upserts on the unique (public_key) constraint.
+type PeerLiveStats struct {
+	PublicKey     string
+	LastHandshake time.Time // zero ⇒ no handshake yet
+	RxBytes       int64
+	TxBytes       int64
+}
+
+// UpsertLiveStats writes the latest WG counters back to wg_peers so a
+// fresh page load reflects current traffic without waiting for an SSE
+// tick. Only rows where the public_key already exists are touched —
+// kernel devices may carry peers we never persisted (e.g. an operator
+// added one with `wg set` out of band).
+//
+// Last-handshake is only written when non-zero so we don't blow away a
+// known timestamp with the kernel's epoch sentinel during a brief
+// netlink read failure.
+func (r *PeerRepo) UpsertLiveStats(ctx context.Context, stats []PeerLiveStats) error {
+	if len(stats) == 0 {
+		return nil
+	}
+	const q = `
+		UPDATE wg_peers
+		   SET rx_bytes = $2,
+		       tx_bytes = $3,
+		       last_handshake = COALESCE(NULLIF($4, '0001-01-01 00:00:00+00'::timestamptz), last_handshake)
+		 WHERE public_key = $1`
+	batch := &pgx.Batch{}
+	for _, s := range stats {
+		batch.Queue(q, s.PublicKey, s.RxBytes, s.TxBytes, s.LastHandshake)
+	}
+	br := r.pool.SendBatch(ctx, batch)
+	defer br.Close()
+	for range stats {
+		if _, err := br.Exec(); err != nil {
+			return fmt.Errorf("upsert live stats: %w", err)
+		}
+	}
+	return nil
+}
+
 func (r *PeerRepo) UpdateStatus(ctx context.Context, id uuid.UUID, status string) error {
 	cmd, err := r.pool.Exec(ctx,
 		`UPDATE wg_peers SET status = $2::wg_peer_status WHERE id = $1`,

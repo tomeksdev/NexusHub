@@ -1,102 +1,236 @@
 import { useState } from "react";
-import { useTranslation } from "react-i18next";
+import {
+  Activity,
+  AlertCircle,
+  BarChart3,
+  HelpCircle,
+  KeyRound,
+  Layers,
+  LogOut,
+  MapPin,
+  Settings,
+  ShieldAlert,
+  Smartphone,
+  UserCircle,
+  Users,
+} from "lucide-react";
 
-import { LanguageSwitcher } from "./components/LanguageSwitcher";
 import { useAuth } from "./lib/auth";
 import { AuditPage } from "./pages/AuditPage";
-import { InterfacesPage } from "./pages/InterfacesPage";
+import { InterfacesPage as LocationsPage } from "./pages/InterfacesPage";
 import { LoginPage } from "./pages/LoginPage";
 import { MetricsPage } from "./pages/MetricsPage";
+import { MyConfigPage } from "./pages/MyConfigPage";
 import { PeersPage } from "./pages/PeersPage";
+import { ProfilePage } from "./pages/ProfilePage";
 import { RulesPage } from "./pages/RulesPage";
-import { SecurityPage } from "./pages/SecurityPage";
+import { StubPage } from "./pages/StubPage";
+import { SupportPage } from "./pages/SupportPage";
 import { UsersPage } from "./pages/UsersPage";
 
 type Page =
-  | "peers"
-  | "interfaces"
-  | "rules"
+  // admin
+  | "locations"
   | "users"
+  | "monitoring"
+  | "global_config"
+  | "groups"
+  | "access_rules"
+  | "ebpf_rules"
   | "audit"
-  | "metrics"
-  | "security";
+  | "profile"
+  | "support"
+  // user
+  | "my_config"
+  | "my_monitoring";
 
-const NAV_ORDER: Page[] = [
-  "peers",
-  "interfaces",
-  "rules",
-  "metrics",
-  "users",
-  "audit",
-  "security",
+interface NavEntry {
+  id: Page;
+  label: string;
+  icon: typeof Activity;
+}
+
+interface NavSection {
+  title: string;
+  items: NavEntry[];
+}
+
+const ADMIN_NAV: NavSection[] = [
+  {
+    title: "Main",
+    items: [
+      { id: "locations", label: "Locations", icon: MapPin },
+      { id: "users", label: "Users", icon: Users },
+      { id: "monitoring", label: "Monitoring", icon: BarChart3 },
+    ],
+  },
+  {
+    title: "Configuration",
+    items: [
+      { id: "global_config", label: "Global Config", icon: Settings },
+      { id: "groups", label: "Groups", icon: Layers },
+      { id: "access_rules", label: "Access Rules", icon: ShieldAlert },
+    ],
+  },
+  {
+    title: "Security",
+    items: [
+      { id: "ebpf_rules", label: "eBPF Rules", icon: KeyRound },
+      { id: "audit", label: "Audit Log", icon: AlertCircle },
+    ],
+  },
+  {
+    title: "Profile",
+    items: [
+      { id: "profile", label: "My Profile", icon: UserCircle },
+      { id: "support", label: "Support", icon: HelpCircle },
+    ],
+  },
+];
+
+const USER_NAV: NavSection[] = [
+  {
+    title: "Main",
+    items: [
+      { id: "my_config", label: "My Config", icon: Smartphone },
+      { id: "my_monitoring", label: "Monitoring", icon: BarChart3 },
+    ],
+  },
+  {
+    title: "Profile",
+    items: [
+      { id: "profile", label: "My Profile", icon: UserCircle },
+      { id: "support", label: "Support", icon: HelpCircle },
+    ],
+  },
 ];
 
 function App() {
-  const { t } = useTranslation();
-  const { isAuthenticated, email, signOut } = useAuth();
-  const [page, setPage] = useState<Page>("peers");
+  const { isAuthenticated, role, email, signOut } = useAuth();
+  const isAdmin = role === "admin" || role === "super_admin";
+  const sections = isAdmin ? ADMIN_NAV : USER_NAV;
+  const defaultPage: Page = isAdmin ? "locations" : "my_config";
+  const [page, setPage] = useState<Page>(defaultPage);
 
   if (!isAuthenticated) return <LoginPage />;
 
   return (
-    <div className="min-h-screen flex bg-slate-950 text-slate-100">
-      {/* Skip link: visually hidden until keyboard-focused, jumps past the
-          nav to the main region. Critical for keyboard and screen-reader
-          users who would otherwise tab through the whole sidebar on
-          every page view. */}
-      <a
-        href="#main-content"
-        className="sr-only focus-visible:not-sr-only focus-visible:fixed focus-visible:top-2 focus-visible:left-2 focus-visible:z-50 focus-visible:px-3 focus-visible:py-2 focus-visible:rounded-md focus-visible:bg-indigo-600 focus-visible:text-white"
-      >
+    <div className="app-shell">
+      <a href="#main-content" className="skip-link">
         Skip to content
       </a>
-      <aside className="w-56 bg-slate-900 border-r border-slate-800 flex flex-col">
-        <div className="px-5 py-5 border-b border-slate-800">
-          <h1 className="font-semibold">{t("app.title")}</h1>
-          <p className="text-xs text-slate-500 mt-0.5">{t("app.subtitle")}</p>
+      <aside className="sidebar">
+        <div className="sidebar-brand">
+          <h1>NexusHub</h1>
+          <p>WireGuard control plane</p>
         </div>
-        <nav aria-label="Primary" className="flex-1 px-2 py-3 space-y-0.5">
-          {NAV_ORDER.map((id) => (
-            <button
-              key={id}
-              onClick={() => setPage(id)}
-              aria-current={page === id ? "page" : undefined}
-              className={
-                "w-full text-left px-3 py-2 rounded-md text-sm transition focus-visible:outline-2 focus-visible:outline-indigo-500 focus-visible:outline-offset-2 " +
-                (page === id
-                  ? "bg-slate-800 text-slate-100"
-                  : "text-slate-400 hover:bg-slate-800/50 hover:text-slate-200")
-              }
-            >
-              {t(`nav.${id}`)}
-            </button>
+        <nav aria-label="Primary" className="flex-1 py-2">
+          {sections.map((section) => (
+            <div className="sidebar-section" key={section.title}>
+              <span className="sidebar-section-title">{section.title}</span>
+              {section.items.map((entry) => {
+                const Icon = entry.icon;
+                const active = page === entry.id;
+                return (
+                  <button
+                    key={entry.id}
+                    type="button"
+                    onClick={() => setPage(entry.id)}
+                    aria-current={active ? "page" : undefined}
+                    className={"nav-item" + (active ? " active" : "")}
+                  >
+                    <span className="nav-icon">
+                      <Icon size={16} />
+                    </span>
+                    <span>{entry.label}</span>
+                  </button>
+                );
+              })}
+            </div>
           ))}
         </nav>
-        <div className="px-4 py-3 border-t border-slate-800 space-y-2">
-          <LanguageSwitcher />
-          <p className="text-xs text-slate-500 truncate" title={email ?? ""}>
+        <div className="sidebar-footer">
+          <div className="status-row">
+            <span className="status-dot" aria-hidden />
+            <span>System healthy</span>
+          </div>
+          <div title={email ?? ""} className="truncate">
             {email}
-          </p>
+          </div>
           <button
+            type="button"
             onClick={signOut}
-            className="w-full text-left px-3 py-1.5 rounded-md text-sm text-slate-400 hover:bg-slate-800 hover:text-slate-200"
+            className="mt-2 inline-flex items-center gap-2 text-muted hover:text-white text-xs"
           >
-            {t("app.signOut")}
+            <LogOut size={14} /> Sign out
           </button>
         </div>
       </aside>
 
-      <main id="main-content" tabIndex={-1} className="flex-1 overflow-y-auto">
-        {page === "peers" && <PeersPage />}
-        {page === "interfaces" && <InterfacesPage />}
-        {page === "rules" && <RulesPage />}
-        {page === "metrics" && <MetricsPage />}
-        {page === "users" && <UsersPage />}
-        {page === "audit" && <AuditPage />}
-        {page === "security" && <SecurityPage />}
+      <main id="main-content" tabIndex={-1} className="main-content">
+        {renderPage(page, isAdmin)}
       </main>
     </div>
   );
+}
+
+function renderPage(page: Page, isAdmin: boolean) {
+  if (isAdmin) {
+    switch (page) {
+      case "locations":
+        return <LocationsPage />;
+      case "users":
+        return <UsersPage />;
+      case "monitoring":
+        return <MetricsPage />;
+      case "ebpf_rules":
+        return <RulesPage />;
+      case "audit":
+        return <AuditPage />;
+      case "profile":
+        return <ProfilePage />;
+      case "support":
+        return <SupportPage />;
+      case "global_config":
+        return (
+          <StubPage
+            title="Global Config"
+            blurb="App-wide settings (default DNS, SMTP, feature flags) ship in v2.1. Today these live in env vars."
+          />
+        );
+      case "groups":
+        return (
+          <StubPage
+            title="Groups"
+            blurb="Group-based assignment of users + locations is part of the v2.1 access-control rollout."
+          />
+        );
+      case "access_rules":
+        return (
+          <StubPage
+            title="Access Rules"
+            blurb="Priority-ordered allow/deny rules per group/location/user — coming with the access-control rollout in v2.1."
+          />
+        );
+      // Peers list intentionally lives under Locations as a per-location
+      // detail view; the standalone admin page is reachable via the
+      // table row click. Keep an alias for now.
+      default:
+        return <PeersPage />;
+    }
+  }
+  switch (page) {
+    case "my_config":
+      return <MyConfigPage />;
+    case "my_monitoring":
+      return <MetricsPage />;
+    case "profile":
+      return <ProfilePage />;
+    case "support":
+      return <SupportPage />;
+    default:
+      return <MyConfigPage />;
+  }
 }
 
 export default App;

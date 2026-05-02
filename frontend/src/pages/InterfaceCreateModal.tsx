@@ -1,4 +1,4 @@
-import { useState, type FormEvent } from "react";
+import { useState, type FormEvent, type ReactNode } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 
 import { Modal } from "../components/Modal";
@@ -75,7 +75,7 @@ export function InterfaceCreateModal({ onClose, onCreated }: Props) {
   }
 
   return (
-    <Modal title="New interface" onClose={onClose} maxWidthClass="max-w-lg">
+    <Modal title="New location" onClose={onClose} maxWidthClass="max-w-lg">
       <form onSubmit={submit} className="space-y-4">
         <div className="grid grid-cols-2 gap-3">
           <Field label="Name" required>
@@ -83,7 +83,7 @@ export function InterfaceCreateModal({ onClose, onCreated }: Props) {
               value={name}
               onChange={(e) => setName(e.target.value)}
               placeholder="wg0"
-              className={inputCls}
+              className="field-input"
               autoFocus
               required
             />
@@ -94,7 +94,7 @@ export function InterfaceCreateModal({ onClose, onCreated }: Props) {
               onChange={(e) => setListenPort(e.target.value)}
               placeholder="51820"
               inputMode="numeric"
-              className={inputCls}
+              className="field-input"
               required
             />
           </Field>
@@ -108,7 +108,7 @@ export function InterfaceCreateModal({ onClose, onCreated }: Props) {
             value={address}
             onChange={(e) => setAddress(e.target.value)}
             placeholder="10.7.0.1/24"
-            className={inputCls}
+            className="field-input"
             required
           />
         </Field>
@@ -120,7 +120,7 @@ export function InterfaceCreateModal({ onClose, onCreated }: Props) {
             value={dns}
             onChange={(e) => setDns(e.target.value)}
             placeholder="1.1.1.1, 9.9.9.9"
-            className={inputCls}
+            className="field-input"
           />
         </Field>
         <div className="grid grid-cols-2 gap-3">
@@ -130,7 +130,7 @@ export function InterfaceCreateModal({ onClose, onCreated }: Props) {
               onChange={(e) => setMtu(e.target.value)}
               placeholder="default"
               inputMode="numeric"
-              className={inputCls}
+              className="field-input"
             />
           </Field>
           <Field
@@ -141,7 +141,7 @@ export function InterfaceCreateModal({ onClose, onCreated }: Props) {
               value={endpoint}
               onChange={(e) => setEndpoint(e.target.value)}
               placeholder="vpn.example.com:51820"
-              className={inputCls}
+              className="field-input"
             />
           </Field>
         </div>
@@ -153,7 +153,7 @@ export function InterfaceCreateModal({ onClose, onCreated }: Props) {
             value={postUp}
             onChange={(e) => setPostUp(e.target.value)}
             placeholder="iptables -A FORWARD -i %i -j ACCEPT"
-            className={inputCls}
+            className="field-input"
           />
         </Field>
         <Field label="PostDown">
@@ -161,30 +161,26 @@ export function InterfaceCreateModal({ onClose, onCreated }: Props) {
             value={postDown}
             onChange={(e) => setPostDown(e.target.value)}
             placeholder="iptables -D FORWARD -i %i -j ACCEPT"
-            className={inputCls}
+            className="field-input"
           />
         </Field>
 
         {mut.isError && (
-          <p className="text-rose-400 text-sm">
+          <p className="text-danger text-sm">
             {mut.error instanceof ApiError
               ? mut.error.message
-              : "Failed to create interface"}
+              : "Failed to create location"}
           </p>
         )}
 
         <div className="flex justify-end gap-2 pt-2">
-          <button
-            type="button"
-            onClick={onClose}
-            className="px-3 py-1.5 rounded-md text-slate-300 hover:bg-slate-800 text-sm focus-visible:outline-2 focus-visible:outline-indigo-500 focus-visible:outline-offset-2"
-          >
+          <button type="button" onClick={onClose} className="btn-ghost">
             Cancel
           </button>
           <button
             type="submit"
             disabled={mut.isPending || !name.trim() || !address.trim()}
-            className="px-3 py-1.5 rounded-md bg-sky-600 hover:bg-sky-500 disabled:opacity-50 disabled:hover:bg-sky-600 text-sm font-medium focus-visible:outline-2 focus-visible:outline-sky-400 focus-visible:outline-offset-2"
+            className="btn-primary"
           >
             {mut.isPending ? "Creating…" : "Create"}
           </button>
@@ -193,9 +189,6 @@ export function InterfaceCreateModal({ onClose, onCreated }: Props) {
     </Modal>
   );
 }
-
-const inputCls =
-  "w-full rounded-md bg-slate-800 border border-slate-700 px-2 py-1.5 text-sm focus-visible:outline-2 focus-visible:outline-sky-500 focus-visible:outline-offset-1 focus:border-sky-500";
 
 function Field({
   label,
@@ -206,18 +199,16 @@ function Field({
   label: string;
   hint?: string;
   required?: boolean;
-  children: React.ReactNode;
+  children: ReactNode;
 }) {
   return (
-    <label className="block">
-      <span className="text-xs text-slate-400 mb-1 inline-block">
+    <label className="field-label">
+      <span className="field-label-text">
         {label}
-        {required && <span className="text-rose-400 ml-0.5">*</span>}
+        {required && <span className="text-danger ml-0.5">*</span>}
       </span>
       {children}
-      {hint && (
-        <span className="text-xs text-slate-500 block mt-1">{hint}</span>
-      )}
+      {hint && <span className="field-hint">{hint}</span>}
     </label>
   );
 }

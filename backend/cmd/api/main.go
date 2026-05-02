@@ -143,6 +143,12 @@ func run() error {
 			if len(wgIfaceNames) > 0 {
 				metrics.Registry.MustRegister(wg.NewWGCollector(wgClient, wgIfaceNames, slog.Default()))
 			}
+			// Background poller writes live counters back to the DB
+			// every 30s so a freshly-opened Peers page shows non-zero
+			// rx/tx and current handshake without waiting for an SSE
+			// tick. Errors are logged and swallowed — the SSE stream
+			// is the real-time path; this is the page-load fallback.
+			go runPeerStatsPoller(ctx, wgClient, peerRepo, wgIfaceNames, slog.Default())
 		}
 	}
 
@@ -241,6 +247,68 @@ func run() error {
 	}
 	slog.Info("api stopped cleanly")
 	return nil
+}
+
+// runPeerStatsPoller bridges the live WG kernel device state into the
+// wg_peers table on a 30 s cadence. It exists so a freshly-opened
+// admin page reflects current handshake / RX / TX without waiting for
+// the SSE stream to deliver its first delta — matching what
+// `wg show <iface> dump` would show. Errors are logged and the loop
+// continues; a transient netlink hiccup must not stop the poller for
+// good.
+func runPeerStatsPoller(
+	ctx context.Context,
+	client wg.Client,
+	peers *repository.PeerRepo,
+	ifaces []string,
+	log *slog.Logger,
+) {
+	if client == nil || peers == nil || len(ifaces) == 0 {
+		return
+	}
+	t := time.NewTicker(30 * time.Second)
+	defer t.Stop()
+	// Run once eagerly so a slow first tick doesn't make the very
+	// first page load wait 30 s for non-zero values.
+	pollAndWritePeerStats(ctx, client, peers, ifaces, log)
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			pollAndWritePeerStats(ctx, client, peers, ifaces, log)
+		}
+	}
+}
+
+func pollAndWritePeerStats(
+	ctx context.Context,
+	client wg.Client,
+	peers *repository.PeerRepo,
+	ifaces []string,
+	log *slog.Logger,
+) {
+	var batch []repository.PeerLiveStats
+	for _, name := range ifaces {
+		dev, err := client.Device(name)
+		if err != nil || dev == nil {
+			continue
+		}
+		for _, p := range dev.Peers {
+			batch = append(batch, repository.PeerLiveStats{
+				PublicKey:     p.PublicKey,
+				LastHandshake: p.LastHandshake,
+				RxBytes:       p.RxBytes,
+				TxBytes:       p.TxBytes,
+			})
+		}
+	}
+	if len(batch) == 0 {
+		return
+	}
+	if err := peers.UpsertLiveStats(ctx, batch); err != nil {
+		log.Warn("peer stats poll: upsert failed", "err", err, "rows", len(batch))
+	}
 }
 
 // loadDBInterfaces is the glue between the repository layer and the wg

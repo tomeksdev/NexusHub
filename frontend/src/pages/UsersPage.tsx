@@ -1,5 +1,4 @@
 import { useQuery } from "@tanstack/react-query";
-import { useTranslation } from "react-i18next";
 
 import { api, type PageEnvelope } from "../lib/api";
 import { useNowEveryMinute } from "../lib/hooks";
@@ -18,7 +17,6 @@ interface User {
 }
 
 export function UsersPage() {
-  const { t } = useTranslation();
   const nowMs = useNowEveryMinute();
   const { data, isLoading, isError, error } = useQuery({
     queryKey: ["users"],
@@ -26,86 +24,73 @@ export function UsersPage() {
   });
 
   if (isLoading)
-    return <div className="p-6 text-slate-400">{t("common.loading")}</div>;
+    return <div className="p-6 text-muted">Loading…</div>;
   if (isError)
     return (
-      <div className="p-6 text-rose-400">
-        {t("common.loadFailed", { message: (error as Error).message })}
+      <div className="p-6 text-danger">
+        Failed to load: {(error as Error).message}
       </div>
     );
 
   const items = data?.items ?? [];
 
   return (
-    <div className="p-6 space-y-4">
-      <header className="flex items-baseline justify-between">
-        <h1 className="text-xl font-semibold">{t("users.title")}</h1>
-        <span className="text-sm text-slate-500">
-          {t("common.total", { count: data?.total ?? 0 })}
+    <div className="space-y-6">
+      <div className="topbar">
+        <h1 className="page-title">Users</h1>
+        <span className="text-muted text-sm">
+          {data?.total ?? 0} total
         </span>
-      </header>
+      </div>
       {items.length === 0 ? (
-        <p className="text-slate-400 text-sm">{t("users.empty")}</p>
+        <p className="text-muted text-sm">No users yet.</p>
       ) : (
-        <div className="overflow-x-auto rounded-lg border border-slate-800">
-          <table className="min-w-full text-sm">
-            <thead className="bg-slate-900 text-slate-400 text-left">
+        <div className="data-table">
+          <table className="w-full text-sm">
+            <thead>
               <tr>
-                <th className="px-4 py-2 font-medium">
-                  {t("users.col.email")}
-                </th>
-                <th className="px-4 py-2 font-medium">
-                  {t("users.col.username")}
-                </th>
-                <th className="px-4 py-2 font-medium">{t("users.col.role")}</th>
-                <th className="px-4 py-2 font-medium">
-                  {t("users.col.status")}
-                </th>
-                <th className="px-4 py-2 font-medium">
-                  {t("users.col.twoFA")}
-                </th>
-                <th className="px-4 py-2 font-medium">
-                  {t("users.col.lastLogin")}
-                </th>
+                <th>Email</th>
+                <th>Username</th>
+                <th>Role</th>
+                <th>Status</th>
+                <th>2FA</th>
+                <th>Last login</th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-slate-800">
+            <tbody>
               {items.map((u) => {
                 const locked =
                   !!u.locked_until &&
                   new Date(u.locked_until).getTime() > nowMs;
                 return (
-                  <tr key={u.id} className="hover:bg-slate-900/50">
-                    <td className="px-4 py-2 font-medium">{u.email}</td>
-                    <td className="px-4 py-2 text-slate-300">{u.username}</td>
-                    <td className="px-4 py-2">
+                  <tr key={u.id}>
+                    <td className="font-medium">{u.email}</td>
+                    <td className="text-muted">{u.username}</td>
+                    <td>
                       <span className={roleBadge(u.role)}>{u.role}</span>
                     </td>
-                    <td className="px-4 py-2">
+                    <td>
                       {!u.is_active ? (
-                        <span className="inline-flex px-2 py-0.5 rounded-full bg-slate-800 text-slate-400 text-xs">
-                          {t("users.status.disabled")}
+                        <span className="status-badge muted">
+                          <span className="dot" />
+                          DISABLED
                         </span>
                       ) : locked ? (
-                        <span className="inline-flex px-2 py-0.5 rounded-full bg-rose-900/40 text-rose-400 text-xs">
-                          {t("users.status.locked")}
+                        <span className="status-badge critical">
+                          <span className="dot" />
+                          LOCKED
                         </span>
                       ) : (
-                        <span className="inline-flex px-2 py-0.5 rounded-full bg-emerald-900/40 text-emerald-400 text-xs">
-                          {t("users.status.active")}
+                        <span className="status-badge ok">
+                          <span className="dot" />
+                          ACTIVE
                         </span>
                       )}
                     </td>
-                    <td className="px-4 py-2 text-slate-300">
-                      {u.totp_enabled ? (
-                        "TOTP"
-                      ) : (
-                        <span className="text-slate-500">
-                          {t("users.twoFA.off")}
-                        </span>
-                      )}
+                    <td className="text-muted">
+                      {u.totp_enabled ? "TOTP" : <span className="text-faint">off</span>}
                     </td>
-                    <td className="px-4 py-2 text-slate-400">
+                    <td className="text-muted">
                       {u.last_login_at
                         ? new Date(u.last_login_at).toLocaleString()
                         : "—"}
@@ -122,8 +107,9 @@ export function UsersPage() {
 }
 
 function roleBadge(role: string): string {
-  const base = "inline-flex px-2 py-0.5 rounded-full text-xs ";
-  if (role === "super_admin") return base + "bg-purple-900/40 text-purple-300";
-  if (role === "admin") return base + "bg-sky-900/40 text-sky-300";
-  return base + "bg-slate-800 text-slate-300";
+  const base = "inline-flex px-2 py-0.5 rounded-full text-xs font-semibold ";
+  if (role === "super_admin")
+    return base + "bg-[#FF4C4C]/20 text-[#FF4C4C]";
+  if (role === "admin") return base + "bg-indigo-500/20 text-indigo-300";
+  return base + "bg-white/10 text-muted";
 }
