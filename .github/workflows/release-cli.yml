@@ -28,7 +28,7 @@ jobs:
     name: GoReleaser
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           # Full history is required by goreleaser to compute
           # snapshot version + commit metadata in archives.
