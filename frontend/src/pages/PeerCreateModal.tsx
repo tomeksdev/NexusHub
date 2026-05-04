@@ -1,11 +1,15 @@
 import { useState, type FormEvent } from "react";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { Modal } from "../components/Modal";
-import { ApiError, api } from "../lib/api";
+import { ApiError, api, type PageEnvelope } from "../lib/api";
 
 interface Props {
   interfaceID: string;
+  // Optional pre-selection. The User detail page passes this so the
+  // modal opens with the owner already chosen and the picker hidden.
+  ownerUserID?: string;
+  ownerLocked?: boolean;
   onClose: () => void;
   onCreated: (peer: { id: string; name: string }) => void;
 }
@@ -20,6 +24,14 @@ interface CreatePayload {
   endpoint?: string;
   dns?: string[];
   persistent_keepalive?: number;
+  owner_user_id?: string;
+}
+
+interface UserListRow {
+  id: string;
+  email: string;
+  username: string;
+  is_active: boolean;
 }
 
 interface PeerResponse {
@@ -27,7 +39,13 @@ interface PeerResponse {
   name: string;
 }
 
-export function PeerCreateModal({ interfaceID, onClose, onCreated }: Props) {
+export function PeerCreateModal({
+  interfaceID,
+  ownerUserID,
+  ownerLocked,
+  onClose,
+  onCreated,
+}: Props) {
   const qc = useQueryClient();
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
@@ -36,10 +54,25 @@ export function PeerCreateModal({ interfaceID, onClose, onCreated }: Props) {
   const [endpoint, setEndpoint] = useState("");
   const [keepalive, setKeepalive] = useState("");
   const [clientAllowedIPs, setClientAllowedIPs] = useState("");
+  const [owner, setOwner] = useState<string>(ownerUserID ?? "");
+
+  // Pull the user list for the dropdown. Admin-only endpoint; the
+  // PeerCreateModal is itself admin-gated so this is fine. If the
+  // operator has hundreds of users we'd want a typeahead, but at the
+  // current scale a 100-row dropdown is the simpler shape.
+  const usersQ = useQuery({
+    queryKey: ["users-picker"],
+    queryFn: () =>
+      api<PageEnvelope<UserListRow>>("/api/v1/users?limit=200&sort=email"),
+    // Don't reach for the user list when we already know who owns it.
+    enabled: !ownerLocked,
+    staleTime: 60_000,
+  });
 
   const mut = useMutation<PeerResponse, ApiError>({
     mutationFn: () => {
       const body: CreatePayload = { interface_id: interfaceID, name };
+      if (owner) body.owner_user_id = owner;
       if (description.trim()) body.description = description.trim();
       if (assignedIP.trim()) body.assigned_ip = assignedIP.trim();
       // allowed_ips is comma-separated in the UI; split + trim so the user
@@ -87,6 +120,24 @@ export function PeerCreateModal({ interfaceID, onClose, onCreated }: Props) {
             required
           />
         </Field>
+        {!ownerLocked && (
+          <Field label="Owner (user)" hint="Optional — links the peer to a user account.">
+            <select
+              value={owner}
+              onChange={(e) => setOwner(e.target.value)}
+              className="field-input"
+            >
+              <option value="">— unassigned —</option>
+              {(usersQ.data?.items ?? [])
+                .filter((u) => u.is_active)
+                .map((u) => (
+                  <option key={u.id} value={u.id}>
+                    {u.email} ({u.username})
+                  </option>
+                ))}
+            </select>
+          </Field>
+        )}
         <Field label="Description">
           <input
             value={description}

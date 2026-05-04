@@ -19,6 +19,7 @@ import (
 	"github.com/tomeksdev/NexusHub/backend/internal/config"
 	"github.com/tomeksdev/NexusHub/backend/internal/crypto"
 	"github.com/tomeksdev/NexusHub/backend/internal/db"
+	"github.com/tomeksdev/NexusHub/backend/internal/diag"
 	baseebpf "github.com/tomeksdev/NexusHub/backend/internal/ebpf"
 	"github.com/tomeksdev/NexusHub/backend/internal/handler"
 	"github.com/tomeksdev/NexusHub/backend/internal/metrics"
@@ -107,6 +108,12 @@ func run() error {
 	// Try to open a netlink client. If we can't (no CAP_NET_ADMIN, no
 	// kernel module, containerised dev env), skip kernel sync and run
 	// DB-only — the handlers and reconciler are both nil-safe on wgClient.
+	// Kernel-apply diagnostics ring. Best-effort surfacing of slog.Warn
+	// failures from the WG/eBPF apply paths so the Support page can
+	// show "what's broken" without ssh-ing in. Tuned generously: 50
+	// entries, 15-minute TTL.
+	kernelWarnings := diag.New(50, 15*time.Minute)
+
 	var wgClient wg.Client
 	// linkManager is the rtnetlink side. Cheap to construct (no
 	// resources held until called) so we always wire it; the operator
@@ -203,6 +210,7 @@ func run() error {
 		EBPFSync:          ebpfStk.syncer,
 		WG:                wgClient,
 		WGLinks:           linkManager,
+		KernelWarnings:    kernelWarnings,
 		DefaultWGEndpoint: cfg.WGEndpoint,
 		LoginLimit: middleware.RateLimitConfig{
 			Name:      "login",

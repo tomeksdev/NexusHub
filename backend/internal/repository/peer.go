@@ -175,6 +175,48 @@ func (r *PeerRepo) ListPage(ctx context.Context, ifaceID uuid.UUID, limit, offse
 	return items, total, nil
 }
 
+// ListPageByOwner returns the paginated peers belonging to a user
+// across every interface they have peers on. Used by the User detail
+// view; the existing ListPage stays scoped to one interface so the
+// per-Location admin flow doesn't change.
+func (r *PeerRepo) ListPageByOwner(ctx context.Context, ownerID uuid.UUID, limit, offset int, sortField string, sortDesc bool) ([]Peer, int, error) {
+	if !contains(PeerSortFields, sortField) {
+		sortField = "name"
+	}
+	dir := "ASC"
+	if sortDesc {
+		dir = "DESC"
+	}
+	query := fmt.Sprintf("%s WHERE owner_user_id = $1 ORDER BY %s %s NULLS LAST LIMIT $2 OFFSET $3",
+		selectPeer, sortField, dir)
+
+	rows, err := r.pool.Query(ctx, query, ownerID, limit, offset)
+	if err != nil {
+		return nil, 0, fmt.Errorf("list peers by owner: %w", err)
+	}
+	defer rows.Close()
+
+	var items []Peer
+	for rows.Next() {
+		p, err := scanPeer(rows)
+		if err != nil {
+			return nil, 0, err
+		}
+		items = append(items, *p)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, 0, err
+	}
+
+	var total int
+	if err := r.pool.QueryRow(ctx,
+		`SELECT count(*) FROM wg_peers WHERE owner_user_id = $1`, ownerID,
+	).Scan(&total); err != nil {
+		return nil, 0, fmt.Errorf("count peers by owner: %w", err)
+	}
+	return items, total, nil
+}
+
 func contains(list []string, s string) bool {
 	for _, v := range list {
 		if v == s {

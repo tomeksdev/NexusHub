@@ -10,6 +10,7 @@ import (
 
 	"github.com/tomeksdev/NexusHub/backend/internal/auth"
 	"github.com/tomeksdev/NexusHub/backend/internal/crypto"
+	"github.com/tomeksdev/NexusHub/backend/internal/diag"
 	"github.com/tomeksdev/NexusHub/backend/internal/ebpf"
 	"github.com/tomeksdev/NexusHub/backend/internal/metrics"
 	"github.com/tomeksdev/NexusHub/backend/internal/middleware"
@@ -44,6 +45,9 @@ type Deps struct {
 	// wgctrl) because the two subsystems are. Nil ⇒ handlers skip the
 	// link-management step.
 	WGLinks wg.LinkManager
+	// KernelWarnings collects best-effort kernel-apply failures so
+	// the Support page can render them. Nil ⇒ warnings are slog-only.
+	KernelWarnings *diag.KernelWarnings
 	// DefaultWGEndpoint and DefaultWGDNS feed the wg-quick config
 	// renderer's fall-back chain (peer → interface → default). They're
 	// sourced from WG_ENDPOINT and the interface DNS column respectively.
@@ -127,14 +131,23 @@ func NewRouter(deps Deps) *gin.Engine {
 		ifaceH := &InterfaceHandler{
 			Interfaces: deps.Interfaces, AEAD: deps.AEAD,
 			Client: deps.WG, Links: deps.WGLinks,
+			KernelWarnings: deps.KernelWarnings,
 		}
 		peerH := &PeerHandler{
-			Peers: deps.Peers, Interfaces: deps.Interfaces, AEAD: deps.AEAD,
+			Peers: deps.Peers, Interfaces: deps.Interfaces,
+			Users:           deps.Users,
+			AEAD:            deps.AEAD,
 			Client:          deps.WG,
 			DefaultEndpoint: deps.DefaultWGEndpoint,
 			DefaultDNS:      deps.DefaultWGDNS,
 		}
 		statusH := &StatusHandler{Client: deps.WG, Interfaces: deps.Interfaces}
+		dashH := &DashboardHandler{
+			Users:      deps.Users,
+			Interfaces: deps.Interfaces,
+			Peers:      deps.Peers,
+			Client:     deps.WG,
+		}
 
 		admin := authed.Group("")
 		admin.Use(middleware.RequireRole("super_admin", "admin"))
@@ -153,6 +166,12 @@ func NewRouter(deps Deps) *gin.Engine {
 		admin.GET("/peers/:id/config.png", peerH.ConfigQR)
 
 		admin.GET("/wg/status", statusH.Status)
+		admin.GET("/dashboard", dashH.Get)
+
+		if deps.KernelWarnings != nil {
+			diagH := &DiagHandler{KernelWarnings: deps.KernelWarnings}
+			admin.GET("/diag/kernel-warnings", diagH.KernelWarningsList)
+		}
 		admin.GET("/metrics", metrics.Handler())
 
 		// Live peer state — same admin gate as wg/status; leaks handshake
@@ -169,6 +188,11 @@ func NewRouter(deps Deps) *gin.Engine {
 	if deps.Users != nil {
 		userH := &UserHandler{Users: deps.Users}
 		admin.GET("/users", userH.List)
+		admin.POST("/users", userH.Create)
+		admin.GET("/users/:id", userH.Get)
+		admin.PATCH("/users/:id", userH.Update)
+		admin.POST("/users/:id/password", userH.SetPassword)
+		admin.DELETE("/users/:id", userH.Delete)
 	}
 	if deps.Audit != nil {
 		auditH := &AuditHandler{Audit: deps.Audit}

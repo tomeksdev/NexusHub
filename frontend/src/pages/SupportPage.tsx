@@ -8,6 +8,17 @@ interface Health {
   commit?: string;
 }
 
+interface KernelWarning {
+  occurred_at: string;
+  origin: string;
+  iface?: string;
+  message: string;
+}
+
+interface KernelWarningsResp {
+  items: KernelWarning[];
+}
+
 export function SupportPage() {
   const { data } = useQuery({
     queryKey: ["health"],
@@ -15,6 +26,19 @@ export function SupportPage() {
     retry: false,
     staleTime: 60_000,
   });
+
+  // Pull recent kernel-apply warnings every 30 s. Admin-only — the
+  // backend route is gated, and a non-admin user view of the Support
+  // page won't even attempt this fetch (the catch handler swallows
+  // the 403 quietly).
+  const warningsQ = useQuery({
+    queryKey: ["kernel-warnings"],
+    queryFn: () =>
+      api<KernelWarningsResp>("/api/v1/diag/kernel-warnings"),
+    retry: false,
+    refetchInterval: 30_000,
+  });
+  const warnings = warningsQ.data?.items ?? [];
 
   return (
     <div className="space-y-6 max-w-3xl">
@@ -44,6 +68,37 @@ export function SupportPage() {
           <dd className="font-mono text-faint">{data?.commit ?? "—"}</dd>
         </dl>
       </section>
+
+      {warnings.length > 0 && (
+        <section className="panel">
+          <div className="panel-header">
+            <span className="panel-title">Recent kernel warnings</span>
+            <span className="text-faint text-xs">
+              last {warnings.length}, auto-clears after 15 min
+            </span>
+          </div>
+          <ul className="space-y-2 text-sm">
+            {warnings.map((w, i) => (
+              <li
+                key={i}
+                className="flex items-start gap-3 border-t border-[var(--color-line)] pt-2 first:border-t-0 first:pt-0"
+              >
+                <span className="status-badge warning shrink-0">
+                  <span className="dot" />
+                  {w.origin}
+                </span>
+                <div className="min-w-0">
+                  <div className="text-muted">{w.message}</div>
+                  <div className="text-faint text-xs mt-0.5">
+                    {new Date(w.occurred_at).toLocaleString()}
+                    {w.iface ? ` · ${w.iface}` : ""}
+                  </div>
+                </div>
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
 
       <section className="panel">
         <div className="panel-header">

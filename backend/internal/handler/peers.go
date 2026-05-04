@@ -34,7 +34,12 @@ var peerPSKAAD = []byte("wg_peer_preshared_keys.preshared_key")
 type PeerHandler struct {
 	Peers      *repository.PeerRepo
 	Interfaces *repository.InterfaceRepo
-	AEAD       *crypto.AEAD
+	// Users is optional. When set, peer create rejects an
+	// owner_user_id pointing at a disabled user — without this the
+	// operator can hand out VPN credentials to an account that can no
+	// longer log in to manage them.
+	Users *repository.UserRepo
+	AEAD  *crypto.AEAD
 	// Client pushes peer changes into the kernel WireGuard device. Nil in
 	// tests and dev environments without the kernel module — handlers
 	// degrade to DB-only writes in that case.
@@ -281,6 +286,28 @@ func (h *PeerHandler) Create(c *gin.Context) {
 			writeError(c, http.StatusBadRequest, apierror.CodeInvalidRequest, "owner_user_id must be uuid")
 			return
 		}
+		// Block assigning peers to a disabled (or non-existent) user.
+		// is_active is the soft-delete flag; an owner who can't log in
+		// can't manage their own VPN credentials, which defeats the
+		// purpose of the linkage.
+		if h.Users != nil {
+			u, uerr := h.Users.GetByID(ctx, ou)
+			if errors.Is(uerr, repository.ErrUserNotFound) {
+				writeError(c, http.StatusBadRequest, apierror.CodeInvalidRequest,
+					"owner_user_id does not exist")
+				return
+			}
+			if uerr != nil {
+				slog.ErrorContext(ctx, "lookup peer owner", "err", uerr)
+				writeError(c, http.StatusInternalServerError, apierror.CodeInternal, "internal error")
+				return
+			}
+			if !u.IsActive {
+				writeError(c, http.StatusBadRequest, apierror.CodeInvalidRequest,
+					"owner_user_id refers to a disabled user")
+				return
+			}
+		}
 		owner = &ou
 	}
 
@@ -346,22 +373,49 @@ func assignedBits(a netip.Addr) int {
 }
 
 func (h *PeerHandler) List(c *gin.Context) {
-	ifaceParam := c.Query("interface_id")
-	if ifaceParam == "" {
-		writeError(c, http.StatusBadRequest, apierror.CodeInvalidRequest, "interface_id query parameter required")
-		return
-	}
-	ifaceID, err := uuid.Parse(ifaceParam)
-	if err != nil {
-		writeError(c, http.StatusBadRequest, apierror.CodeInvalidRequest, "interface_id must be uuid")
-		return
-	}
 	pg := httppage.Parse(c)
 	sortField, sortDesc := pg.ResolveSort(repository.PeerSortFields, "name")
-	peers, total, err := h.Peers.ListPage(c.Request.Context(), ifaceID,
-		pg.Limit, pg.Offset, sortField, sortDesc)
+	ctx := c.Request.Context()
+
+	// Two filter modes: by interface_id (the per-Location admin
+	// flow) OR by owner_user_id (the User detail view). Exactly
+	// one must be supplied — combining them would need a third
+	// repo method and we haven't found a use case yet.
+	ifaceParam := c.Query("interface_id")
+	ownerParam := c.Query("owner_user_id")
+	if ifaceParam == "" && ownerParam == "" {
+		writeError(c, http.StatusBadRequest, apierror.CodeInvalidRequest,
+			"interface_id or owner_user_id query parameter required")
+		return
+	}
+	if ifaceParam != "" && ownerParam != "" {
+		writeError(c, http.StatusBadRequest, apierror.CodeInvalidRequest,
+			"interface_id and owner_user_id cannot be combined")
+		return
+	}
+
+	var (
+		peers []repository.Peer
+		total int
+		err   error
+	)
+	if ownerParam != "" {
+		ownerID, perr := uuid.Parse(ownerParam)
+		if perr != nil {
+			writeError(c, http.StatusBadRequest, apierror.CodeInvalidRequest, "owner_user_id must be uuid")
+			return
+		}
+		peers, total, err = h.Peers.ListPageByOwner(ctx, ownerID, pg.Limit, pg.Offset, sortField, sortDesc)
+	} else {
+		ifaceID, perr := uuid.Parse(ifaceParam)
+		if perr != nil {
+			writeError(c, http.StatusBadRequest, apierror.CodeInvalidRequest, "interface_id must be uuid")
+			return
+		}
+		peers, total, err = h.Peers.ListPage(ctx, ifaceID, pg.Limit, pg.Offset, sortField, sortDesc)
+	}
 	if err != nil {
-		slog.ErrorContext(c, "list peers", "err", err)
+		slog.ErrorContext(ctx, "list peers", "err", err)
 		writeError(c, http.StatusInternalServerError, apierror.CodeInternal, "internal error")
 		return
 	}

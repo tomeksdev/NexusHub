@@ -1,251 +1,235 @@
-# NexusHub Pre-Release Punch List — Round 2
+# NexusHub Pre-Release Punch List — Round 3
 
-Source: second bare-metal test of `dev` branch + the original v2.0.0 project
-plan I was supposed to be following from the start. Production verdict: **NOT
-READY**.
+Source: third bare-metal test of `dev` after rounds 1+2 landed. The UI
+direction is now correct; the data model is the gap. Production verdict:
+**still NOT READY**.
 
-This file replaces the old triage list. The previous round closed the
-kernel-link and frontend-crash blockers, but the *design* and *menu structure*
-that landed do not match the v2.0.0 plan, and a second wave of bugs surfaced
-once the basic flow worked.
+This file replaces the round-2 list. Round-1 fixes (kernel link, eBPF
+lifecycle, frontend crashes) and round-2 fixes (UI redesign, location
+edit/delete, port conflict, peer status sync) are in `git log`.
 
 ## Reference files (local only, gitignored)
 
-These two are kept in the working tree to inform the redesign and are NOT
-pushed to GitHub (see `.gitignore`):
-
-- `Claude - Project Plan.md` — the full v2.0.0 vision (menu hierarchy,
-  Locations terminology, RBAC plan).
-- `example.html` — the target design system (sidebar `#1e1e1e`, body
-  `#1a1a1a`, accent `#FF4C4C`, card-based layout, status badges).
+- `Claude - Project Plan.md` — v2.0.0 vision (admin/user menu hierarchy,
+  Locations terminology, Users → Peers → Locations relationship).
+- `example.html` — design system (colors, layout, status badges).
+- `hexagon_logo.png` — **commit this one** under `frontend/public/` so the
+  sidebar can render it. Currently sitting unreferenced at the repo root.
 
 ---
 
-## Pass A — UI redesign + menu restructure
+## Pass D — Migration system reliability  (**operators stuck — start here**)
 
-The current Tailwind/slate UI is generic. Operators expect the dashboard
-described in the project plan and prototyped in `example.html`.
+### D1 — Fix `migrate force`  ✅ (and every other subcommand) accepting `-path` after the cmd
+The current parser does `fs.Parse(os.Args[2:])`. Go's `flag` package stops
+at the first non-flag arg, so `migrate force 8 -path /opt/...` parses as
+positional `["8", "-path", "/opt/..."]` — the `-path` flag never binds, the
+runner falls back to `defaultMigrationsPath()` which is "." in production,
+and the open fails with `open .: no such file or directory`.
 
-### A1 — Apply the `example.html` design system  ✅
-- [x] Body `#1a1a1a`, sidebar `#1e1e1e`, cards `#2a2a2a`, accent `#FF4C4C`
-- [ ] Sidebar fixed 280 px, single accent color for active/hover, no slate
-- [ ] Top bar with page title + actions + clock badge (rounded card, 1.5 rem
-      padding)
-- [ ] Stat cards with colored left border (`primary` indigo / `success` green
-      / `warning` amber / `danger` red)
-- [ ] Status badges: `ok` / `warning` / `critical` with pulsing dot
-- [ ] Tables in dark cards with hover row tint
-- [ ] Custom-tab pill row for in-page section switches
-- [ ] Replace existing `slate-*` Tailwind utilities throughout with the
-      new palette (or migrate to a small CSS-variable theme so we stop
-      hand-editing class strings every time the palette shifts)
+Fix: pre-walk `os.Args[1:]` to extract `-path`/`--path` (with both `space`
+and `=` syntaxes) regardless of position, then take the first remaining
+positional as the cmd. Document both old and new orderings in `--help`.
 
-### A2 — Restructure sidebar to match the project plan  ✅
-Admin menu (current is flat — needs sections):
-```
-Main
-├── Locations         (CRUD WG endpoints + status indicators + peer counts)
-├── Users             (mgmt, role, 2FA status, invite)
-└── Monitoring        (real-time charts, connection logs, per-peer stats)
+- [ ] `backend/cmd/migrate/main.go` — argv pre-walk for `-path`
+- [ ] Add a unit test: `extractPathFlag` table cases for the 4 forms
+      (`-path X`, `--path X`, `-path=X`, `--path=X`) plus "no flag"
 
-Configuration
-├── Global Config     (app name, default DNS, SMTP, feature toggles)
-├── Groups            (CRUD groups, assign users + locations)
-└── Access Rules      (per-group/location/user allow/deny w/ priority)
+### D2 — Make migration 009  ✅ (UNIQUE listen_port) safe to apply with existing duplicates
+Round 2 added the unique constraint blindly. Operators with duplicate ports
+(common from earlier testing) hit a constraint violation, the DB enters
+dirty state at v9, and there's no recovery path.
 
-Security
-└── eBPF Rules        (CRUD eBPF, apply/unapply, compilation status)
+Fix: wrap the ALTER in a `DO` block that pre-checks for duplicates and
+raises a clear error naming the offending interfaces. The constraint still
+errors on operator data, but the message tells them exactly what to fix
+instead of a bare `unique violation`.
 
-Profile
-├── My Profile        (name, email, password, 2FA TOTP+WebAuthn)
-└── Support           (docs, system info, version, health)
-```
+- [ ] Rewrite `migrations/009_interface_listen_port_unique.up.sql` with a
+      `DO $$ ... RAISE EXCEPTION ... $$` pre-flight
+- [ ] Make the up migration idempotent (`DROP CONSTRAINT IF EXISTS` first)
+      so a re-run after dedupe succeeds without a `force` round-trip
 
-User menu:
-```
-Main
-├── My Config         (own peers, .conf, QR, enable/disable)
-└── Monitoring        (own stats for allowed locations only)
-
-Profile
-├── My Profile        (name, email, password, 2FA, recovery codes)
-└── Support           (docs, contact admin)
-```
-
-- [ ] Render sidebar with section headers (`Main`, `Configuration`,
-      `Security`, `Profile`) instead of one flat list
-- [ ] Branch the sidebar items by role (`super_admin`/`admin` vs `user`)
-- [ ] Active route highlight with `#FF4C4C` left border + background
-
-### A3 — Rename "Interfaces" → "Locations" in the UI  ✅
-The DB table stays `wg_interfaces` — that's the kernel-level primitive — but
-the operator concept per the plan is "Locations" (a server endpoint with a
-public host + listen port + peers). Pure label rename in the frontend.
-
-- [ ] All UI strings: `Interfaces` → `Locations`
-- [ ] Routes: `/interfaces` → `/locations` (with redirect from old path so
-      bookmarks don't 404)
-- [ ] No DB / API rename in this pass — the v1 endpoint stays
-      `/api/v1/interfaces`. Adding a `/locations` alias is a follow-up if
-      the SDK ever needs it.
-
-### A4 — Remove i18n  ✅
-The plan doesn't include multi-language. The current `react-i18next` setup
-adds bundle weight, indirection, and forces every label through a
-`t()` lookup with no real benefit.
-
-- [ ] Strip `react-i18next` + `i18next` + `i18next-browser-languagedetector`
-      from `package.json`
-- [ ] Replace `t("foo")` calls with literal English strings
-- [ ] Delete `src/lib/i18n.ts`, `src/lib/locales/`, the `LanguageSwitcher`
-      component
-- [ ] Remove the `i18n` import side-effect from `main.tsx`
-
-### A5 — Profile + Support pages  ✅
-Currently nothing under `/profile`. Plan calls for these as the role-anchor
-pages.
-
-- [ ] `My Profile` page: read-only name/email + change password + 2FA setup
-      (already exists as `SecurityPage` — fold it in here)
-- [ ] `Support` page: docs links, system info, version (read from
-      `/api/v1/health` build info), DB pool / WG mode read-outs
-
-### A6 — Dashboard landing page  (deferred)
-Per `example.html`, the landing should be a dashboard with KPI stat cards +
-charts, not a peer list. Even if the v2.0.0 plan doesn't strictly require a
-Dashboard route, this is what the design example shows; the user has flagged
-"current looks generic" as a blocker.
-
-- [ ] Add `/` Dashboard route with stat cards (peers online, locations up,
-      eBPF rule hits/min, traffic last 24h) + a 24-h traffic chart
-- [ ] Sidebar `Main` section starts with `Dashboard` for admin
+### D3 — Recovery doc  ✅ for dirty-state operators
+- [ ] One-page `docs/deployment/migration-recovery.md` with the canonical
+      sequence: identify duplicates → reassign/delete → `migrate force 8`
+      → `migrate up`. Cross-reference from `docs/deployment/README.md`.
 
 ---
 
-## Pass B — Critical bug fixes
+## Pass C — Users + Peers + Locations CRUD completion
 
-### B1 — Interface edit + delete  ✅
-- [ ] Backend: add `PATCH /api/v1/interfaces/:id` (port, address, dns, mtu,
-      endpoint, post_up, post_down — never the keys)
-- [ ] Backend: confirm `DELETE /api/v1/interfaces/:id` actually works on
-      bare metal. Last report said "cannot delete" — verify the netlink
-      `DeleteLink` path runs and reports the failure if it doesn't
-- [ ] Frontend: `LocationEditModal` (form mirroring create, name + keys
-      read-only)
-- [ ] Frontend: delete button in the table with confirm dialog
+The schema has supported `wg_peers.owner_user_id` since migration 002, but
+nothing in the UI or write API uses it. Operators report:
 
-### B2 — Port handling: kernel ↔ DB ↔ UI  ✅
-Bug report says "Wrong port assigned" + "UI shows incorrect port vs kernel".
-Two suspect paths:
-- Create flow may be passing the DB-stored port back without confirming the
-  kernel accepted it. If kernel rejected and silently picked a different one,
-  the UI lies.
-- Reconciler doesn't re-read the live `Device.ListenPort` after applying.
+- "Cannot create / edit / delete users"
+- "Cannot create peers under users"
+- "Multi-peer per user not working"
+- "User → Location → Peer mapping incomplete"
 
-- [ ] Have `InterfaceHandler.Create` re-fetch the kernel device after
-      `ConfigureDevice` and surface a 500 if `live.ListenPort != requested`
-- [ ] Wire a `wg/status` poll into the Locations table so the live port is
-      visible alongside the configured port; show a drift badge if they
-      differ
-- [ ] Add a backend test that asserts `live.ListenPort == iface.ListenPort`
-      after Create against `wg.FakeClient`
+This is the headline gap. The fix is mostly wiring:
 
-### B3 — Port conflict validation  ✅
-- [ ] DB: unique constraint on `wg_interfaces.listen_port` (migration 009)
-- [ ] Backend: 409 with `LISTEN_PORT_CONFLICT` code when the constraint
-      violates, surfaced as a user-readable error in the modal
+### C1 — User CRUD (admin endpoints)  ✅
+- [ ] `POST /api/v1/users` — admin creates a user (email, username,
+      password, role). Hashes via existing argon2id helper. Returns the
+      stored row minus the hash.
+- [ ] `PATCH /api/v1/users/:id` — partial update (email, username, role,
+      is_active). Never password — that's a separate self-service flow.
+- [ ] `POST /api/v1/users/:id/password` — admin reset (sets a new password,
+      forces change-on-next-login? — TBD, see open questions).
+- [ ] `DELETE /api/v1/users/:id` — soft-delete via `is_active=false` first
+      (so audit logs keep their actor reference); hard delete only when
+      the operator passes `?force=true`.
 
-### B4 — Peer status / handshake / RX-TX desync  ✅
-Bug report: "No handshake shown, RX/TX = 0, but actually active in backend".
-Root candidates: peer-events SSE never wires up the live counters into the
-DB peer row; the table renders the DB peer as the source of truth and the
-SSE merge is partial. Need to investigate.
+### C2 — User CRUD (frontend)  ✅
+- [ ] `UserCreateModal` and `UserEditModal` matching the design system
+- [ ] "+ New user" button on the Users page top bar
+- [ ] Edit + delete (with confirm) buttons in each row
+- [ ] Show peer count per user in the table (count over /peers/?owner_user_id=)
 
-- [ ] Repro: create peer, complete handshake, watch what the SSE actually
-      emits (`event: peer` payloads should carry `last_handshake` /
-      `rx_bytes` / `tx_bytes`)
-- [ ] Confirm `PeersPage` merges live state on top of the DB row (it does
-      today via the `live` map keyed by public key — verify it's keyed on
-      the right field after the recent `null`-filtering fix)
-- [ ] Backfill: periodic job that polls every device and writes the
-      cumulative counters back to `wg_peers` so a fresh page load shows
-      non-zero values without waiting for an SSE tick
-- [ ] If the SSE works fine and the issue is page-load latency, surface a
-      "live data loading…" indicator instead of zeros
+### C3 — Peer ownership: assign user to peer at create + multi-peer per user  ✅
+- [ ] `PeerCreateModal` gains a User picker (server-fetched, searchable).
+      The current `interface_id`-only flow stays — admin can also pick the
+      Location. owner_user_id flows through to `wg_peers.owner_user_id`
+      (the column is already there, the backend already accepts it).
+- [ ] PeersPage table grows an Owner column showing the assigned user's
+      email or `—`.
+- [ ] On a User detail view (C4), every peer for that user is listed
+      regardless of which location it belongs to.
 
-### B5 — AllowedIPs validation  ✅
-Already partially fixed in round 1 (`parsePrefixesStrict`). The new report
-calls out "Wrong config generated" — likely the asymmetric `[Peer]
-AllowedIPs` issue we addressed in round 1 wasn't enough.
-
-- [ ] Confirm the round-1 `client_allowed_ips` column makes it into the
-      exported `.conf` correctly on bare metal
-- [ ] Add a server-side check that rejects creates where `assigned_ip` is
-      outside every `allowed_ips` entry (today nothing prevents the
-      operator from setting `allowed_ips=10.0.0.0/24` and `assigned_ip=
-      192.168.5.1`)
+### C4 — User detail view  ✅
+- [ ] New `UserDetailPage` reachable by clicking a row in `UsersPage`
+- [ ] Sections: profile (read-only summary), peers list (filtered by
+      owner_user_id), audit-log entries scoped to actor=user
+- [ ] "+ Add peer for this user" — opens `PeerCreateModal` with the user
+      pre-selected and only the Location picker active
 
 ---
 
-## Pass C — Deferred (NOT in this batch)
+## Pass E — Dashboard + branding + real-time UX
 
-The project plan describes a much bigger v2.0.0 surface than what got built.
-Calling these out so the gap is visible — none of these ship as part of
-addressing this report:
+### E1 — Dashboard landing page  ✅
+The plan and the design example both call for a dashboard-first UX. Today
+admins land on `Locations` which is a list, not a dashboard.
 
-- `users.first_name` / `users.last_name` columns + invite-via-email flow
-- `email_tokens` table + SMTP config + verification / reset / invite emails
-- `groups` + `group_users` + `group_locations` model + CRUD + UI
-- `access_rules` table + priority-ordered evaluation engine + UI
-- `global_config` table + Global Config admin page
-- `locations.description` / `locations.max_peers` (stay on
-  `wg_interfaces` for now)
-- WebAuthn (TOTP is in; WebAuthn is in the plan but not implemented)
-- Connection-event streaming into `connection_logs` from the WG poller
-  (only eBPF logs land there today)
+- [ ] New `DashboardPage` becomes the admin default landing route
+- [ ] Top stat row: total Locations / total Users / total Peers / Peers
+      online (last 3 min)
+- [ ] "Top 10 active peers" panel — sorted by RX+TX in the last poll,
+      shows owner email + location + sparkline
+- [ ] "Active locations" panel — name, listen port, live peer count,
+      live state (UP/DOWN with the example.html status-badge)
+- [ ] Backend: `GET /api/v1/dashboard` returns the aggregates in a single
+      payload so the page doesn't N+1 across /peers/locations/wg-status.
+      Reuses the round-2 peer stats poller's data so this is cheap.
 
-These are tracked for a follow-up phase; please confirm prioritization
-once Passes A + B are green.
+### E2 — Brand the sidebar with `hexagon_logo.png`  ✅
+- [ ] Move `hexagon_logo.png` → `frontend/public/logo.png`
+- [ ] Sidebar brand block uses `<img src="/logo.png">` next to the
+      "NexusHub" wordmark
+- [ ] Login page also gets the logo above the form
+- [ ] Favicon: replace `frontend/public/favicon.svg` with the hexagon
+      (either as PNG or convert)
+
+### E3 — Real-time peer indicators  ✅
+- [ ] Pulsing green dot in PeersPage rows for peers handshaken in the
+      last 60 s (today's "live" classification is 3 min — too coarse for
+      "is this peer talking right now")
+- [ ] Tiny sparkline column in PeersPage showing the last ~30 RX deltas
+      from SSE so the operator sees per-peer traffic without leaving the
+      table
+
+---
+
+## Pass F — Validation + error surfacing
+
+### F1 — API-layer port pre-validation  ✅
+The DB constraint catches duplicates but the message is opaque. Add a
+`SELECT 1 FROM wg_interfaces WHERE listen_port=$1` pre-flight in the
+Create handler that returns a `LISTEN_PORT_CONFLICT` 409 before the
+INSERT. Same for Update.
+
+- [ ] Pre-flight check in `InterfaceHandler.Create`
+- [ ] Pre-flight check in `InterfaceHandler.Update`
+
+### F2 — User-peer-location consistency  ✅
+- [ ] When a peer is created with an `owner_user_id`, the user must be
+      `is_active=true` (today nothing prevents assigning peers to a
+      disabled user)
+- [ ] When a user is soft-deleted, optionally cascade-disable their
+      peers via a flag on the DELETE endpoint
+
+### F3 — Surface backend errors more loudly  ✅
+- [ ] `slog.Warn(...)` calls in handler kernel-apply paths today are
+      invisible to the operator. Add a simple in-memory ring of the last
+      50 kernel-apply warnings, exposed at `GET /api/v1/diag/kernel-warnings`,
+      so the Support page can render them. Alerts on warnings older than
+      a few minutes get auto-cleared.
+
+---
+
+## Working components (don't regress)
+
+- ✅ Interface (Location) creation, edit, delete (round 2)
+- ✅ WireGuard kernel link create + UP + addr (round 1)
+- ✅ eBPF map pinning + startup rule reconcile (round 1)
+- ✅ Frontend design system + sidebar restructure (round 2)
+- ✅ TOTP 2FA flow
+
+---
+
+## Out of scope (still deferred)
+
+- Groups + access rules tables, CRUD, UI (plan §6)
+- Email/SMTP infra: invitations, password reset, verification
+- `users.first_name` / `users.last_name`
+- Global config table + Global Config admin page
+- WebAuthn (TOTP is in)
+- `connection_logs` write-back from the WG stats poller (today only the
+  eBPF logger writes there)
+
+These stay flagged for v2.1.
 
 ---
 
 ## Acceptance — what "ready to ship" looks like
 
-A v2.0.0 tag cannot land until every box passes on a real bare-metal host.
-Round-1 boxes that still need verification stay on the list; new criteria
-mark `(R2)`.
+Each box must pass on a real bare-metal host before tagging v2.0.0.
 
-- [ ] (R2) Sidebar matches `example.html` palette + section headers
-- [ ] (R2) Admin sees `Locations / Users / Monitoring / Global Config /
-      Groups / Access Rules / eBPF Rules / My Profile / Support`
-- [ ] (R2) User sees only `My Config / Monitoring / My Profile / Support`
-- [ ] (R2) i18n stripped; bundle smaller; no `t()` calls remain
-- [ ] (R2) Edit + delete work for a Location end-to-end
-- [ ] (R2) Two locations cannot share a listen port (UI surfaces the
-      conflict)
-- [ ] (R2) Configured port matches `wg show <iface>` listen port in every
-      case
-- [ ] (R2) Peer table shows non-zero handshake + RX/TX within ≤30 s of an
-      active peer connecting
-- [ ] Interface created via UI ⇒ `ip link show wg0` reports the link, UP,
-      with the configured address (round-1 carry-over)
-- [ ] eBPF maps visible at `/sys/fs/bpf/nexushub/` and survive API restart
-      (round-1 carry-over)
-- [ ] Adding a deny rule blocks matching traffic ≤1 s and `rule_hits`
-      increments (round-1 carry-over)
+- [ ] (R3) `migrate force 9 -path /opt/NexusHub/migrations` works
+- [ ] (R3) Re-running `migrate up` after deduping ports succeeds without
+      a manual force step
+- [ ] (R3) Admin can create / edit / delete a user from the UI
+- [ ] (R3) Admin can create a peer for a specific user, choosing the
+      Location from a dropdown
+- [ ] (R3) A user with three peers across two locations shows all three
+      on their detail view
+- [ ] (R3) Dashboard renders top-10 peers, active locations, peers
+      online
+- [ ] (R3) Hexagon logo renders in the sidebar + login screen
+- [ ] (R3) Two locations cannot share a port — UI rejects with a clear
+      message before the DB rejects
+- [ ] (carry) Interface created via UI ⇒ `ip link show <name>` UP with
+      the configured address
+- [ ] (carry) eBPF maps survive restart at `/sys/fs/bpf/nexushub`
+- [ ] (carry) Adding a deny rule blocks traffic ≤1 s and `rule_hits`
+      increments
 
 ---
 
-## Decisions needed before I start coding
+## Open questions before I start coding
 
-1. **Dashboard route** (A6) — add it now or skip and let `Locations` be the
-   landing page? The plan doesn't strictly require it; the design example
-   does.
-2. **Drop i18n today** (A4) or keep the scaffolding silent for a future
-   re-add? My read is full removal — re-adding later is cheap.
-3. **`wg_interfaces` → `locations` DB rename** — do later (separate
-   migration phase) or never (stay technical-name in DB, "Locations" in
-   UI)? My read is later/never — the rename has zero functional value and
-   risks breaking integrations.
+1. **Admin password reset UX (C1)** — `POST /users/:id/password` sets a
+   new password. Does the user need to change it on next login, or is
+   the new password just live? My read is "live" today (we don't have a
+   `must_change_password` flag on `users`); document the trade-off and
+   move on.
+2. **Soft-delete semantics (C1)** — `DELETE /users/:id` flips
+   `is_active=false`; their peers stay active. Hard delete (`?force=true`)
+   cascades via the existing FK. Sound right?
+3. **Dashboard route as default landing (E1)** — admin currently lands on
+   Locations. Should the redirect happen now (recommended) or stay
+   stable until the dashboard page is fully populated? My read is
+   redirect now even with sparse data.
 
-Send a one-line answer to each and I'll start at A1.
+Send a one-liner per question and I'll start at D1.

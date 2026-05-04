@@ -10,6 +10,7 @@ import { PeerCreateModal } from "./PeerCreateModal";
 interface Peer {
   id: string;
   interface_id: string;
+  owner_user_id?: string | null;
   name: string;
   public_key: string;
   assigned_ip: string;
@@ -18,6 +19,11 @@ interface Peer {
   rx_bytes: number;
   tx_bytes: number;
   created_at: string;
+}
+
+interface UserLite {
+  id: string;
+  email: string;
 }
 
 // Live state keyed by public key. We merge this over the DB-sourced peer
@@ -35,6 +41,10 @@ interface SsePayload {
   rx_bytes: number;
   tx_bytes: number;
 }
+
+// SPARKLINE_LEN caps the per-peer history we keep in memory. At one
+// SSE tick per change-detection (~5 s) this gives a ~2.5-minute view.
+const SPARKLINE_LEN = 30;
 
 export function PeersPage() {
   const qc = useQueryClient();
@@ -63,7 +73,26 @@ export function PeersPage() {
     },
   });
 
+  // Tiny lookup table so we can render owner email per peer instead
+  // of just a UUID. Pulled with the same key UsersPage uses so a
+  // user-list mutation invalidates this too.
+  const usersQ = useQuery({
+    queryKey: ["users-picker"],
+    queryFn: () =>
+      api<PageEnvelope<UserLite>>("/api/v1/users?limit=200&sort=email"),
+    staleTime: 60_000,
+    retry: false,
+  });
+  const userByID = new Map<string, UserLite>();
+  for (const u of usersQ.data?.items ?? []) userByID.set(u.id, u);
+
   const [live, setLive] = useState<Record<string, LivePeer>>({});
+  // Per-peer rolling history of total RX. We render the diffs between
+  // adjacent points as a sparkline; the absolute values would be a
+  // monotonically-increasing line nobody can read. Storing in component
+  // state means tab-switching loses the history — that's fine for an
+  // at-a-glance indicator.
+  const [history, setHistory] = useState<Record<string, number[]>>({});
   const [configPeer, setConfigPeer] = useState<{
     id: string;
     name: string;
@@ -112,6 +141,18 @@ export function PeersPage() {
                 rx_bytes: p.rx_bytes,
                 tx_bytes: p.tx_bytes,
               };
+            }
+            return next;
+          });
+          setHistory((prev) => {
+            const next = { ...prev };
+            for (const p of list) {
+              const series = next[p.public_key] ?? [];
+              const total = p.rx_bytes + p.tx_bytes;
+              const updated = [...series, total];
+              if (updated.length > SPARKLINE_LEN)
+                updated.splice(0, updated.length - SPARKLINE_LEN);
+              next[p.public_key] = updated;
             }
             return next;
           });
@@ -200,10 +241,12 @@ export function PeersPage() {
             <thead>
               <tr>
                 <th>Name</th>
+                <th>Owner</th>
                 <th>Assigned IP</th>
                 <th>Status</th>
                 <th>Last handshake</th>
                 <th>RX / TX</th>
+                <th>Live</th>
                 <th aria-label="Actions" />
               </tr>
             </thead>
@@ -217,22 +260,38 @@ export function PeersPage() {
                   handshake && !isZeroTime(handshake)
                     ? nowMs - new Date(handshake).getTime()
                     : Number.POSITIVE_INFINITY;
-                const isLive = recentMs < 3 * 60_000;
+                // Tighten the dot to 60 s — wg's keepalive default is
+                // 25 s, so a peer with no handshake in the last minute
+                // is genuinely silent. The 3-min window stays as the
+                // top-level "online" KPI.
+                const isLive = recentMs < 60_000;
                 return (
                   <tr key={p.id}>
                     <td className="font-medium">
                       <span className="inline-flex items-center gap-2">
                         <span
                           aria-hidden
-                          className="inline-block w-1.5 h-1.5 rounded-full"
+                          className="inline-block w-2 h-2 rounded-full"
                           style={{
                             background: isLive
                               ? "var(--color-success)"
                               : "var(--color-faint)",
+                            animation: isLive ? "pulse 2s infinite" : undefined,
                           }}
                         />
                         {p.name}
                       </span>
+                    </td>
+                    <td className="text-muted">
+                      {p.owner_user_id ? (
+                        userByID.get(p.owner_user_id)?.email ?? (
+                          <span className="text-faint font-mono text-xs">
+                            {p.owner_user_id.slice(0, 8)}
+                          </span>
+                        )
+                      ) : (
+                        <span className="text-faint">—</span>
+                      )}
                     </td>
                     <td className="font-mono text-muted">{p.assigned_ip}</td>
                     <td>
@@ -245,6 +304,9 @@ export function PeersPage() {
                     </td>
                     <td className="text-muted font-mono text-xs">
                       {formatBytes(rx)} / {formatBytes(tx)}
+                    </td>
+                    <td>
+                      <Sparkline totals={history[p.public_key] ?? []} />
                     </td>
                     <td className="text-right">
                       <div className="inline-flex gap-2">
@@ -312,6 +374,44 @@ function statusClass(s: string): string {
 
 function isZeroTime(s: string): boolean {
   return s.startsWith("0001-");
+}
+
+// Sparkline renders deltas between adjacent points so a long-running
+// peer doesn't show a flat line at peak height — what operators care
+// about is "is this peer moving traffic right now". Returns null for
+// histories too short to plot to keep the table from filling with
+// empty boxes.
+function Sparkline({ totals }: { totals: number[] }) {
+  if (totals.length < 3) return <span className="text-faint text-xs">—</span>;
+  const deltas: number[] = [];
+  for (let i = 1; i < totals.length; i++) {
+    deltas.push(Math.max(0, totals[i] - totals[i - 1]));
+  }
+  const max = Math.max(...deltas, 1);
+  const w = 80;
+  const h = 18;
+  const step = w / Math.max(deltas.length - 1, 1);
+  const points = deltas
+    .map((d, i) => `${i * step},${h - (d / max) * h}`)
+    .join(" ");
+  return (
+    <svg
+      viewBox={`0 0 ${w} ${h}`}
+      width={w}
+      height={h}
+      role="img"
+      aria-label="recent traffic"
+    >
+      <polyline
+        fill="none"
+        stroke="var(--color-accent)"
+        strokeWidth="1.5"
+        strokeLinejoin="round"
+        strokeLinecap="round"
+        points={points}
+      />
+    </svg>
+  );
 }
 
 function formatBytes(n: number): string {

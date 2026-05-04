@@ -13,6 +13,7 @@ import (
 
 	"github.com/tomeksdev/NexusHub/backend/internal/apierror"
 	"github.com/tomeksdev/NexusHub/backend/internal/crypto"
+	"github.com/tomeksdev/NexusHub/backend/internal/diag"
 	"github.com/tomeksdev/NexusHub/backend/internal/httppage"
 	"github.com/tomeksdev/NexusHub/backend/internal/repository"
 	"github.com/tomeksdev/NexusHub/backend/internal/wg"
@@ -32,6 +33,25 @@ type InterfaceHandler struct {
 	// rtnetlink steps (acceptable for tests and for hosts where the
 	// operator manages link lifecycle out-of-band).
 	Links wg.LinkManager
+	// KernelWarnings, when set, captures the slog.Warn-level kernel
+	// apply failures so the Support page can surface them. Nil ⇒
+	// failures stay in slog only.
+	KernelWarnings *diag.KernelWarnings
+}
+
+// recordKernelWarning is the bridge between the existing slog.Warn
+// sites and the operator-visible ring. Both still happen so the
+// systemd journal captures the full record; the ring is the
+// abbreviated UI feed.
+func (h *InterfaceHandler) recordKernelWarning(origin, iface, msg string) {
+	if h == nil || h.KernelWarnings == nil {
+		return
+	}
+	h.KernelWarnings.Push(diag.KernelWarning{
+		Origin:  origin,
+		Iface:   iface,
+		Message: msg,
+	})
 }
 
 type interfaceResponse struct {
@@ -87,6 +107,19 @@ func (h *InterfaceHandler) Create(c *gin.Context) {
 		return
 	}
 
+	// Pre-validate the listen port. The DB unique constraint catches
+	// the same case but with an opaque "duplicate key" message; this
+	// surface is the operator-facing error.
+	if inUse, perr := h.Interfaces.ListenPortInUse(c.Request.Context(), req.ListenPort, nil); perr != nil {
+		slog.ErrorContext(c, "check listen port", "err", perr)
+		writeError(c, http.StatusInternalServerError, apierror.CodeInternal, "internal error")
+		return
+	} else if inUse {
+		writeError(c, http.StatusConflict, "LISTEN_PORT_CONFLICT",
+			"listen port already in use by another location")
+		return
+	}
+
 	kp, err := wg.GenerateKeyPair()
 	if err != nil {
 		slog.ErrorContext(c, "generate keypair", "err", err)
@@ -136,12 +169,15 @@ func (h *InterfaceHandler) Create(c *gin.Context) {
 	if h.Links != nil {
 		if err := h.Links.EnsureLink(out.Name); err != nil {
 			slog.WarnContext(c, "kernel ensure link", "err", err, "iface", out.Name)
+			h.recordKernelWarning("wg.create.link", out.Name, err.Error())
 		}
 		if err := h.Links.EnsureAddress(out.Name, out.Address); err != nil {
 			slog.WarnContext(c, "kernel ensure address", "err", err, "iface", out.Name)
+			h.recordKernelWarning("wg.create.address", out.Name, err.Error())
 		}
 		if err := h.Links.EnsureUp(out.Name); err != nil {
 			slog.WarnContext(c, "kernel link up", "err", err, "iface", out.Name)
+			h.recordKernelWarning("wg.create.up", out.Name, err.Error())
 		}
 	}
 	if h.Client != nil {
@@ -152,6 +188,7 @@ func (h *InterfaceHandler) Create(c *gin.Context) {
 		}
 		if err := h.Client.ConfigureDevice(out.Name, kcfg); err != nil {
 			slog.WarnContext(c, "kernel configure interface", "err", err, "iface", out.Name)
+			h.recordKernelWarning("wg.create.configure", out.Name, err.Error())
 		}
 		// Read-back: confirm the kernel actually accepted the port we
 		// asked for. wgctrl can pick a different port silently when
@@ -163,6 +200,8 @@ func (h *InterfaceHandler) Create(c *gin.Context) {
 			slog.WarnContext(c, "kernel listen-port drift after create",
 				"iface", out.Name,
 				"requested", out.ListenPort, "actual", live.ListenPort)
+			h.recordKernelWarning("wg.create.port_drift", out.Name,
+				"kernel chose a different listen port than requested")
 		}
 	}
 	c.JSON(http.StatusCreated, toInterfaceResponse(out))
@@ -261,6 +300,22 @@ func (h *InterfaceHandler) Update(c *gin.Context) {
 	}
 
 	ctx := c.Request.Context()
+
+	// Pre-validate listen-port change. Same rationale as Create — the
+	// DB constraint would catch this anyway, but the API-layer message
+	// is much clearer.
+	if req.ListenPort != nil {
+		if inUse, perr := h.Interfaces.ListenPortInUse(ctx, *req.ListenPort, &id); perr != nil {
+			slog.ErrorContext(ctx, "check listen port", "err", perr)
+			writeError(c, http.StatusInternalServerError, apierror.CodeInternal, "internal error")
+			return
+		} else if inUse {
+			writeError(c, http.StatusConflict, "LISTEN_PORT_CONFLICT",
+				"listen port already in use by another location")
+			return
+		}
+	}
+
 	out, err := h.Interfaces.Update(ctx, id, params)
 	if errors.Is(err, repository.ErrInterfaceNotFound) {
 		writeError(c, http.StatusNotFound, apierror.CodeNotFound, "interface not found")

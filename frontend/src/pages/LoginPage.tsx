@@ -62,13 +62,16 @@ export function LoginPage() {
         onSubmit={onSubmit}
         className="panel w-full max-w-sm space-y-4"
       >
-        <div>
-          <h1 className="text-2xl font-bold text-white">NexusHub</h1>
-          <p className="text-muted text-sm mt-1">
-            {needsTOTP
-              ? "Enter the 6-digit code from your authenticator app."
-              : "Sign in to continue."}
-          </p>
+        <div className="flex items-center gap-3">
+          <img src="/logo.png" alt="" aria-hidden className="w-12 h-12" />
+          <div>
+            <h1 className="text-2xl font-bold text-white">NexusHub</h1>
+            <p className="text-muted text-sm mt-0.5">
+              {needsTOTP
+                ? "Enter the 6-digit code from your authenticator app."
+                : "Sign in to continue."}
+            </p>
+          </div>
         </div>
 
         {!needsTOTP && (

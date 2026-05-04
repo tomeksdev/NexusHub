@@ -249,6 +249,146 @@ func (r *UserRepo) MarkLoginFailure(ctx context.Context, userID uuid.UUID) error
 	return nil
 }
 
+// CreateUserParams is the admin-side write input. PasswordHash is
+// pre-computed by the handler via auth.HashPassword — keeping the
+// crypto out of repo land lets us pass identical hashes through the
+// seed CLI and the admin endpoint without re-importing argon2.
+type CreateUserParams struct {
+	Email        string
+	Username     string
+	PasswordHash string
+	Role         string // super_admin | admin | user
+}
+
+// Create inserts a new user. Returns ErrUserConflict on a duplicate
+// email or username so the handler can map both to a 409.
+func (r *UserRepo) Create(ctx context.Context, p CreateUserParams) (*UserListItem, error) {
+	const q = `
+		INSERT INTO users (email, username, password_hash, role)
+		VALUES ($1, $2, $3, $4::user_role)
+		RETURNING id, email::text, username, role::text, is_active, totp_enabled,
+		          last_login_at, failed_logins, locked_until, created_at, updated_at`
+	var u UserListItem
+	err := r.pool.QueryRow(ctx, q, p.Email, p.Username, p.PasswordHash, p.Role).Scan(
+		&u.ID, &u.Email, &u.Username, &u.Role, &u.IsActive, &u.TOTPEnabled,
+		&u.LastLoginAt, &u.FailedLogins, &u.LockedUntil, &u.CreatedAt, &u.UpdatedAt,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("insert user: %w", err)
+	}
+	return &u, nil
+}
+
+// UpdateUserParams is the PATCH-shaped input. Pointer fields opt in
+// per-column. PasswordHash lives on a separate endpoint
+// (AdminSetPassword) so a casual edit can't silently rotate creds.
+type UpdateUserParams struct {
+	Email    *string
+	Username *string
+	Role     *string
+	IsActive *bool
+}
+
+func (r *UserRepo) Update(ctx context.Context, id uuid.UUID, p UpdateUserParams) (*UserListItem, error) {
+	sets := []string{}
+	args := []any{id}
+	idx := 2
+	add := func(expr string, v any) {
+		sets = append(sets, fmt.Sprintf("%s = $%d", expr, idx))
+		args = append(args, v)
+		idx++
+	}
+	if p.Email != nil {
+		add("email", *p.Email)
+	}
+	if p.Username != nil {
+		add("username", *p.Username)
+	}
+	if p.Role != nil {
+		// Cast through user_role so an invalid value gets a 22P02
+		// from postgres, not a silent string write.
+		sets = append(sets, fmt.Sprintf("role = $%d::user_role", idx))
+		args = append(args, *p.Role)
+		idx++
+	}
+	if p.IsActive != nil {
+		add("is_active", *p.IsActive)
+	}
+	if len(sets) == 0 {
+		return r.GetByID(ctx, id)
+	}
+	q := fmt.Sprintf(`UPDATE users SET %s WHERE id = $1`, joinComma(sets))
+	cmd, err := r.pool.Exec(ctx, q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("update user: %w", err)
+	}
+	if cmd.RowsAffected() == 0 {
+		return nil, ErrUserNotFound
+	}
+	return r.GetByID(ctx, id)
+}
+
+// AdminSetPassword replaces the user's password hash. Used by the
+// admin reset endpoint. Distinct from UpdatePassword (self-service)
+// so audit + rate-limit policies can diverge.
+func (r *UserRepo) AdminSetPassword(ctx context.Context, id uuid.UUID, hash string) error {
+	cmd, err := r.pool.Exec(ctx,
+		`UPDATE users SET password_hash = $2 WHERE id = $1`, id, hash)
+	if err != nil {
+		return fmt.Errorf("admin set password: %w", err)
+	}
+	if cmd.RowsAffected() == 0 {
+		return ErrUserNotFound
+	}
+	return nil
+}
+
+// SoftDelete flips is_active=false. Audit history keeps the actor
+// reference because the row is still present.
+func (r *UserRepo) SoftDelete(ctx context.Context, id uuid.UUID) error {
+	cmd, err := r.pool.Exec(ctx,
+		`UPDATE users SET is_active = FALSE WHERE id = $1`, id)
+	if err != nil {
+		return fmt.Errorf("soft-delete user: %w", err)
+	}
+	if cmd.RowsAffected() == 0 {
+		return ErrUserNotFound
+	}
+	return nil
+}
+
+// HardDelete removes the row. wg_peers.owner_user_id is ON DELETE SET
+// NULL (migration 002), so peers survive but lose their owner link.
+// Sessions cascade-delete via FK.
+func (r *UserRepo) HardDelete(ctx context.Context, id uuid.UUID) error {
+	cmd, err := r.pool.Exec(ctx, `DELETE FROM users WHERE id = $1`, id)
+	if err != nil {
+		return fmt.Errorf("hard-delete user: %w", err)
+	}
+	if cmd.RowsAffected() == 0 {
+		return ErrUserNotFound
+	}
+	return nil
+}
+
+// GetByID returns the admin-facing projection for a single user.
+func (r *UserRepo) GetByID(ctx context.Context, id uuid.UUID) (*UserListItem, error) {
+	var u UserListItem
+	err := r.pool.QueryRow(ctx,
+		`SELECT id, email::text, username, role::text, is_active, totp_enabled,
+		        last_login_at, failed_logins, locked_until, created_at, updated_at
+		   FROM users WHERE id = $1`, id,
+	).Scan(&u.ID, &u.Email, &u.Username, &u.Role, &u.IsActive, &u.TOTPEnabled,
+		&u.LastLoginAt, &u.FailedLogins, &u.LockedUntil, &u.CreatedAt, &u.UpdatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrUserNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get user: %w", err)
+	}
+	return &u, nil
+}
+
 // UpdatePassword replaces the password hash for a user.
 func (r *UserRepo) UpdatePassword(ctx context.Context, userID uuid.UUID, newHash string) error {
 	cmd, err := r.pool.Exec(ctx,

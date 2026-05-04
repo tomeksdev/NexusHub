@@ -3,6 +3,7 @@ import {
   Activity,
   AlertCircle,
   BarChart3,
+  Gauge,
   HelpCircle,
   KeyRound,
   Layers,
@@ -17,6 +18,7 @@ import {
 
 import { useAuth } from "./lib/auth";
 import { AuditPage } from "./pages/AuditPage";
+import { DashboardPage } from "./pages/DashboardPage";
 import { InterfacesPage as LocationsPage } from "./pages/InterfacesPage";
 import { LoginPage } from "./pages/LoginPage";
 import { MetricsPage } from "./pages/MetricsPage";
@@ -26,10 +28,12 @@ import { ProfilePage } from "./pages/ProfilePage";
 import { RulesPage } from "./pages/RulesPage";
 import { StubPage } from "./pages/StubPage";
 import { SupportPage } from "./pages/SupportPage";
+import { UserDetailPage } from "./pages/UserDetailPage";
 import { UsersPage } from "./pages/UsersPage";
 
 type Page =
   // admin
+  | "dashboard"
   | "locations"
   | "users"
   | "monitoring"
@@ -59,6 +63,7 @@ const ADMIN_NAV: NavSection[] = [
   {
     title: "Main",
     items: [
+      { id: "dashboard", label: "Dashboard", icon: Gauge },
       { id: "locations", label: "Locations", icon: MapPin },
       { id: "users", label: "Users", icon: Users },
       { id: "monitoring", label: "Monitoring", icon: BarChart3 },
@@ -109,8 +114,12 @@ function App() {
   const { isAuthenticated, role, email, signOut } = useAuth();
   const isAdmin = role === "admin" || role === "super_admin";
   const sections = isAdmin ? ADMIN_NAV : USER_NAV;
-  const defaultPage: Page = isAdmin ? "locations" : "my_config";
+  const defaultPage: Page = isAdmin ? "dashboard" : "my_config";
   const [page, setPage] = useState<Page>(defaultPage);
+  // Drilling into a user record swaps the main pane to UserDetailPage
+  // without touching the sidebar selection. Setting back to null
+  // returns to the Users list.
+  const [selectedUserID, setSelectedUserID] = useState<string | null>(null);
 
   if (!isAuthenticated) return <LoginPage />;
 
@@ -120,9 +129,17 @@ function App() {
         Skip to content
       </a>
       <aside className="sidebar">
-        <div className="sidebar-brand">
-          <h1>NexusHub</h1>
-          <p>WireGuard control plane</p>
+        <div className="sidebar-brand flex items-center gap-3">
+          <img
+            src="/logo.png"
+            alt=""
+            aria-hidden
+            className="w-9 h-9 flex-shrink-0"
+          />
+          <div>
+            <h1>NexusHub</h1>
+            <p>WireGuard control plane</p>
+          </div>
         </div>
         <nav aria-label="Primary" className="flex-1 py-2">
           {sections.map((section) => (
@@ -135,7 +152,12 @@ function App() {
                   <button
                     key={entry.id}
                     type="button"
-                    onClick={() => setPage(entry.id)}
+                    onClick={() => {
+                      setPage(entry.id);
+                      // Leaving the Users area implicitly closes any
+                      // open detail view.
+                      if (entry.id !== "users") setSelectedUserID(null);
+                    }}
                     aria-current={active ? "page" : undefined}
                     className={"nav-item" + (active ? " active" : "")}
                   >
@@ -168,19 +190,33 @@ function App() {
       </aside>
 
       <main id="main-content" tabIndex={-1} className="main-content">
-        {renderPage(page, isAdmin)}
+        {renderPage(page, isAdmin, selectedUserID, setSelectedUserID)}
       </main>
     </div>
   );
 }
 
-function renderPage(page: Page, isAdmin: boolean) {
+function renderPage(
+  page: Page,
+  isAdmin: boolean,
+  selectedUserID: string | null,
+  setSelectedUserID: (id: string | null) => void,
+) {
   if (isAdmin) {
     switch (page) {
+      case "dashboard":
+        return <DashboardPage />;
       case "locations":
         return <LocationsPage />;
       case "users":
-        return <UsersPage />;
+        return selectedUserID ? (
+          <UserDetailPage
+            userID={selectedUserID}
+            onBack={() => setSelectedUserID(null)}
+          />
+        ) : (
+          <UsersPage onOpen={(id) => setSelectedUserID(id)} />
+        );
       case "monitoring":
         return <MetricsPage />;
       case "ebpf_rules":
