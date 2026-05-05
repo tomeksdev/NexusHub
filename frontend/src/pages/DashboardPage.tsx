@@ -13,6 +13,7 @@ interface DashboardCounts {
 interface DashboardPeer {
   public_key: string;
   interface: string;
+  owner_username?: string;
   owner_email?: string;
   last_handshake: string;
   rx_bytes: number;
@@ -174,8 +175,10 @@ export function DashboardPage() {
                       className="border-t border-[var(--color-line)]"
                     >
                       <td className="py-2">
-                        {p.owner_email ? (
-                          p.owner_email
+                        {p.owner_username || p.owner_email ? (
+                          <span title={p.owner_email ?? undefined}>
+                            {p.owner_username || p.owner_email}
+                          </span>
                         ) : (
                           <span className="text-faint">unassigned</span>
                         )}

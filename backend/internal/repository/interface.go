@@ -43,29 +43,6 @@ type Interface struct {
 	UpdatedAt  time.Time
 }
 
-// ListenPortInUse reports whether some other interface (excluding
-// excludeID, used by Update) already claims this port. Lets the
-// handler return a clean 409 before the INSERT/UPDATE hits the unique
-// constraint and yields an opaque pgError.
-func (r *InterfaceRepo) ListenPortInUse(ctx context.Context, port int, excludeID *uuid.UUID) (bool, error) {
-	var n int
-	var err error
-	if excludeID != nil {
-		err = r.pool.QueryRow(ctx,
-			`SELECT count(*) FROM wg_interfaces WHERE listen_port = $1 AND id <> $2`,
-			port, *excludeID,
-		).Scan(&n)
-	} else {
-		err = r.pool.QueryRow(ctx,
-			`SELECT count(*) FROM wg_interfaces WHERE listen_port = $1`,
-			port,
-		).Scan(&n)
-	}
-	if err != nil {
-		return false, fmt.Errorf("check listen port: %w", err)
-	}
-	return n > 0, nil
-}
 
 // CreateInterfaceParams is the write-side input. Address takes a prefix so
 // callers must commit to the netmask up front; we don't synthesize one.

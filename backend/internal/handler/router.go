@@ -129,7 +129,8 @@ func NewRouter(deps Deps) *gin.Engine {
 	// download a config they didn't create.
 	if deps.Interfaces != nil && deps.Peers != nil && deps.AEAD != nil {
 		ifaceH := &InterfaceHandler{
-			Interfaces: deps.Interfaces, AEAD: deps.AEAD,
+			Interfaces: deps.Interfaces, Peers: deps.Peers,
+			AEAD:   deps.AEAD,
 			Client: deps.WG, Links: deps.WGLinks,
 			KernelWarnings: deps.KernelWarnings,
 		}
@@ -154,6 +155,7 @@ func NewRouter(deps Deps) *gin.Engine {
 		admin.GET("/interfaces", ifaceH.List)
 		admin.POST("/interfaces", ifaceH.Create)
 		admin.GET("/interfaces/:id", ifaceH.Get)
+		admin.GET("/interfaces/:id/next-ip", ifaceH.NextIP)
 		admin.PATCH("/interfaces/:id", ifaceH.Update)
 		admin.DELETE("/interfaces/:id", ifaceH.Delete)
 

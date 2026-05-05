@@ -129,17 +129,22 @@ function App() {
         Skip to content
       </a>
       <aside className="sidebar">
-        <div className="sidebar-brand flex items-center gap-3">
-          <img
-            src="/logo.png"
-            alt=""
-            aria-hidden
-            className="w-9 h-9 flex-shrink-0"
-          />
-          <div>
+        <div className="sidebar-brand">
+          {/* Single horizontal row: icon + wordmark. Subtitle on its
+              own line below, smaller, so the logo+name read as the
+              primary brand element. The current /logo.png has a
+              tiny bit of embedded text — replace it with an
+              icon-only PNG before tagging (see public/README.md). */}
+          <div className="flex items-center gap-2.5">
+            <img
+              src="/logo.png"
+              alt=""
+              aria-hidden
+              className="w-7 h-7 flex-shrink-0"
+            />
             <h1>NexusHub</h1>
-            <p>WireGuard control plane</p>
           </div>
+          <p className="mt-1">WireGuard control plane</p>
         </div>
         <nav aria-label="Primary" className="flex-1 py-2">
           {sections.map((section) => (

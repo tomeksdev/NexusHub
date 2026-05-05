@@ -41,10 +41,20 @@ type dashboardCounts struct {
 type dashboardPeer struct {
 	PublicKey     string    `json:"public_key"`
 	Interface     string    `json:"interface"`
+	// OwnerUsername is the operator-friendly identifier the dashboard
+	// renders by default. OwnerEmail stays in the payload so the UI
+	// can surface it on hover for support workflows. Both empty when
+	// the peer is unassigned.
+	OwnerUsername string    `json:"owner_username,omitempty"`
 	OwnerEmail    string    `json:"owner_email,omitempty"`
 	LastHandshake time.Time `json:"last_handshake"`
 	RxBytes       int64     `json:"rx_bytes"`
 	TxBytes       int64     `json:"tx_bytes"`
+}
+
+type dashboardOwner struct {
+	username string
+	email    string
 }
 
 type dashboardLoc struct {
@@ -145,28 +155,27 @@ func (h *DashboardHandler) Get(c *gin.Context) {
 		live = live[:topPeerLimit]
 	}
 
-	// Owner-email lookup. We resolve via a single owner_user_id ->
-	// email map built from the admin user list — same query the
-	// frontend already caches under the "users-picker" key.
-	ownerByPubKey := map[string]string{}
+	// Owner lookup keyed by peer public key. Username is the
+	// operator-friendly default, email gets carried through for the
+	// hover tooltip on the frontend.
+	ownerByPubKey := map[string]dashboardOwner{}
 	if h.Peers != nil && h.Users != nil && len(live) > 0 {
-		// Build pub_key -> owner_user_id by scanning every interface.
-		// Scale-wise this is bounded by the DB peer count; for the
-		// dashboard's at-a-glance use case that's fine.
-		// (A dedicated SQL would beat this — keep it simple for now.)
 		users, _, err := h.Users.ListPage(ctx, 200, 0, "email", false)
 		if err == nil && h.Interfaces != nil {
 			ifaces, _ := h.Interfaces.List(ctx)
-			emailByID := map[string]string{}
+			ownersByID := map[string]dashboardOwner{}
 			for _, u := range users {
-				emailByID[u.ID.String()] = u.Email
+				ownersByID[u.ID.String()] = dashboardOwner{
+					username: u.Username,
+					email:    u.Email,
+				}
 			}
 			for _, iface := range ifaces {
 				peers, _ := h.Peers.ListByInterface(ctx, iface.ID)
 				for _, p := range peers {
 					if p.OwnerUserID != nil {
-						if email, ok := emailByID[p.OwnerUserID.String()]; ok {
-							ownerByPubKey[p.PublicKey] = email
+						if o, ok := ownersByID[p.OwnerUserID.String()]; ok {
+							ownerByPubKey[p.PublicKey] = o
 						}
 					}
 				}
@@ -175,10 +184,12 @@ func (h *DashboardHandler) Get(c *gin.Context) {
 	}
 
 	for _, r := range live {
+		o := ownerByPubKey[r.pub]
 		resp.TopPeers = append(resp.TopPeers, dashboardPeer{
 			PublicKey:     r.pub,
 			Interface:     r.iface,
-			OwnerEmail:    ownerByPubKey[r.pub],
+			OwnerUsername: o.username,
+			OwnerEmail:    o.email,
 			LastHandshake: r.lastHandshake,
 			RxBytes:       r.rx,
 			TxBytes:       r.tx,
