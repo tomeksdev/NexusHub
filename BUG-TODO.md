@@ -1,117 +1,105 @@
-# NexusHub Pre-Release Punch List — Round 4
+# NexusHub Pre-Release Punch List — Round 5
 
-Source: UI/UX walk-through after rounds 1–3 closed the kernel-link,
-data-model, dashboard, and migration gaps. Five focused items, none
-architectural.
+Source: bare-metal test after round 4. Two issues — one critical
+(eBPF rules say active but don't enforce) and one cosmetic loop
+(logo asset still has embedded text).
 
 ## Reference files (local only, gitignored)
 
 - `Claude - Project Plan.md`
 - `example.html`
-- `hexagon_logo.png` — already at `frontend/public/logo.png`. The
-  uploaded variant has tiny text baked in; the operator should
-  drop a clean icon-only PNG at the same path before tagging.
+- `hexagon_logo.png` — kept on disk in case the operator wants to
+  swap the inline SVG mark out for a custom asset later.
 
 ---
 
-## Pass G — round-4 polish
+## Pass H — round-5 fixes
 
-### G1 — Peer creation: location-driven, not endpoint-driven  ⚡high  ✅
-The current modal accepts a free-text endpoint, which lets operators
-invent a value that doesn't match the location they picked. Endpoint
-already lives on `wg_interfaces.endpoint` — peers should inherit it.
+### H1 — Runtime TC attach: **the actual eBPF enforcement bug**  🔴critical  ✅
+The bare-metal repro: operator creates a new Location after API
+start, adds a deny rule, and traffic still flows.
 
-- [ ] Modal pulls the full Locations list and renders a picker with
-      `wgN — host:port` labels (replaces the current fixed
-      `interfaceID` prop, which still works as the pre-selection
-      for the User detail flow).
-- [ ] On location change, fetch `GET /api/v1/interfaces/:id/next-ip`
-      and pre-fill the Assigned IP field. Operator can still
-      override by typing.
-- [ ] Endpoint, DNS, MTU, keepalive overrides collapse behind an
-      "Advanced options" disclosure (closed by default).
-- [ ] Backend: new `GET /api/v1/interfaces/:id/next-ip` returns
-      `{"assigned_ip":"10.8.0.5"}` using the existing
-      `wg.AllocateIP` allocator + the peer-list query already used
-      by Create.
+Root cause is in `cmd/api/ebpf.go`. `startEBPF` runs once at boot
+and attaches the TC program to every WireGuard interface that
+existed at startup. Locations created later via the API land in
+the DB and the link is brought up by the rtnetlink path, but
+**no TC program ever attaches to the new interface**. The eBPF
+maps contain the rule (visible in `bpftool map dump`) but nothing
+on the new wgN can see it — packets bypass enforcement entirely.
 
-### G2 — Endpoint host + listen-port uniqueness  🔴critical  ✅
-Right now we enforce `UNIQUE(listen_port)` blindly. The user's spec:
-same port is fine on different endpoint IPs (different binds), but
-the same `(endpoint_host, listen_port)` tuple is a conflict.
+The KernelSyncer is fine. The map population is fine. The hole
+is that the program-attachment stage doesn't follow new links.
 
-- [ ] Migration 010: drop the `UNIQUE(listen_port)` constraint
-      added in 009. Idempotent — `DROP CONSTRAINT IF EXISTS`.
-- [ ] Backend: new helper that normalizes the endpoint to its host
-      half (strip port via `net.SplitHostPort`; fall back to the
-      raw string when no port). API-layer pre-check rejects
-      `(host, listen_port)` collisions with `409
-      ENDPOINT_CONFLICT` and a message naming the colliding
-      interface ("Endpoint 152.53.64.41:51820 is already used by
-      interface wg0").
-- [ ] Frontend: surface the message verbatim in the create + edit
-      modals.
+- [ ] Define a small `RuntimeAttacher` interface in handler/ with
+      `AttachTC(name)` / `DetachTC(name)` shapes.
+- [ ] Implement on the eBPF stack in `cmd/api/ebpf.go`. The
+      existing `attachTC` / link tracking just needs to be
+      re-entrant (de-dupe by interface name) and to expose a
+      detach path keyed on name.
+- [ ] Wire into `InterfaceHandler.Create` (call `AttachTC` after
+      EnsureUp succeeds) and `InterfaceHandler.Delete` (call
+      `DetachTC` before the rtnetlink delete).
+- [ ] Push every attach/detach failure to the kernel-warnings ring
+      so the Support page surfaces it.
 
-### G3 — Dashboard owner: username, not email  📋medium  ✅
-- [ ] Backend: extend the dashboard `dashboardPeer` payload with
-      `owner_username` alongside `owner_email`.
-- [ ] Frontend: render `owner_username` first, fall back to email,
-      put the email in the row's `title` tooltip so it's still
-      reachable on hover but not visible by default.
+### H2 — Kernel-loaded flag per rule  high  ✅
+Operator sees "Active: ON" in the rules table even when the rule
+was never written to the kernel map (Syncer was Noop, or the Apply
+failed silently). The DB enabled state and the kernel enforcement
+state are separate concerns; the UI must show both.
 
-### G4 — Logo + sidebar header polish  🎨medium  ✅
-The provided asset has small embedded text that clashes with the
-"NexusHub" wordmark next to it. We can't fix the asset from here,
-but we can tighten the layout so the logo is icon-sized and the
-text hierarchy is clean.
+- [ ] Add `Has(uuid.UUID) bool` to the `ebpf.Syncer` interface.
+      `KernelSyncer.Has` checks the in-memory `ids` table;
+      `NoopSyncer.Has` returns false.
+- [ ] Rules list handler calls `Has` for each row and includes
+      `kernel_loaded` in the response.
+- [ ] `RulesPage` grows a "Kernel" column with three states: OK
+      (green), OFF (muted — DB-disabled), and ERROR (red — DB
+      says enabled but kernel disagrees).
 
-- [ ] Logo box: `1.75 rem` square (28 px) instead of `2.25 rem`,
-      contained so embedded text is at least de-emphasized.
-- [ ] Single row: `[logo] NexusHub` on one line, subtitle below in
-      smaller muted text.
-- [ ] Login-screen logo gets the same sizing.
-- [ ] Add a `frontend/public/README.md` note: "Replace `logo.png`
-      with an icon-only variant before release; current upload has
-      embedded text that hurts readability."
+### H3 — Replace logo asset dependency with an inline SVG mark  medium  ✅
+The uploaded PNG keeps shipping with embedded text no matter how
+small we render it. Path forward: bake a clean hexagon SVG into
+the React component and stop reaching for `/logo.png`. Operators
+who want custom branding override the SVG component (one file)
+instead of editing a binary asset.
 
-### G5 — Frontend mirror of endpoint conflict + IP validation  small  ✅
-Mostly automatic if G1 + G2 land, but worth a checkbox:
-- [ ] Modal renders the backend's 409 message inline (not just a
-      generic "Failed").
-- [ ] `assigned_ip` validation on the client side: must parse,
-      must fall inside the selected interface's CIDR, must not be
-      the network/broadcast/iface address.
+- [ ] New `Logo` component renders a hexagon outline + accent
+      fill in the product palette. ~28 px in the sidebar, ~36 px
+      on the login screen, scales freely.
+- [ ] App.tsx + LoginPage.tsx use `<Logo />` instead of
+      `<img src="/logo.png">`.
+- [ ] Update favicon to the same SVG (vite serves
+      `frontend/public/logo.svg`; we keep the existing PNG path
+      working as a fallback).
+- [ ] `frontend/public/README.md` updated to reflect the SVG-first
+      approach.
 
 ---
 
 ## Working components (don't regress)
 
-- ✅ User CRUD + UserDetailPage (round 3)
-- ✅ Migration recovery + safe 009 (round 3)
-- ✅ Dashboard layout + brand + sparklines (round 3)
-- ✅ Kernel-warning ring on Support page (round 3)
-
----
+All round 1–4 fixes; checklist in `git log` per release.
 
 ## Out of scope (still deferred)
 
-- Bind-IP column on `wg_interfaces` (would let the API verify the
-  "different IP, same port" claim instead of trusting the operator)
-- Display-name field on `users` (G3 falls back to username today)
-- Groups + access rules tables, email/SMTP, WebAuthn — same Pass C
-  carry-over as round 3
+- Per-rule "attached on which interface" detail in the UI (out of
+  scope for v2.0; the global `kernel_loaded` flag covers the
+  operator question "is this rule actually active")
+- Egress-direction TC attach (today's setup only attaches
+  ingress on each WG iface; the kernel program already supports
+  both, but exposing egress hooks is a v2.1 follow-up)
 
----
+## Acceptance — round-5 boxes
 
-## Acceptance — round-4 boxes
-
-- [ ] (R4) Peer create: pick wg0 from a dropdown; endpoint not
-      asked; assigned IP auto-suggests next-free
-- [ ] (R4) Two locations with same listen port allowed when their
-      endpoint hosts differ
-- [ ] (R4) Two locations with same listen port + same endpoint
-      host blocked with a clear error
-- [ ] (R4) Dashboard "Top peers by traffic" shows usernames,
-      tooltip carries email
-- [ ] (R4) Sidebar header reads as one row with the logo +
-      "NexusHub" + a small subtitle below
+- [ ] (R5) Create a Location via UI ⇒ `bpftool net` shows
+      `tc_rules_wg<N>` attached to the new interface within
+      seconds of the Create response
+- [ ] (R5) Add deny ICMP rule from peer to interface IP ⇒ ping
+      from peer fails immediately
+- [ ] (R5) Disable rule ⇒ ping works again
+- [ ] (R5) Delete rule ⇒ ping works again, rule gone from
+      `bpftool map dump`
+- [ ] (R5) Rules table renders Kernel column showing OK/OFF/ERROR
+- [ ] (R5) Sidebar + login render the inline hexagon SVG; no
+      PNG with embedded text in sight

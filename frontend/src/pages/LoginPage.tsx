@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect } from "react";
 import type { FormEvent } from "react";
 
+import { Logo } from "../components/Logo";
 import { ApiError } from "../lib/api";
 import { useAuth } from "../lib/auth";
 
@@ -64,7 +65,7 @@ export function LoginPage() {
       >
         <div>
           <div className="flex items-center gap-2.5">
-            <img src="/logo.png" alt="" aria-hidden className="w-9 h-9" />
+            <Logo size={36} />
             <h1 className="text-2xl font-bold text-white">NexusHub</h1>
           </div>
           <p className="text-muted text-sm mt-2">

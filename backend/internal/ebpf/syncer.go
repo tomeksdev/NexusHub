@@ -59,6 +59,12 @@ type Syncer interface {
 	Apply(ctx context.Context, r Rule) error
 	Delete(ctx context.Context, ruleID uuid.UUID) error
 	Reconcile(ctx context.Context, active []Rule) error
+	// Has reports whether the rule is currently programmed in the
+	// kernel. The handler renders this alongside is_active so the
+	// rules table can distinguish "operator wants this on" from
+	// "kernel is actually enforcing it" — the round-5 fix for the
+	// "Active: ON but traffic still flows" bug.
+	Has(ruleID uuid.UUID) bool
 	Close() error
 }
 
@@ -70,6 +76,7 @@ type NoopSyncer struct{}
 func (NoopSyncer) Apply(context.Context, Rule) error       { return nil }
 func (NoopSyncer) Delete(context.Context, uuid.UUID) error { return nil }
 func (NoopSyncer) Reconcile(context.Context, []Rule) error { return nil }
+func (NoopSyncer) Has(uuid.UUID) bool                      { return false }
 func (NoopSyncer) Close() error                            { return nil }
 
 // FakeSyncer records calls in memory. Tests inspect the recorded
@@ -115,6 +122,17 @@ func (f *FakeSyncer) Reconcile(_ context.Context, rules []Rule) error {
 	copy(cp, rules)
 	f.Reconciled = append(f.Reconciled, cp)
 	return nil
+}
+
+func (f *FakeSyncer) Has(id uuid.UUID) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, r := range f.Applied {
+		if r.ID == id {
+			return true
+		}
+	}
+	return false
 }
 
 func (f *FakeSyncer) Close() error { return nil }

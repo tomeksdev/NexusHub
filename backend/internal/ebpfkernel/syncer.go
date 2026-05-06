@@ -203,6 +203,18 @@ func (s *KernelSyncer) ResolveRuleID(rid uint32) (uuid.UUID, bool) {
 	return id, ok
 }
 
+// Has reports whether the rule UUID has a current kernel mapping.
+// True means Apply previously succeeded for this rule and Delete
+// hasn't run since. The handler renders this alongside is_active
+// so operators can tell apart "DB-disabled" from "kernel didn't
+// load this".
+func (s *KernelSyncer) Has(id uuid.UUID) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, ok := s.ids[id]
+	return ok
+}
+
 // Close releases in-memory state. The underlying loader is owned by
 // the caller and deliberately not closed here — a caller that built
 // the loader once and attached both the XDP and TC programs would

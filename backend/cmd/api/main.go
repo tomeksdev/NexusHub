@@ -174,7 +174,7 @@ func run() error {
 		tcIfaces = append(tcIfaces, extra)
 	}
 	ebpfStk := startEBPF(ctx, connLogRepo,
-		xdpInterfaceFromEnv(), tcIfaces, slog.Default())
+		xdpInterfaceFromEnv(), tcIfaces, kernelWarnings, slog.Default())
 	defer ebpfStk.Close()
 
 	// Seed the kernel maps from the active rules in PostgreSQL so the
@@ -208,6 +208,7 @@ func run() error {
 		AEAD:              aead,
 		RefreshTTL:        cfg.JWTRefreshExpiry,
 		EBPFSync:          ebpfStk.syncer,
+		EBPFAttacher:      ebpfStk,
 		WG:                wgClient,
 		WGLinks:           linkManager,
 		KernelWarnings:    kernelWarnings,

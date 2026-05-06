@@ -105,6 +105,12 @@ type InterfaceHandler struct {
 	// apply failures so the Support page can surface them. Nil ⇒
 	// failures stay in slog only.
 	KernelWarnings *diag.KernelWarnings
+	// EBPFAttacher attaches/detaches the TC eBPF program when this
+	// handler creates or deletes a Location. Without it the eBPF
+	// rules engine never sees traffic on Locations created after
+	// API startup. Nil ⇒ no runtime attach (e.g. dev environments
+	// without CAP_BPF).
+	EBPFAttacher RuntimeAttacher
 }
 
 // recordKernelWarning is the bridge between the existing slog.Warn
@@ -273,6 +279,19 @@ func (h *InterfaceHandler) Create(c *gin.Context) {
 				"requested", out.ListenPort, "actual", live.ListenPort)
 			h.recordKernelWarning("wg.create.port_drift", out.Name,
 				"kernel chose a different listen port than requested")
+		}
+	}
+	// Round-5 fix: a Location created at runtime needs the TC eBPF
+	// program attached before it can enforce any rule. Without
+	// this, rules live in the kernel maps but no hook on the new
+	// wgN consults them — the rules page shows "Active: ON" while
+	// traffic flows. Failure here is logged + surfaced via the
+	// kernel-warnings ring; the create response still succeeds so
+	// the operator sees the Location appear and can fix the eBPF
+	// side separately.
+	if h.EBPFAttacher != nil {
+		if err := h.EBPFAttacher.AttachTC(out.Name); err != nil {
+			slog.WarnContext(c, "ebpf tc attach", "err", err, "iface", out.Name)
 		}
 	}
 	c.JSON(http.StatusCreated, toInterfaceResponse(out))
@@ -538,6 +557,14 @@ func (h *InterfaceHandler) Delete(c *gin.Context) {
 		cfg := wg.Config{ReplacePeers: true}
 		if err := h.Client.ConfigureDevice(name, cfg); err != nil {
 			slog.WarnContext(ctx, "kernel clear interface peers", "err", err, "iface", name)
+		}
+	}
+	// Detach the TC eBPF program before tearing the link down.
+	// link.Close on a TCX link reaches into the kernel link list;
+	// doing it after the link is gone is harmless but spammier.
+	if h.EBPFAttacher != nil && name != "" {
+		if err := h.EBPFAttacher.DetachTC(name); err != nil {
+			slog.WarnContext(ctx, "ebpf tc detach", "err", err, "iface", name)
 		}
 	}
 	// Tear the rtnetlink link down. Done after the wgctrl peer-clear so

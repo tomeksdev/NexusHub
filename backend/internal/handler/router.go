@@ -48,6 +48,12 @@ type Deps struct {
 	// KernelWarnings collects best-effort kernel-apply failures so
 	// the Support page can render them. Nil ⇒ warnings are slog-only.
 	KernelWarnings *diag.KernelWarnings
+	// EBPFAttacher attaches/detaches the TC program when a Location
+	// is created or deleted at runtime. Without it, the eBPF
+	// program only runs on Locations that existed at startup and
+	// new ones bypass enforcement entirely.
+	EBPFAttacher RuntimeAttacher
+
 	// DefaultWGEndpoint and DefaultWGDNS feed the wg-quick config
 	// renderer's fall-back chain (peer → interface → default). They're
 	// sourced from WG_ENDPOINT and the interface DNS column respectively.
@@ -58,6 +64,16 @@ type Deps struct {
 	// limiter; the middleware itself decides this based on PerMinute == 0.
 	LoginLimit   middleware.RateLimitConfig
 	RefreshLimit middleware.RateLimitConfig
+}
+
+// RuntimeAttacher is the seam between the InterfaceHandler and the
+// eBPF stack in cmd/api. Kept narrow so the handler doesn't grow a
+// kernel-side dependency. Both methods are safe to call when the
+// underlying stack is in a degraded state — they no-op rather than
+// erroring.
+type RuntimeAttacher interface {
+	AttachTC(ifaceName string) error
+	DetachTC(ifaceName string) error
 }
 
 // NewRouter builds the Gin engine with all middleware and routes registered.
@@ -133,6 +149,7 @@ func NewRouter(deps Deps) *gin.Engine {
 			AEAD:   deps.AEAD,
 			Client: deps.WG, Links: deps.WGLinks,
 			KernelWarnings: deps.KernelWarnings,
+			EBPFAttacher:   deps.EBPFAttacher,
 		}
 		peerH := &PeerHandler{
 			Peers: deps.Peers, Interfaces: deps.Interfaces,

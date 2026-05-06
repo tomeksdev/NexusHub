@@ -21,6 +21,11 @@ export interface Rule {
   rate_burst?: number;
   priority: number;
   is_active: boolean;
+  // kernel_loaded reflects what the eBPF maps actually have right
+  // now. Decoupled from is_active so the table can show the gap
+  // when a rule is operator-enabled but the kernel never accepted
+  // it (or the syncer is the noop).
+  kernel_loaded?: boolean;
   created_at: string;
   updated_at: string;
 }
@@ -36,6 +41,40 @@ function actionBadgeClass(a: Rule["action"]): string {
     case "log":
       return "status-badge muted";
   }
+}
+
+// KernelBadge tells the operator whether the rule is actually
+// programmed in the kernel maps. Three states:
+//   - OK     : DB-active and kernel-loaded → enforced
+//   - OFF    : DB-disabled → kernel intentionally empty
+//   - ERROR  : DB-active but kernel doesn't have the rule (sync
+//              failed silently or the API is running with NoopSyncer)
+function KernelBadge({ active, loaded }: { active: boolean; loaded: boolean }) {
+  if (!active) {
+    return (
+      <span className="status-badge muted" title="Rule disabled in DB.">
+        <span className="dot" />
+        off
+      </span>
+    );
+  }
+  if (loaded) {
+    return (
+      <span className="status-badge ok" title="Rule is programmed in the kernel maps.">
+        <span className="dot" />
+        loaded
+      </span>
+    );
+  }
+  return (
+    <span
+      className="status-badge critical"
+      title="Rule is enabled in the DB but the kernel hasn't loaded it. Check the eBPF stack on the Support page."
+    >
+      <span className="dot" />
+      not loaded
+    </span>
+  );
 }
 
 function summarisePorts(from?: number, to?: number): string {
@@ -127,6 +166,7 @@ export function RulesPage() {
                 <th>Source</th>
                 <th>Destination</th>
                 <th>Active</th>
+                <th>Kernel</th>
                 <th aria-label="Actions" />
               </tr>
             </thead>
@@ -177,6 +217,9 @@ export function RulesPage() {
                       <span className="dot" />
                       {r.is_active ? "on" : "off"}
                     </button>
+                  </td>
+                  <td>
+                    <KernelBadge active={r.is_active} loaded={!!r.kernel_loaded} />
                   </td>
                   <td className="text-right whitespace-nowrap">
                     <div className="inline-flex gap-2">

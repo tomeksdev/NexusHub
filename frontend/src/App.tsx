@@ -16,6 +16,7 @@ import {
   Users,
 } from "lucide-react";
 
+import { Logo } from "./components/Logo";
 import { useAuth } from "./lib/auth";
 import { AuditPage } from "./pages/AuditPage";
 import { DashboardPage } from "./pages/DashboardPage";
@@ -136,12 +137,7 @@ function App() {
               tiny bit of embedded text — replace it with an
               icon-only PNG before tagging (see public/README.md). */}
           <div className="flex items-center gap-2.5">
-            <img
-              src="/logo.png"
-              alt=""
-              aria-hidden
-              className="w-7 h-7 flex-shrink-0"
-            />
+            <Logo size={28} />
             <h1>NexusHub</h1>
           </div>
           <p className="mt-1">WireGuard control plane</p>

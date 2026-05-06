@@ -54,11 +54,30 @@ type ruleResponse struct {
 	DstPortTo   *int       `json:"dst_port_to,omitempty"`
 	RatePPS     *int       `json:"rate_pps,omitempty"`
 	RateBurst   *int       `json:"rate_burst,omitempty"`
-	Priority    int        `json:"priority"`
-	IsActive    bool       `json:"is_active"`
-	CreatedBy   *uuid.UUID `json:"created_by,omitempty"`
-	CreatedAt   time.Time  `json:"created_at"`
-	UpdatedAt   time.Time  `json:"updated_at"`
+	Priority int  `json:"priority"`
+	IsActive bool `json:"is_active"`
+	// KernelLoaded reports whether this rule has a current
+	// programming in the kernel rule_meta map. False with
+	// IsActive=true is the actionable error state — the operator
+	// flipped the rule on but the kernel doesn't know about it
+	// (Syncer was Noop, or Apply failed silently). The frontend
+	// renders this as a separate column.
+	KernelLoaded bool       `json:"kernel_loaded"`
+	CreatedBy    *uuid.UUID `json:"created_by,omitempty"`
+	CreatedAt    time.Time  `json:"created_at"`
+	UpdatedAt    time.Time  `json:"updated_at"`
+}
+
+// toRuleResponseFor builds the response for a single repo rule and
+// stamps the kernel-loaded flag from the syncer. The free function
+// stays as a thin wrapper for callers that don't have the handler in
+// scope (tests).
+func (h *RuleHandler) toRuleResponseFor(r *repository.Rule) ruleResponse {
+	resp := toRuleResponse(r)
+	if h != nil && h.Sync != nil {
+		resp.KernelLoaded = h.Sync.Has(r.ID)
+	}
+	return resp
 }
 
 func toRuleResponse(r *repository.Rule) ruleResponse {
@@ -238,7 +257,7 @@ func (h *RuleHandler) Create(c *gin.Context) {
 			slog.WarnContext(ctx, "sync apply after create", "rule_id", out.ID, "err", err)
 		}
 	}
-	c.JSON(http.StatusCreated, toRuleResponse(out))
+	c.JSON(http.StatusCreated, h.toRuleResponseFor(out))
 }
 
 func (h *RuleHandler) List(c *gin.Context) {
@@ -255,7 +274,7 @@ func (h *RuleHandler) List(c *gin.Context) {
 	}
 	out := make([]ruleResponse, 0, len(items))
 	for i := range items {
-		out = append(out, toRuleResponse(&items[i]))
+		out = append(out, h.toRuleResponseFor(&items[i]))
 	}
 	c.JSON(http.StatusOK, httppage.Wrap(out, total, pg, sortField, sortDesc))
 }
@@ -276,7 +295,7 @@ func (h *RuleHandler) Get(c *gin.Context) {
 		writeError(c, http.StatusInternalServerError, apierror.CodeInternal, "internal error")
 		return
 	}
-	c.JSON(http.StatusOK, toRuleResponse(r))
+	c.JSON(http.StatusOK, h.toRuleResponseFor(r))
 }
 
 // updateRuleRequest uses the cleared/set-to/leave-alone trichotomy via
@@ -332,7 +351,7 @@ func (h *RuleHandler) Update(c *gin.Context) {
 			slog.WarnContext(ctx, "sync delete after deactivate", "rule_id", out.ID, "err", err)
 		}
 	}
-	c.JSON(http.StatusOK, toRuleResponse(out))
+	c.JSON(http.StatusOK, h.toRuleResponseFor(out))
 }
 
 func (h *RuleHandler) Delete(c *gin.Context) {
