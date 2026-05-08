@@ -53,6 +53,12 @@ const (
 
 // RuleMeta mirrors struct rule_meta in ebpf/headers/nexushub.h.
 // Field order + sizes are load-bearing: the kernel reads raw bytes.
+//
+// Round 6: HasSrc / HasDst / HasProtocol replace the trailing 4-byte
+// _pad2 with three flag bytes + 1 pad. The flags let the kernel
+// distinguish "rule has no destination condition" from "rule has a
+// destination condition that didn't match" — the round-6 fix for
+// dst-bearing rules silently degrading to src-only enforcement.
 type RuleMeta struct {
 	Action      uint8  // ACTION_{ALLOW,DENY,RATE_LIMIT,LOG}
 	Protocol    uint8  // PROTO_{ANY,TCP,UDP,ICMP}
@@ -65,12 +71,15 @@ type RuleMeta struct {
 	Priority    uint16
 	RatePPS     uint32
 	RateBurst   uint32
+	HasSrc      uint8 // 1 if rule has src_cidr
+	HasDst      uint8 // 1 if rule has dst_cidr (forces dst LPM check in kernel)
+	HasProtocol uint8 // 1 if protocol != PROTO_ANY
 }
 
 // ruleMetaSize is the on-wire length of struct rule_meta including
 // compiler padding. The C struct lays out as:
 //
-//	u8×4 + u16×5 + u16 _pad + u32×2 + u32 _pad2 = 28 bytes.
+//	u8×4 + u16×5 + u16 _pad + u32×2 + u8×3 + u8 _pad2 = 28 bytes.
 const ruleMetaSize = 28
 
 // MarshalBinary serializes RuleMeta into the exact byte layout the
@@ -91,7 +100,10 @@ func (m RuleMeta) MarshalBinary() ([]byte, error) {
 	// b[14:16] is _pad, left zero.
 	binary.LittleEndian.PutUint32(b[16:20], m.RatePPS)
 	binary.LittleEndian.PutUint32(b[20:24], m.RateBurst)
-	// b[24:28] is _pad2, left zero.
+	b[24] = m.HasSrc
+	b[25] = m.HasDst
+	b[26] = m.HasProtocol
+	// b[27] is _pad2, left zero.
 	return b, nil
 }
 
@@ -112,6 +124,9 @@ func (m *RuleMeta) UnmarshalBinary(b []byte) error {
 	m.Priority = binary.LittleEndian.Uint16(b[12:14])
 	m.RatePPS = binary.LittleEndian.Uint32(b[16:20])
 	m.RateBurst = binary.LittleEndian.Uint32(b[20:24])
+	m.HasSrc = b[24]
+	m.HasDst = b[25]
+	m.HasProtocol = b[26]
 	return nil
 }
 

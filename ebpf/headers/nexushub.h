@@ -44,8 +44,25 @@ struct lpm_v6_key {
     __u8  addr[16];
 };
 
-/* rule_meta — one entry per active rule row. Sized to 32 bytes so the
- * hash table packs well and a lookup stays in one cacheline. */
+/* rule_meta — one entry per active rule row. Sized to 28 bytes so the
+ * hash table packs well and a lookup stays in one cacheline.
+ *
+ * Round 6: the trailing __u32 _pad2 was repurposed as three condition
+ * flags + one pad byte. The flags let decide_* tell apart "rule has
+ * no destination condition" from "rule has a destination condition
+ * that didn't match". Without them, a rule defined as
+ *   DENY src 10.9.0.2/32 dst 10.8.0.0/24
+ * would block every destination from 10.9.0.2 because the kernel had
+ * no way to know the dst CIDR was a required filter, not a missing
+ * lookup. has_dst=1 forces the dst LPM check; has_src and has_protocol
+ * are symmetric for forward-compat.
+ *
+ * Note for operators upgrading: the meta map size is unchanged at 28
+ * bytes, but old userspace + new kernel (or vice versa) will load
+ * stale flag values. The pinned bpffs maps survive a process restart;
+ * if you see weird matching after upgrading the binary, run
+ *   rm -rf /sys/fs/bpf/nexushub
+ * and let the API re-create them on next start. */
 struct rule_meta {
     __u8  action;
     __u8  protocol;
@@ -59,7 +76,10 @@ struct rule_meta {
     __u16 _pad;
     __u32 rate_pps;
     __u32 rate_burst;
-    __u32 _pad2;
+    __u8  has_src;       /* 1 if rule has a src CIDR; src LPM hit's rule_id must equal this rule's */
+    __u8  has_dst;       /* 1 if rule has a dst CIDR; dst LPM must hit this same rule_id */
+    __u8  has_protocol;  /* 1 if protocol != PROTO_ANY (informational; protocol_matches still gates) */
+    __u8  _pad2;
 };
 
 /* rate_tokens — PERCPU_HASH value for rate_limit accounting.

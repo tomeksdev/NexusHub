@@ -488,6 +488,185 @@ func (h *PeerHandler) Delete(c *gin.Context) {
 	c.Status(http.StatusNoContent)
 }
 
+// updatePeerRequest is the PATCH body for /peers/:id. Pointer fields
+// opt in per-column; the inner pointer-to-pointer pattern on text
+// columns lets callers explicitly clear them (JSON null) vs. leave
+// alone (field absent).
+type updatePeerRequest struct {
+	Name                *string    `json:"name"`
+	Description         **string   `json:"description,omitempty"`
+	OwnerUserID         **string   `json:"owner_user_id,omitempty"`
+	AllowedIPs          *[]string  `json:"allowed_ips"`
+	ClientAllowedIPs    *[]string  `json:"client_allowed_ips"`
+	Endpoint            **string   `json:"endpoint,omitempty"`
+	DNS                 *[]string  `json:"dns"`
+	PersistentKeepalive **int      `json:"persistent_keepalive,omitempty"`
+	ExpiresAt           **time.Time `json:"expires_at,omitempty"`
+	Status              *string    `json:"status"`
+}
+
+// Update applies a partial change to a peer row and pushes the diff
+// to the kernel device. Operators reach this when they need to add a
+// network to an existing peer's AllowedIPs without rotating keys.
+func (h *PeerHandler) Update(c *gin.Context) {
+	id, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		writeError(c, http.StatusBadRequest, apierror.CodeInvalidRequest, "invalid id")
+		return
+	}
+	var req updatePeerRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		writeError(c, http.StatusBadRequest, apierror.CodeInvalidRequest, err.Error())
+		return
+	}
+	ctx := c.Request.Context()
+
+	// Pull the current row first — needed for the kernel apply
+	// path (we need to know the interface to talk to the right
+	// device) and for cross-validation of allowed_ips against
+	// assigned_ip.
+	current, err := h.Peers.GetByID(ctx, id)
+	if errors.Is(err, repository.ErrPeerNotFound) {
+		writeError(c, http.StatusNotFound, apierror.CodeNotFound, "peer not found")
+		return
+	}
+	if err != nil {
+		slog.ErrorContext(ctx, "get peer", "err", err)
+		writeError(c, http.StatusInternalServerError, apierror.CodeInternal, "internal error")
+		return
+	}
+
+	params := repository.UpdatePeerParams{
+		Name:        req.Name,
+		Description: req.Description,
+		Endpoint:    req.Endpoint,
+		DNS:         req.DNS,
+		Status:      req.Status,
+		ExpiresAt:   req.ExpiresAt,
+	}
+	if req.PersistentKeepalive != nil {
+		if inner := *req.PersistentKeepalive; inner != nil &&
+			(*inner < 0 || *inner > 65535) {
+			writeError(c, http.StatusBadRequest, apierror.CodeInvalidRequest,
+				"persistent_keepalive must be 0–65535")
+			return
+		}
+		params.PersistentKeepalive = req.PersistentKeepalive
+	}
+	if req.OwnerUserID != nil {
+		var ownerPtr *uuid.UUID
+		if inner := *req.OwnerUserID; inner != nil && *inner != "" {
+			ou, perr := uuid.Parse(*inner)
+			if perr != nil {
+				writeError(c, http.StatusBadRequest, apierror.CodeInvalidRequest, "owner_user_id must be uuid")
+				return
+			}
+			// Block reassigning to a disabled user — same rule as Create.
+			if h.Users != nil {
+				u, uerr := h.Users.GetByID(ctx, ou)
+				if errors.Is(uerr, repository.ErrUserNotFound) {
+					writeError(c, http.StatusBadRequest, apierror.CodeInvalidRequest,
+						"owner_user_id does not exist")
+					return
+				}
+				if uerr != nil {
+					slog.ErrorContext(ctx, "lookup peer owner", "err", uerr)
+					writeError(c, http.StatusInternalServerError, apierror.CodeInternal, "internal error")
+					return
+				}
+				if !u.IsActive {
+					writeError(c, http.StatusBadRequest, apierror.CodeInvalidRequest,
+						"owner_user_id refers to a disabled user")
+					return
+				}
+			}
+			ownerPtr = &ou
+		}
+		// JSON null on owner_user_id ⇒ ownerPtr stays nil ⇒ clear.
+		params.OwnerUserID = &ownerPtr
+	}
+	if req.AllowedIPs != nil {
+		ips, perr := parsePrefixesStrict(*req.AllowedIPs)
+		if perr != nil {
+			writeError(c, http.StatusBadRequest, apierror.CodeInvalidRequest,
+				"allowed_ips: "+perr.Error())
+			return
+		}
+		// Cross-validate: assigned_ip must remain inside at least one
+		// of the new allowed_ips entries. If the operator narrowed
+		// the field too much, fail before touching the kernel.
+		covered := false
+		for _, p := range ips {
+			if p.Contains(current.AssignedIP) {
+				covered = true
+				break
+			}
+		}
+		if len(ips) > 0 && !covered {
+			writeError(c, http.StatusBadRequest, apierror.CodeInvalidRequest,
+				"assigned_ip is not contained in any new allowed_ips prefix")
+			return
+		}
+		params.AllowedIPs = &ips
+	}
+	if req.ClientAllowedIPs != nil {
+		ips, perr := parsePrefixesStrict(*req.ClientAllowedIPs)
+		if perr != nil {
+			writeError(c, http.StatusBadRequest, apierror.CodeInvalidRequest,
+				"client_allowed_ips: "+perr.Error())
+			return
+		}
+		params.ClientAllowedIPs = &ips
+	}
+	if req.Endpoint != nil {
+		if inner := *req.Endpoint; inner != nil && *inner != "" {
+			if _, _, err := net.SplitHostPort(*inner); err != nil {
+				writeError(c, http.StatusBadRequest, apierror.CodeInvalidRequest,
+					"endpoint must be host:port")
+				return
+			}
+		}
+	}
+
+	out, err := h.Peers.Update(ctx, id, params)
+	if errors.Is(err, repository.ErrPeerNotFound) {
+		writeError(c, http.StatusNotFound, apierror.CodeNotFound, "peer not found")
+		return
+	}
+	if err != nil {
+		slog.ErrorContext(ctx, "update peer", "err", err)
+		writeError(c, http.StatusInternalServerError, apierror.CodeInternal, "internal error")
+		return
+	}
+
+	// Kernel re-apply: push the new AllowedIPs / endpoint /
+	// keepalive into the live device so existing handshakes pick
+	// up the change without a wg restart. ReplaceAllowedIPs=true
+	// clears the kernel's old set in one shot.
+	if h.Client != nil {
+		iface, ierr := h.Interfaces.GetByID(ctx, out.InterfaceID)
+		if ierr == nil {
+			allowed := append([]netip.Prefix(nil), out.AllowedIPs...)
+			allowed = append(allowed, netip.PrefixFrom(out.AssignedIP, assignedBits(out.AssignedIP)))
+			cfg := wg.Config{Peers: []wg.PeerConfig{{
+				PublicKey:  out.PublicKey,
+				Endpoint:   optString(out.Endpoint),
+				AllowedIPs: allowed,
+				Replace:    true,
+			}}}
+			if out.PersistentKeepalive != nil {
+				ka := time.Duration(*out.PersistentKeepalive) * time.Second
+				cfg.Peers[0].PersistentKeepAlive = &ka
+			}
+			if err := h.Client.ConfigureDevice(iface.Name, cfg); err != nil {
+				slog.WarnContext(ctx, "kernel apply peer update", "err", err, "iface", iface.Name)
+			}
+		}
+	}
+
+	c.JSON(http.StatusOK, toPeerResponse(out))
+}
+
 // RotatePSK generates a fresh 32-byte preshared key, encrypts it under the
 // master AEAD, retires the previous active row, and inserts the new one.
 // Returns the peer record; the new PSK itself is not surfaced in the
@@ -693,6 +872,16 @@ func renderWgQuickConfig(
 		endpoint = defaultEndpoint
 	}
 	if endpoint != "" {
+		// WireGuard requires Endpoint to include an explicit UDP
+		// port. Operators sometimes save the location's endpoint
+		// as bare "vpn.example.com" — without a port the exported
+		// .conf produces "Endpoint = vpn.example.com" which
+		// silently fails to parse. Append the location's listen
+		// port when one is missing. SplitHostPort doubles as the
+		// validity check; if it fails, the string lacks a port.
+		if _, _, err := net.SplitHostPort(endpoint); err != nil {
+			endpoint = net.JoinHostPort(endpoint, fmt.Sprintf("%d", iface.ListenPort))
+		}
 		fmt.Fprintf(&sb, "Endpoint = %s\n", endpoint)
 	}
 	if p.PersistentKeepalive != nil && *p.PersistentKeepalive > 0 {

@@ -179,6 +179,7 @@ func NewRouter(deps Deps) *gin.Engine {
 		admin.GET("/peers", peerH.List)
 		admin.POST("/peers", peerH.Create)
 		admin.GET("/peers/:id", peerH.Get)
+		admin.PATCH("/peers/:id", peerH.Update)
 		admin.DELETE("/peers/:id", peerH.Delete)
 		admin.POST("/peers/:id/rotate-psk", peerH.RotatePSK)
 		admin.GET("/peers/:id/config", peerH.Config)

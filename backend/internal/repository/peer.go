@@ -294,6 +294,83 @@ func (r *PeerRepo) UpsertLiveStats(ctx context.Context, stats []PeerLiveStats) e
 	return nil
 }
 
+// UpdatePeerParams is the PATCH-shaped param set. Pointer fields
+// opt in per-column. Pointer-to-pointer for nullable text columns
+// so the caller can clear them without leaking "" semantics.
+type UpdatePeerParams struct {
+	Name                *string
+	Description         **string
+	OwnerUserID         **uuid.UUID
+	AllowedIPs          *[]netip.Prefix
+	ClientAllowedIPs    *[]netip.Prefix
+	Endpoint            **string
+	DNS                 *[]string
+	PersistentKeepalive **int
+	ExpiresAt           **time.Time
+	Status              *string // enabled | disabled | revoked
+}
+
+func (r *PeerRepo) Update(ctx context.Context, id uuid.UUID, p UpdatePeerParams) (*Peer, error) {
+	sets := []string{}
+	args := []any{id}
+	idx := 2
+	add := func(expr string, v any) {
+		sets = append(sets, fmt.Sprintf("%s = $%d", expr, idx))
+		args = append(args, v)
+		idx++
+	}
+	if p.Name != nil {
+		add("name", *p.Name)
+	}
+	if p.Description != nil {
+		add("description", *p.Description)
+	}
+	if p.OwnerUserID != nil {
+		add("owner_user_id", *p.OwnerUserID)
+	}
+	if p.AllowedIPs != nil {
+		// Cast through ::cidr[] so the array literal is interpreted
+		// against the column type.
+		sets = append(sets, fmt.Sprintf("allowed_ips = $%d::cidr[]", idx))
+		args = append(args, prefixesToStrings(*p.AllowedIPs))
+		idx++
+	}
+	if p.ClientAllowedIPs != nil {
+		sets = append(sets, fmt.Sprintf("client_allowed_ips = $%d::cidr[]", idx))
+		args = append(args, prefixesToStrings(*p.ClientAllowedIPs))
+		idx++
+	}
+	if p.Endpoint != nil {
+		add("endpoint", *p.Endpoint)
+	}
+	if p.DNS != nil {
+		add("dns", *p.DNS)
+	}
+	if p.PersistentKeepalive != nil {
+		add("persistent_keepalive", *p.PersistentKeepalive)
+	}
+	if p.ExpiresAt != nil {
+		add("expires_at", *p.ExpiresAt)
+	}
+	if p.Status != nil {
+		sets = append(sets, fmt.Sprintf("status = $%d::wg_peer_status", idx))
+		args = append(args, *p.Status)
+		idx++
+	}
+	if len(sets) == 0 {
+		return r.GetByID(ctx, id)
+	}
+	q := fmt.Sprintf(`UPDATE wg_peers SET %s WHERE id = $1`, joinComma(sets))
+	cmd, err := r.pool.Exec(ctx, q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("update peer: %w", err)
+	}
+	if cmd.RowsAffected() == 0 {
+		return nil, ErrPeerNotFound
+	}
+	return r.GetByID(ctx, id)
+}
+
 func (r *PeerRepo) UpdateStatus(ctx context.Context, id uuid.UUID, status string) error {
 	cmd, err := r.pool.Exec(ctx,
 		`UPDATE wg_peers SET status = $2::wg_peer_status WHERE id = $1`,

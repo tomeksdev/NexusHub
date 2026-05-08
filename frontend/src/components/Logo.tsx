@@ -1,59 +1,45 @@
-// Logo is the inline hexagon mark used in the sidebar, login screen,
-// and (via /logo.svg) the favicon. Living as a component instead of
-// a PNG asset means there's no embedded text to disambiguate from
-// the wordmark — the icon is purely a shape, the "NexusHub" string
-// is real UI text rendered next to it.
+// Logo renders the official NexusHub hexagon mark from
+// `frontend/public/logo.png`. The asset is a 512×512 image that
+// includes the icon AND a "NexusHub" wordmark below it; the sidebar
+// only wants the icon. We crop using an SVG <image> viewBox so the
+// wordmark is invisible while the icon scales cleanly.
 //
-// To rebrand: edit this file. Operators who want a custom mark can
-// drop a /logo.png in frontend/public/ and reference it with
-// `<img src="/logo.png">`, but the default ships with this SVG.
+// The CROP_* constants below define the rectangle (in source-image
+// coordinates) that contains just the hexagon mark. Adjust if the
+// asset is replaced.
 
 interface LogoProps {
-  // size in pixels; defaults to 32. The component scales freely;
-  // 28 is what the sidebar uses, 36 the login screen.
   size?: number;
-  // accent overrides the fill colour. Defaults to the product
-  // accent (--color-accent). Pass "currentColor" to inherit from
-  // the surrounding text colour.
-  accent?: string;
   className?: string;
 }
 
-export function Logo({ size = 32, accent, className }: LogoProps) {
-  // The hexagon points are a flat-topped hex inscribed in a 100×100
-  // box. Two layered shapes give the mark a sense of depth without
-  // needing gradients or filters: an outer ring and an inner solid
-  // hex offset slightly. Both keyed off the accent colour so a
-  // theme swap is one CSS variable.
-  const fill = accent ?? "var(--color-accent, #FF4C4C)";
+// Source rectangle inside logo.png. The asset is 512×512; the
+// hexagon icon occupies roughly the upper third, centred. These
+// numbers were tuned visually from the uploaded asset.
+const CROP_X = 165;
+const CROP_Y = 95;
+const CROP_W = 185;
+const CROP_H = 215;
+
+export function Logo({ size = 32, className }: LogoProps) {
   return (
     <svg
       xmlns="http://www.w3.org/2000/svg"
-      viewBox="0 0 100 100"
+      viewBox={`${CROP_X} ${CROP_Y} ${CROP_W} ${CROP_H}`}
       width={size}
-      height={size}
+      height={(size * CROP_H) / CROP_W}
       role="img"
       aria-label="NexusHub"
       className={className}
+      preserveAspectRatio="xMidYMid meet"
     >
-      {/* Outer ring */}
-      <polygon
-        points="50,4 92,28 92,72 50,96 8,72 8,28"
-        fill="none"
-        stroke={fill}
-        strokeWidth={5}
-        strokeLinejoin="round"
-      />
-      {/* Inner solid hex */}
-      <polygon
-        points="50,22 78,38 78,62 50,78 22,62 22,38"
-        fill={fill}
-        opacity={0.95}
-      />
-      {/* Inner cutout — gives the hex a "node" feel rather than a flat tile */}
-      <polygon
-        points="50,38 65,46 65,54 50,62 35,54 35,46"
-        fill="#0d0d0d"
+      <image
+        href="/logo.png"
+        x="0"
+        y="0"
+        width="512"
+        height="512"
+        preserveAspectRatio="none"
       />
     </svg>
   );

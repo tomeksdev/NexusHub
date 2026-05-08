@@ -314,7 +314,7 @@ func ruleToMeta(r baseebpf.Rule) (userspace.RuleMeta, error) {
 	if err != nil {
 		return userspace.RuleMeta{}, err
 	}
-	return userspace.RuleMeta{
+	meta := userspace.RuleMeta{
 		Action:      action,
 		Protocol:    proto,
 		Direction:   dir,
@@ -326,7 +326,24 @@ func ruleToMeta(r baseebpf.Rule) (userspace.RuleMeta, error) {
 		Priority:    r.Priority,
 		RatePPS:     deref32(r.RatePPS),
 		RateBurst:   deref32(r.RateBurst),
-	}, nil
+	}
+	// Round-6 condition flags. The kernel uses these to gate the
+	// dst LPM lookup: a rule defined as "DENY src=X dst=Y" lands in
+	// both rule_src_v4 (X→rule_id) and rule_dst_v4 (Y→rule_id), and
+	// has_dst=1 forces the kernel to verify the dst LPM hit before
+	// applying the rule action. Without the flag the kernel would
+	// fall back to src-only matching and over-block (the bug fixed
+	// in this round).
+	if r.SrcCIDR != nil {
+		meta.HasSrc = 1
+	}
+	if r.DstCIDR != nil {
+		meta.HasDst = 1
+	}
+	if proto != 0 { // 0 = PROTO_ANY
+		meta.HasProtocol = 1
+	}
+	return meta, nil
 }
 
 // Enum values match ebpf/headers/nexushub.h. Keep in lockstep.

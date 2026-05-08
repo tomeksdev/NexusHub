@@ -6,14 +6,20 @@ import { useNowEveryMinute } from "../lib/hooks";
 import { sseStream } from "../lib/sse";
 import { PeerConfigModal } from "./PeerConfigModal";
 import { PeerCreateModal } from "./PeerCreateModal";
+import { PeerEditModal } from "./PeerEditModal";
 
 interface Peer {
   id: string;
   interface_id: string;
   owner_user_id?: string | null;
   name: string;
+  description?: string | null;
   public_key: string;
   assigned_ip: string;
+  allowed_ips: string[];
+  client_allowed_ips: string[];
+  endpoint?: string | null;
+  persistent_keepalive?: number | null;
   status: string;
   last_handshake?: string | null;
   rx_bytes: number;
@@ -97,6 +103,7 @@ export function PeersPage() {
     id: string;
     name: string;
   } | null>(null);
+  const [editPeer, setEditPeer] = useState<Peer | null>(null);
   const [showCreate, setShowCreate] = useState(false);
 
   const deleteMut = useMutation({
@@ -321,6 +328,13 @@ export function PeersPage() {
                         </button>
                         <button
                           type="button"
+                          onClick={() => setEditPeer(p)}
+                          className="btn-ghost"
+                        >
+                          Edit
+                        </button>
+                        <button
+                          type="button"
                           onClick={() => onDelete(p)}
                           disabled={deleteMut.isPending}
                           className="btn-danger"
@@ -341,6 +355,25 @@ export function PeersPage() {
           peerId={configPeer.id}
           peerName={configPeer.name}
           onClose={() => setConfigPeer(null)}
+        />
+      )}
+      {editPeer && (
+        <PeerEditModal
+          peer={{
+            id: editPeer.id,
+            interface_id: editPeer.interface_id,
+            owner_user_id: editPeer.owner_user_id,
+            name: editPeer.name,
+            description: editPeer.description ?? null,
+            allowed_ips: editPeer.allowed_ips ?? [],
+            client_allowed_ips: editPeer.client_allowed_ips ?? [],
+            assigned_ip: editPeer.assigned_ip,
+            endpoint: editPeer.endpoint ?? null,
+            persistent_keepalive: editPeer.persistent_keepalive ?? null,
+            status: editPeer.status,
+          }}
+          onClose={() => setEditPeer(null)}
+          onSaved={() => setEditPeer(null)}
         />
       )}
       {showCreate && data?.ifaceID && (

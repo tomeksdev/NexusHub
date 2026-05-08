@@ -55,7 +55,10 @@ type RulesRuleMeta struct {
 	Pad         uint16
 	RatePps     uint32
 	RateBurst   uint32
-	Pad2        uint32
+	HasSrc      uint8
+	HasDst      uint8
+	HasProtocol uint8
+	Pad2        uint8
 }
 
 // LoadRules returns the embedded CollectionSpec for Rules.

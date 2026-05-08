@@ -437,6 +437,27 @@ body {
   border-color: var(--color-accent);
 }
 
+/* Native <select> dropdowns inherit OS chrome unless we tell the
+   browser to follow the dark scheme. color-scheme:dark flips the
+   popup background to dark on Chromium + Firefox; the option
+   background is for Safari + older Firefox where the meta-property
+   isn't honoured for dropdowns. */
+select.field-input {
+  color-scheme: dark;
+  appearance: none;
+  -webkit-appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 7' fill='none' stroke='%23a0a0a0' stroke-width='1.5'%3E%3Cpath d='M1 1l5 5 5-5'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 0.75rem center;
+  background-size: 12px;
+  padding-right: 2rem;
+}
+
+select.field-input option {
+  background: var(--color-surface);
+  color: var(--color-text);
+}
+
 .field-label {
   display: block;
   margin-bottom: 0.5rem;
@@ -468,6 +489,10 @@ body {
 
 .text-danger {
   color: var(--color-danger);
+}
+
+.text-warning {
+  color: var(--color-warning);
 }
 
 .text-success {

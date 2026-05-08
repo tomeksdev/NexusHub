@@ -1,6 +1,7 @@
 import { useEffect, useState, type FormEvent, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
+import { CidrList } from "../components/CidrList";
 import { Modal } from "../components/Modal";
 import { ApiError, api, type PageEnvelope } from "../lib/api";
 
@@ -67,8 +68,8 @@ export function PeerCreateModal({
   const [description, setDescription] = useState("");
   const [selectedIface, setSelectedIface] = useState<string>(interfaceID ?? "");
   const [assignedIP, setAssignedIP] = useState("");
-  const [allowedIPs, setAllowedIPs] = useState("");
-  const [clientAllowedIPs, setClientAllowedIPs] = useState("");
+  const [allowedIPs, setAllowedIPs] = useState<string[]>([]);
+  const [clientAllowedIPs, setClientAllowedIPs] = useState<string[]>([]);
   const [keepalive, setKeepalive] = useState("");
   const [owner, setOwner] = useState<string>(ownerUserID ?? "");
   const [showAdvanced, setShowAdvanced] = useState(false);
@@ -129,16 +130,9 @@ export function PeerCreateModal({
       if (owner) body.owner_user_id = owner;
       if (description.trim()) body.description = description.trim();
       if (assignedIP.trim()) body.assigned_ip = assignedIP.trim();
-      const ips = allowedIPs
-        .split(",")
-        .map((s) => s.trim())
-        .filter(Boolean);
-      if (ips.length > 0) body.allowed_ips = ips;
-      const clientIPs = clientAllowedIPs
-        .split(",")
-        .map((s) => s.trim())
-        .filter(Boolean);
-      if (clientIPs.length > 0) body.client_allowed_ips = clientIPs;
+      if (allowedIPs.length > 0) body.allowed_ips = allowedIPs;
+      if (clientAllowedIPs.length > 0)
+        body.client_allowed_ips = clientAllowedIPs;
       const ka = parseInt(keepalive, 10);
       if (!Number.isNaN(ka) && ka > 0) body.persistent_keepalive = ka;
       if (showAdvanced && endpointOverride.trim()) {
@@ -282,25 +276,24 @@ export function PeerCreateModal({
 
         <Field
           label="Allowed IPs (server-side)"
-          hint="Source IPs the server accepts from this peer. Defaults to the assigned /32."
+          hint="Source IPs the server accepts from this peer. Defaults to the assigned /32 if left empty."
         >
-          <input
+          <CidrList
             value={allowedIPs}
-            onChange={(e) => setAllowedIPs(e.target.value)}
+            onChange={setAllowedIPs}
             placeholder="10.8.0.5/32"
-            className="field-input"
+            warnFullTunnel={false}
           />
         </Field>
 
         <Field
           label="Client AllowedIPs (in exported .conf)"
-          hint="Destinations the peer routes through the tunnel. Empty ⇒ interface CIDR (split-tunnel). Use 0.0.0.0/0, ::/0 for full-tunnel."
+          hint="Networks the peer routes through the tunnel. Empty ⇒ interface CIDR (split-tunnel)."
         >
-          <input
+          <CidrList
             value={clientAllowedIPs}
-            onChange={(e) => setClientAllowedIPs(e.target.value)}
-            placeholder="0.0.0.0/0, ::/0"
-            className="field-input"
+            onChange={setClientAllowedIPs}
+            placeholder="0.0.0.0/0"
           />
         </Field>
 

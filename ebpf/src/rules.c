@@ -33,9 +33,12 @@
  * fixed-size. A single packet checks the family that matches its
  * ethtype/skb->protocol and returns.
  *
- * This program does NOT consult rule_dst_* yet — that needs an
- * L4-aware AND across both maps to be meaningful. src-only matches the
- * blocklist use case that covers >90% of expected rules.
+ * Round 6: rule_dst_* IS now consulted when meta->has_dst is set. The
+ * src LPM remains the entry point (the only way into the rule), and a
+ * dst LPM lookup gates the action. A rule with both src+dst CIDRs only
+ * matches when both LPM hits return the same rule_id; this fixes the
+ * pre-round-6 bug where dst-bearing rules silently degraded to src-only
+ * (DENY src=X dst=Y was enforced as DENY src=X dst=any).
  *
  * IPv6 extension headers are NOT walked: nexthdr is assumed to be the
  * L4 protocol directly. Rules that need to match through HBH/Routing/
@@ -387,6 +390,20 @@ decide_v4(struct iphdr *iph, void *data_end, __u8 direction, __u32 bytes)
     if (!protocol_matches(meta->protocol, iph->protocol))
         return XDP_PASS;
 
+    /* Destination CIDR gating. has_dst=1 means the rule was created
+     * with a specific dst_cidr; we must verify the packet's dst falls
+     * inside that prefix. The dst LPM stores rule_id values keyed on
+     * the same rule_id this src lookup produced — so a hit whose
+     * value differs from *rid means "the dst matched a different
+     * rule's prefix" and this rule does not apply. */
+    if (meta->has_dst) {
+        struct lpm_v4_key dkey = { .prefixlen = 32 };
+        __builtin_memcpy(dkey.addr, &iph->daddr, 4);
+        __u32 *drid = bpf_map_lookup_elem(&rule_dst_v4, &dkey);
+        if (!drid || *drid != *rid)
+            return XDP_PASS;
+    }
+
     /* ihl is a 4-bit bitfield; mask keeps the verifier happy and
      * guards against compiler-level reinterpretation. Values <5 are
      * malformed (header shorter than 20 bytes) — skip. */
@@ -438,6 +455,17 @@ decide_v6(struct ipv6hdr *ip6h, void *data_end, __u8 direction, __u32 bytes)
 
     if (!protocol_matches(meta->protocol, ip6h->nexthdr))
         return XDP_PASS;
+
+    /* Destination CIDR gating — same logic as v4. has_dst=1 forces a
+     * dst LPM lookup; the matched rule_id must equal the src-side
+     * one, otherwise this rule does not apply to the packet. */
+    if (meta->has_dst) {
+        struct lpm_v6_key dkey = { .prefixlen = 128 };
+        __builtin_memcpy(dkey.addr, &ip6h->daddr, 16);
+        __u32 *drid = bpf_map_lookup_elem(&rule_dst_v6, &dkey);
+        if (!drid || *drid != *rid)
+            return XDP_PASS;
+    }
 
     /* No extension-header walk — nexthdr must be the L4 protocol. */
     void *l4 = (void *)(ip6h + 1);

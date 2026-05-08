@@ -2,29 +2,27 @@
 
 Static assets served at the site root by Vite. Anything here ships
 verbatim — no bundling, no rewriting — so paths in the app reference
-e.g. `/logo.svg`, not `import logoUrl from "..."`.
+e.g. `/logo.png`, not `import logoUrl from "..."`.
 
 ## Files
 
-- `logo.svg` — favicon. Mirrors the inline `<Logo>` component in
-  `src/components/Logo.tsx`. The two are kept in sync by hand;
-  rebrands edit both.
-- `logo.png` — legacy raster logo from earlier rounds. Unused by
-  the running app since round 5 (the inline SVG component
-  replaces it). Kept on disk in case an operator wants to drop in
-  a custom raster mark and reference it from a fork. Safe to
-  delete.
+- `logo.png` — the official NexusHub mark, 512×512, including the
+  hexagon icon AND the "NexusHub" wordmark beneath it. The sidebar
+  + login screen render only the icon portion via SVG-viewBox
+  cropping in `src/components/Logo.tsx`. The favicon uses the full
+  image (a tab-bar icon shows both the mark and the wordmark — that
+  works fine at favicon sizes).
 - `favicon.svg`, `icons.svg` — leftovers from the Vite scaffolding.
   Not referenced anywhere in the running app; deleting them is
   fine.
 
 ## Rebranding
 
-Two files change for a custom mark:
+Two paths:
 
-1. `src/components/Logo.tsx` — the React component used in the
-   sidebar + login screen.
-2. `frontend/public/logo.svg` — the favicon.
-
-There's no longer a "drop a PNG here" path because that's what
-got us into the embedded-text mess in the first place.
+1. **Drop-in replacement** — overwrite `logo.png` with a different
+   512×512 image. If the icon position differs, adjust `CROP_*`
+   constants in `src/components/Logo.tsx`.
+2. **New shape entirely** — edit `src/components/Logo.tsx` to
+   render an inline SVG. The sidebar + login both consume the
+   same component, so one file rebrands both.

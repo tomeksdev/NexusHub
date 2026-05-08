@@ -268,6 +268,7 @@ func TestRuleMetaMarshalRoundTrip(t *testing.T) {
 		SrcPortFrom: 100, SrcPortTo: 200,
 		DstPortFrom: 300, DstPortTo: 400,
 		Priority: 500, RatePPS: 1000, RateBurst: 2000,
+		HasSrc: 1, HasDst: 1, HasProtocol: 1,
 	}
 	b, err := orig.MarshalBinary()
 	if err != nil {
@@ -289,6 +290,49 @@ func TestRuleMetaUnmarshalRejectsWrongLength(t *testing.T) {
 	var m RuleMeta
 	if err := m.UnmarshalBinary(make([]byte, ruleMetaSize-1)); err == nil {
 		t.Error("expected error on short buffer")
+	}
+}
+
+// TestRuleMetaConditionFlagBytes pins the on-wire offsets of the
+// has_src / has_dst / has_protocol bytes so a future refactor can't
+// silently shift them. The kernel program reads these by struct-
+// member offset, so a Go-side reorder would break enforcement
+// without any compile-time error.
+func TestRuleMetaConditionFlagBytes(t *testing.T) {
+	cases := []struct {
+		name string
+		m    RuleMeta
+		want [3]byte // has_src, has_dst, has_protocol at b[24:27]
+	}{
+		{"all unset", RuleMeta{}, [3]byte{0, 0, 0}},
+		{"src only", RuleMeta{HasSrc: 1}, [3]byte{1, 0, 0}},
+		{"dst only", RuleMeta{HasDst: 1}, [3]byte{0, 1, 0}},
+		{"proto only", RuleMeta{HasProtocol: 1}, [3]byte{0, 0, 1}},
+		{"src+dst", RuleMeta{HasSrc: 1, HasDst: 1}, [3]byte{1, 1, 0}},
+		{"all set", RuleMeta{HasSrc: 1, HasDst: 1, HasProtocol: 1}, [3]byte{1, 1, 1}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			b, err := tc.m.MarshalBinary()
+			if err != nil {
+				t.Fatalf("marshal: %v", err)
+			}
+			got := [3]byte{b[24], b[25], b[26]}
+			if got != tc.want {
+				t.Errorf("flag bytes: got %v, want %v", got, tc.want)
+			}
+			// Round-trip back through Unmarshal so a future change
+			// to either side is caught here, not at runtime.
+			var back RuleMeta
+			if err := back.UnmarshalBinary(b); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			if back.HasSrc != tc.m.HasSrc ||
+				back.HasDst != tc.m.HasDst ||
+				back.HasProtocol != tc.m.HasProtocol {
+				t.Errorf("round-trip flags lost: got %+v want %+v", back, tc.m)
+			}
+		})
 	}
 }
 
