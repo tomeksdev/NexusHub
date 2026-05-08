@@ -20,7 +20,7 @@ RUN CGO_ENABLED=0 go build -ldflags="-s -w" -o /nexushub         ./cmd/api/ \
  && CGO_ENABLED=0 go build -ldflags="-s -w" -o /nexushub-seed    ./cmd/seed/
 
 # Stage 2: Build frontend
-FROM node:25-bookworm-slim AS node-builder
+FROM node:26-bookworm-slim AS node-builder
 WORKDIR /build
 COPY frontend/package*.json ./
 RUN npm ci
