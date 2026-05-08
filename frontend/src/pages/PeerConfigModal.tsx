@@ -6,10 +6,14 @@ import { api, apiBlob, apiText } from "../lib/api";
 interface Props {
   peerId: string;
   peerName: string;
+  // Optional. When supplied, an "Edit peer" button appears next to
+  // Copy/Download/Rotate PSK; clicking it calls this callback so
+  // the parent can swap to the edit modal without stacking dialogs.
+  onEdit?: () => void;
   onClose: () => void;
 }
 
-export function PeerConfigModal({ peerId, peerName, onClose }: Props) {
+export function PeerConfigModal({ peerId, peerName, onEdit, onClose }: Props) {
   const [conf, setConf] = useState<string | null>(null);
   const [qrUrl, setQrUrl] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -140,13 +144,22 @@ export function PeerConfigModal({ peerId, peerName, onClose }: Props) {
             >
               {conf}
             </pre>
-            <div className="flex gap-2 mt-3">
+            <div className="flex flex-wrap gap-2 mt-3">
               <button onClick={copy} className="btn-ghost">
                 {copied ? "Copied" : "Copy"}
               </button>
               <button onClick={download} className="btn-ghost">
                 Download .conf
               </button>
+              {onEdit && (
+                <button
+                  type="button"
+                  onClick={onEdit}
+                  className="btn-ghost"
+                >
+                  Edit peer
+                </button>
+              )}
               <button
                 onClick={rotatePSK}
                 disabled={rotating}

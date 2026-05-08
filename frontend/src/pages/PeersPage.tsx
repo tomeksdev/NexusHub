@@ -354,6 +354,16 @@ export function PeersPage() {
         <PeerConfigModal
           peerId={configPeer.id}
           peerName={configPeer.name}
+          onEdit={() => {
+            // Swap config → edit on the same peer. Look up the row
+            // again so the edit modal has the full record (the
+            // config modal only carried id+name).
+            const full = items.find((p) => p.id === configPeer.id);
+            if (full) {
+              setConfigPeer(null);
+              setEditPeer(full);
+            }
+          }}
           onClose={() => setConfigPeer(null)}
         />
       )}

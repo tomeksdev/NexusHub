@@ -2,6 +2,7 @@ import { useState, type FormEvent, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { CidrList } from "../components/CidrList";
+import { ConfigPreview } from "../components/ConfigPreview";
 import { Modal } from "../components/Modal";
 import { ApiError, api, type PageEnvelope } from "../lib/api";
 
@@ -27,6 +28,13 @@ interface UserListRow {
   email: string;
   username: string;
   is_active: boolean;
+}
+
+interface InterfaceRow {
+  id: string;
+  name: string;
+  address: string;
+  endpoint?: string | null;
 }
 
 interface Props {
@@ -71,6 +79,15 @@ export function PeerEditModal({ peer, onClose, onSaved }: Props) {
     staleTime: 60_000,
     retry: false,
   });
+  const ifacesQ = useQuery({
+    queryKey: ["interfaces"],
+    queryFn: () =>
+      api<PageEnvelope<InterfaceRow>>("/api/v1/interfaces?limit=100"),
+    staleTime: 60_000,
+  });
+  const ownIface = (ifacesQ.data?.items ?? []).find(
+    (i) => i.id === peer.interface_id,
+  );
 
   const mut = useMutation<unknown, ApiError>({
     mutationFn: () => {
@@ -219,6 +236,14 @@ export function PeerEditModal({ peer, onClose, onSaved }: Props) {
           />
           Enabled
         </label>
+
+        <ConfigPreview
+          assignedIP={peer.assigned_ip}
+          interfaceCIDR={ownIface?.address}
+          clientAllowedIPs={clientAllowedIPs}
+          endpointOverride={endpoint}
+          locationEndpoint={ownIface?.endpoint ?? null}
+        />
 
         {mut.isError && (
           <p className="text-danger text-sm">

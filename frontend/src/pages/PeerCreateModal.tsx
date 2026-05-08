@@ -2,6 +2,7 @@ import { useEffect, useState, type FormEvent, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { CidrList } from "../components/CidrList";
+import { ConfigPreview } from "../components/ConfigPreview";
 import { Modal } from "../components/Modal";
 import { ApiError, api, type PageEnvelope } from "../lib/api";
 
@@ -253,7 +254,7 @@ export function PeerCreateModal({
         )}
 
         <Field
-          label="Assigned IP"
+          label="Peer tunnel address (/32)"
           hint={
             selected
               ? `Inside ${selected.address}. Auto-suggested; edit if you want a specific address.`
@@ -269,6 +270,12 @@ export function PeerCreateModal({
             className="field-input"
             disabled={!selectedIface}
           />
+          {assignedIP.trim() && !ipInputErr && (
+            <span className="field-hint">
+              Will be exported as{" "}
+              <code className="font-mono">{assignedIP.trim()}/32</code>.
+            </span>
+          )}
           {ipInputErr && (
             <span className="field-hint text-danger">{ipInputErr}</span>
           )}
@@ -335,6 +342,16 @@ export function PeerCreateModal({
             </Field>
           </div>
         </details>
+
+        <ConfigPreview
+          assignedIP={assignedIP}
+          interfaceCIDR={selected?.address}
+          clientAllowedIPs={clientAllowedIPs}
+          endpointOverride={
+            showAdvanced ? endpointOverride : ""
+          }
+          locationEndpoint={selected?.endpoint ?? null}
+        />
 
         {mut.isError && (
           <p className="text-danger text-sm">

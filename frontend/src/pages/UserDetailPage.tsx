@@ -5,6 +5,7 @@ import { api, type PageEnvelope } from "../lib/api";
 import { useNowEveryMinute } from "../lib/hooks";
 import { PeerConfigModal } from "./PeerConfigModal";
 import { PeerCreateModal } from "./PeerCreateModal";
+import { PeerEditModal, type EditablePeer } from "./PeerEditModal";
 
 interface User {
   id: string;
@@ -20,9 +21,15 @@ interface User {
 interface Peer {
   id: string;
   interface_id: string;
+  owner_user_id?: string | null;
   name: string;
+  description?: string | null;
   public_key: string;
   assigned_ip: string;
+  allowed_ips: string[];
+  client_allowed_ips: string[];
+  endpoint?: string | null;
+  persistent_keepalive?: number | null;
   status: string;
   last_handshake?: string | null;
   rx_bytes: number;
@@ -46,7 +53,24 @@ export function UserDetailPage({ userID, onBack }: Props) {
     id: string;
     name: string;
   } | null>(null);
+  const [editPeer, setEditPeer] = useState<EditablePeer | null>(null);
   const [showCreate, setShowCreate] = useState(false);
+
+  function toEditable(p: Peer): EditablePeer {
+    return {
+      id: p.id,
+      interface_id: p.interface_id,
+      owner_user_id: p.owner_user_id,
+      name: p.name,
+      description: p.description ?? null,
+      allowed_ips: p.allowed_ips ?? [],
+      client_allowed_ips: p.client_allowed_ips ?? [],
+      assigned_ip: p.assigned_ip,
+      endpoint: p.endpoint ?? null,
+      persistent_keepalive: p.persistent_keepalive ?? null,
+      status: p.status,
+    };
+  }
 
   const userQ = useQuery({
     queryKey: ["user", userID],
@@ -228,6 +252,13 @@ export function UserDetailPage({ userID, onBack }: Props) {
                           </button>
                           <button
                             type="button"
+                            onClick={() => setEditPeer(toEditable(p))}
+                            className="btn-ghost"
+                          >
+                            Edit
+                          </button>
+                          <button
+                            type="button"
                             onClick={() => {
                               if (
                                 !confirm(
@@ -257,7 +288,24 @@ export function UserDetailPage({ userID, onBack }: Props) {
         <PeerConfigModal
           peerId={configPeer.id}
           peerName={configPeer.name}
+          onEdit={() => {
+            const full = peers.find((p) => p.id === configPeer.id);
+            if (full) {
+              setConfigPeer(null);
+              setEditPeer(toEditable(full));
+            }
+          }}
           onClose={() => setConfigPeer(null)}
+        />
+      )}
+      {editPeer && (
+        <PeerEditModal
+          peer={editPeer}
+          onClose={() => setEditPeer(null)}
+          onSaved={() => {
+            setEditPeer(null);
+            qc.invalidateQueries({ queryKey: ["peers-by-owner", userID] });
+          }}
         />
       )}
       {showCreate && defaultIfaceID && (

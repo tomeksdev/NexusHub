@@ -2,6 +2,7 @@ import { useState, type FormEvent } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 
 import { Modal } from "../components/Modal";
+import { PortField } from "../components/PortField";
 import { ApiError, api } from "../lib/api";
 import type { Rule } from "./RulesPage";
 
@@ -41,6 +42,14 @@ function protocolTakesPorts(p: string): boolean {
   return p === "tcp" || p === "udp";
 }
 
+// normalisePort converts the backend's "0 means wildcard" sentinel
+// into undefined so the PortField component can express it as Any
+// without leaking the magic number into the UI state.
+function normalisePort(v: number | undefined): number | undefined {
+  if (v == null || v === 0) return undefined;
+  return v;
+}
+
 export function RuleEditorModal({ rule, onClose }: Props) {
   const qc = useQueryClient();
   const editing = rule !== null;
@@ -54,17 +63,21 @@ export function RuleEditorModal({ rule, onClose }: Props) {
   const [protocol, setProtocol] = useState<string>(rule?.protocol ?? "any");
   const [srcCIDR, setSrcCIDR] = useState(rule?.src_cidr ?? "");
   const [dstCIDR, setDstCIDR] = useState(rule?.dst_cidr ?? "");
-  const [srcPortFrom, setSrcPortFrom] = useState(
-    rule?.src_port_from?.toString() ?? "",
+  // Ports are kept as undefined ⇒ Any (backend stores 0..0). The
+  // PortField component handles the Any/Single/Range UX; here we
+  // just hold the resulting bounds. A stored 0..0 from an existing
+  // rule is normalised to undefined for cleaner downstream logic.
+  const [srcPortFrom, setSrcPortFrom] = useState<number | undefined>(
+    normalisePort(rule?.src_port_from),
   );
-  const [srcPortTo, setSrcPortTo] = useState(
-    rule?.src_port_to?.toString() ?? "",
+  const [srcPortTo, setSrcPortTo] = useState<number | undefined>(
+    normalisePort(rule?.src_port_to),
   );
-  const [dstPortFrom, setDstPortFrom] = useState(
-    rule?.dst_port_from?.toString() ?? "",
+  const [dstPortFrom, setDstPortFrom] = useState<number | undefined>(
+    normalisePort(rule?.dst_port_from),
   );
-  const [dstPortTo, setDstPortTo] = useState(
-    rule?.dst_port_to?.toString() ?? "",
+  const [dstPortTo, setDstPortTo] = useState<number | undefined>(
+    normalisePort(rule?.dst_port_to),
   );
   const [ratePPS, setRatePPS] = useState(rule?.rate_pps?.toString() ?? "");
   const [rateBurst, setRateBurst] = useState(
@@ -85,14 +98,12 @@ export function RuleEditorModal({ rule, onClose }: Props) {
       if (srcCIDR.trim()) body.src_cidr = srcCIDR.trim();
       if (dstCIDR.trim()) body.dst_cidr = dstCIDR.trim();
       if (protocolTakesPorts(protocol)) {
-        const sf = parseInt(srcPortFrom, 10);
-        const st = parseInt(srcPortTo, 10);
-        const df = parseInt(dstPortFrom, 10);
-        const dt = parseInt(dstPortTo, 10);
-        if (!Number.isNaN(sf)) body.src_port_from = sf;
-        if (!Number.isNaN(st)) body.src_port_to = st;
-        if (!Number.isNaN(df)) body.dst_port_from = df;
-        if (!Number.isNaN(dt)) body.dst_port_to = dt;
+        // Operator-facing Any maps to the backend's 0..0 sentinel.
+        // Single (N) and Range (A..B) ship the literal numbers.
+        body.src_port_from = srcPortFrom ?? 0;
+        body.src_port_to = srcPortTo ?? 0;
+        body.dst_port_from = dstPortFrom ?? 0;
+        body.dst_port_to = dstPortTo ?? 0;
       }
       if (action === "rate_limit") {
         const pps = parseInt(ratePPS, 10);
@@ -225,47 +236,27 @@ export function RuleEditorModal({ rule, onClose }: Props) {
         </div>
 
         {protocolTakesPorts(protocol) && (
-          <div className="grid grid-cols-4 gap-4">
-            <Field label="Src port from">
-              <input
-                type="number"
-                min={0}
-                max={65535}
-                value={srcPortFrom}
-                onChange={(e) => setSrcPortFrom(e.target.value)}
-                className="field-input"
-              />
-            </Field>
-            <Field label="Src port to">
-              <input
-                type="number"
-                min={0}
-                max={65535}
-                value={srcPortTo}
-                onChange={(e) => setSrcPortTo(e.target.value)}
-                className="field-input"
-              />
-            </Field>
-            <Field label="Dst port from">
-              <input
-                type="number"
-                min={0}
-                max={65535}
-                value={dstPortFrom}
-                onChange={(e) => setDstPortFrom(e.target.value)}
-                className="field-input"
-              />
-            </Field>
-            <Field label="Dst port to">
-              <input
-                type="number"
-                min={0}
-                max={65535}
-                value={dstPortTo}
-                onChange={(e) => setDstPortTo(e.target.value)}
-                className="field-input"
-              />
-            </Field>
+          <div className="grid grid-cols-2 gap-4">
+            <PortField
+              label="Source port"
+              from={srcPortFrom}
+              to={srcPortTo}
+              onChange={(f, t) => {
+                setSrcPortFrom(f);
+                setSrcPortTo(t);
+              }}
+              idPrefix="src-port"
+            />
+            <PortField
+              label="Destination port"
+              from={dstPortFrom}
+              to={dstPortTo}
+              onChange={(f, t) => {
+                setDstPortFrom(f);
+                setDstPortTo(t);
+              }}
+              idPrefix="dst-port"
+            />
           </div>
         )}
 

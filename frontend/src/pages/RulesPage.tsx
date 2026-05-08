@@ -77,11 +77,16 @@ function KernelBadge({ active, loaded }: { active: boolean; loaded: boolean }) {
   );
 }
 
+// summarisePorts renders a port range for the rules table. The
+// backend stores wildcard as 0..0; we present that as "Any" so the
+// table reads as plain firewall language. Single-port rules show
+// the literal number, ranges show A–B.
 function summarisePorts(from?: number, to?: number): string {
-  if (from == null && to == null) return "*";
+  if (from == null && to == null) return "Any";
+  if (from === 0 && to === 0) return "Any";
   if (from != null && to != null)
-    return from === to ? `${from}` : `${from}-${to}`;
-  return `${from ?? to ?? "*"}`;
+    return from === to ? `${from}` : `${from}–${to}`;
+  return `${from ?? to ?? "Any"}`;
 }
 
 export function RulesPage() {

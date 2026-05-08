@@ -14,12 +14,15 @@ interface LogoProps {
 }
 
 // Source rectangle inside logo.png. The asset is 512×512; the
-// hexagon icon occupies roughly the upper third, centred. These
-// numbers were tuned visually from the uploaded asset.
-const CROP_X = 165;
-const CROP_Y = 95;
-const CROP_W = 185;
-const CROP_H = 215;
+// hexagon icon occupies roughly the upper third, centred. The
+// round-7 widening (CROP_X 165→145, CROP_W 185→222) gives both
+// sides of the hex breathing room — the previous crop was clipping
+// the right edge at sidebar size and made the mark look uneven.
+// Operators replacing the asset can re-tune from here.
+const CROP_X = 145;
+const CROP_Y = 90;
+const CROP_W = 222;
+const CROP_H = 220;
 
 export function Logo({ size = 32, className }: LogoProps) {
   return (
