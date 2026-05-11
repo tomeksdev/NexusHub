@@ -62,10 +62,19 @@ type ruleResponse struct {
 	// flipped the rule on but the kernel doesn't know about it
 	// (Syncer was Noop, or Apply failed silently). The frontend
 	// renders this as a separate column.
-	KernelLoaded bool       `json:"kernel_loaded"`
-	CreatedBy    *uuid.UUID `json:"created_by,omitempty"`
-	CreatedAt    time.Time  `json:"created_at"`
-	UpdatedAt    time.Time  `json:"updated_at"`
+	KernelLoaded bool `json:"kernel_loaded"`
+	// RuleHitsPackets / RuleHitsBytes are the kernel-side counters
+	// for matched packets, summed across CPUs. omitempty so the
+	// frontend can render "—" when the syncer is the noop or the
+	// rule has never matched anything. Round-9 observability: an
+	// operator who sees "Active: ON, Kernel: LOADED, Hits: 0"
+	// after pinging through the rule's src→dst path knows the
+	// data plane never saw the packet — actionable.
+	RuleHitsPackets *uint64    `json:"rule_hits_packets,omitempty"`
+	RuleHitsBytes   *uint64    `json:"rule_hits_bytes,omitempty"`
+	CreatedBy       *uuid.UUID `json:"created_by,omitempty"`
+	CreatedAt       time.Time  `json:"created_at"`
+	UpdatedAt       time.Time  `json:"updated_at"`
 }
 
 // toRuleResponseFor builds the response for a single repo rule and
@@ -76,6 +85,12 @@ func (h *RuleHandler) toRuleResponseFor(r *repository.Rule) ruleResponse {
 	resp := toRuleResponse(r)
 	if h != nil && h.Sync != nil {
 		resp.KernelLoaded = h.Sync.Has(r.ID)
+		if pkts, bytes, ok := h.Sync.Hits(r.ID); ok {
+			p := pkts
+			b := bytes
+			resp.RuleHitsPackets = &p
+			resp.RuleHitsBytes = &b
+		}
 	}
 	return resp
 }

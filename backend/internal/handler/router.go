@@ -53,6 +53,10 @@ type Deps struct {
 	// program only runs on Locations that existed at startup and
 	// new ones bypass enforcement entirely.
 	EBPFAttacher RuntimeAttacher
+	// EBPFInventory backs the /diag/ebpf endpoint. Same eBPF stack
+	// satisfies both interfaces in production; tests can pass nil
+	// or a stub.
+	EBPFInv EBPFInventory
 
 	// DefaultWGEndpoint and DefaultWGDNS feed the wg-quick config
 	// renderer's fall-back chain (peer → interface → default). They're
@@ -198,10 +202,19 @@ func NewRouter(deps Deps) *gin.Engine {
 		admin.GET("/wg/status", statusH.Status)
 		admin.GET("/dashboard", dashH.Get)
 
+		// Diagnostics endpoints — admin-gated. Two distinct surfaces
+		// today: the kernel-warnings ring (introduced in round 3)
+		// and the eBPF attachment inventory (round 9). Both fall
+		// back gracefully when their dependency is nil so a degraded
+		// stack still serves the API.
+		diagH := &DiagHandler{
+			KernelWarnings: deps.KernelWarnings,
+			EBPF:           deps.EBPFInv,
+		}
 		if deps.KernelWarnings != nil {
-			diagH := &DiagHandler{KernelWarnings: deps.KernelWarnings}
 			admin.GET("/diag/kernel-warnings", diagH.KernelWarningsList)
 		}
+		admin.GET("/diag/ebpf", diagH.EBPFState)
 		admin.GET("/metrics", metrics.Handler())
 
 		// Live peer state — same admin gate as wg/status; leaks handshake

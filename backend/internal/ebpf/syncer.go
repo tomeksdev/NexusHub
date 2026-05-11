@@ -65,6 +65,13 @@ type Syncer interface {
 	// "kernel is actually enforcing it" — the round-5 fix for the
 	// "Active: ON but traffic still flows" bug.
 	Has(ruleID uuid.UUID) bool
+	// Hits returns the kernel-side packets/bytes counter for the
+	// rule, summed across CPUs. ok=false when the rule isn't
+	// programmed or the kernel doesn't have a backing entry yet
+	// (no matching packet has hit the rule). The UI uses this to
+	// answer the round-9 "rules are LOADED but is the program
+	// actually seeing my packets" question.
+	Hits(ruleID uuid.UUID) (packets, bytes uint64, ok bool)
 	Close() error
 }
 
@@ -77,6 +84,7 @@ func (NoopSyncer) Apply(context.Context, Rule) error       { return nil }
 func (NoopSyncer) Delete(context.Context, uuid.UUID) error { return nil }
 func (NoopSyncer) Reconcile(context.Context, []Rule) error { return nil }
 func (NoopSyncer) Has(uuid.UUID) bool                      { return false }
+func (NoopSyncer) Hits(uuid.UUID) (uint64, uint64, bool)   { return 0, 0, false }
 func (NoopSyncer) Close() error                            { return nil }
 
 // FakeSyncer records calls in memory. Tests inspect the recorded
@@ -133,6 +141,13 @@ func (f *FakeSyncer) Has(id uuid.UUID) bool {
 		}
 	}
 	return false
+}
+
+// Hits is unimplemented for the fake — tests that care about hit
+// counts can override via embedded types. Returns ok=false so the
+// rule handler renders "—" rather than a misleading zero.
+func (f *FakeSyncer) Hits(uuid.UUID) (uint64, uint64, bool) {
+	return 0, 0, false
 }
 
 func (f *FakeSyncer) Close() error { return nil }

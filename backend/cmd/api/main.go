@@ -209,6 +209,7 @@ func run() error {
 		RefreshTTL:        cfg.JWTRefreshExpiry,
 		EBPFSync:          ebpfStk.syncer,
 		EBPFAttacher:      ebpfStk,
+		EBPFInv:           ebpfStk,
 		WG:                wgClient,
 		WGLinks:           linkManager,
 		KernelWarnings:    kernelWarnings,

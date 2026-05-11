@@ -19,6 +19,18 @@ interface KernelWarningsResp {
   items: KernelWarning[];
 }
 
+interface EBPFAttachment {
+  iface: string;
+  hook: string;
+  program: string;
+  prog_id: number;
+}
+
+interface EBPFStateResp {
+  programs: EBPFAttachment[];
+  pin_path?: string;
+}
+
 export function SupportPage() {
   const { data } = useQuery({
     queryKey: ["health"],
@@ -39,6 +51,19 @@ export function SupportPage() {
     refetchInterval: 30_000,
   });
   const warnings = warningsQ.data?.items ?? [];
+
+  // eBPF attachment inventory — surfaces what the API thinks is
+  // bound to which iface, with the kernel program id so the
+  // operator can correlate against `bpftool prog show` and
+  // `bpftool net`. Round-9 observability for the "rules are
+  // LOADED but is the program actually running" question.
+  const ebpfQ = useQuery({
+    queryKey: ["ebpf-state"],
+    queryFn: () => api<EBPFStateResp>("/api/v1/diag/ebpf"),
+    retry: false,
+    refetchInterval: 30_000,
+  });
+  const ebpf = ebpfQ.data;
 
   return (
     <div className="space-y-6 max-w-3xl">
@@ -68,6 +93,62 @@ export function SupportPage() {
           <dd className="font-mono text-faint">{data?.commit ?? "—"}</dd>
         </dl>
       </section>
+
+      {ebpf && (
+        <section className="panel">
+          <div className="panel-header">
+            <div>
+              <span className="panel-title">eBPF data plane</span>
+              <p className="text-faint text-xs mt-1">
+                Programs the API has attached. Cross-check with
+                <code className="font-mono"> bpftool prog show</code> on the
+                host.
+              </p>
+            </div>
+            <span className="text-faint text-xs">
+              {ebpf.programs.length} attached
+            </span>
+          </div>
+          {ebpf.programs.length === 0 ? (
+            <p className="text-muted text-sm">
+              No eBPF programs attached. Locations created at runtime
+              should auto-attach; if you see this with active rules,
+              the kernel side is silent and rules can't enforce.
+            </p>
+          ) : (
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="text-muted text-left">
+                  <th className="py-2 font-medium">Interface</th>
+                  <th className="py-2 font-medium">Hook</th>
+                  <th className="py-2 font-medium">Program</th>
+                  <th className="py-2 font-medium text-right">Prog ID</th>
+                </tr>
+              </thead>
+              <tbody>
+                {ebpf.programs.map((p, i) => (
+                  <tr
+                    key={`${p.iface}-${p.hook}-${i}`}
+                    className="border-t border-[var(--color-line)]"
+                  >
+                    <td className="py-2 font-mono">{p.iface}</td>
+                    <td className="py-2 text-muted">{p.hook}</td>
+                    <td className="py-2 text-muted">{p.program}</td>
+                    <td className="py-2 text-right font-mono">
+                      {p.prog_id || "—"}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+          {ebpf.pin_path && (
+            <p className="text-faint text-xs mt-3">
+              Maps pinned at <code className="font-mono">{ebpf.pin_path}</code>
+            </p>
+          )}
+        </section>
+      )}
 
       {warnings.length > 0 && (
         <section className="panel">

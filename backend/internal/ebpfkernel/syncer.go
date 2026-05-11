@@ -215,6 +215,25 @@ func (s *KernelSyncer) Has(id uuid.UUID) bool {
 	return ok
 }
 
+// Hits returns the kernel-side packets/bytes counter for the rule.
+// ok=false when the rule isn't programmed, or the rule_hits map has
+// no entry yet (counter is created lazily on first match). The
+// rules-list handler renders this so an operator can tell at a
+// glance whether a "LOADED" rule is actually seeing traffic.
+func (s *KernelSyncer) Hits(id uuid.UUID) (packets, bytes uint64, ok bool) {
+	s.mu.Lock()
+	rid, exists := s.ids[id]
+	s.mu.Unlock()
+	if !exists {
+		return 0, 0, false
+	}
+	hits, present, err := s.loader.PeekRuleHits(rid)
+	if err != nil || !present {
+		return 0, 0, false
+	}
+	return hits.Packets, hits.Bytes, true
+}
+
 // Close releases in-memory state. The underlying loader is owned by
 // the caller and deliberately not closed here — a caller that built
 // the loader once and attached both the XDP and TC programs would

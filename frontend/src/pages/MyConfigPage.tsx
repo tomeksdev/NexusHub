@@ -43,7 +43,13 @@ export function MyConfigPage() {
   const peersQ = useQuery({
     queryKey: ["me-peers"],
     queryFn: () => api<PageEnvelope<MyPeer>>("/api/v1/me/peers?limit=100"),
-    refetchOnWindowFocus: false,
+    // 10 s refresh so a user reconnecting their WireGuard client
+    // sees the status flip from Not connected to Connected
+    // without manually reloading. Backend WG stats poller writes
+    // at 30 s; 10 s here catches a freshly-written row within a
+    // tick.
+    refetchInterval: 10_000,
+    refetchOnWindowFocus: true,
   });
   // Best-effort interface lookup so we can show the location name
   // for each peer. Users don't have admin access to /interfaces;
@@ -89,6 +95,7 @@ export function MyConfigPage() {
         <div className="grid gap-4">
           {peers.map((p) => {
             const iface = ifaceByID.get(p.interface_id);
+            const connected = isLiveHandshake(p.last_handshake);
             return (
               <section key={p.id} className="panel">
                 <div className="panel-header">
@@ -100,7 +107,10 @@ export function MyConfigPage() {
                       </p>
                     )}
                   </div>
-                  <StatusBadge status={p.status} />
+                  <ConnectionBadge
+                    connected={connected}
+                    enabled={p.status !== "disabled"}
+                  />
                 </div>
                 <dl className="grid grid-cols-[10rem_1fr] gap-y-2 text-sm">
                   <dt className="text-muted">Location</dt>
@@ -131,9 +141,12 @@ export function MyConfigPage() {
                   </dd>
                   <dt className="text-muted">Last handshake</dt>
                   <dd className="text-muted">
-                    {p.last_handshake && !p.last_handshake.startsWith("0001-")
-                      ? new Date(p.last_handshake).toLocaleString()
-                      : "—"}
+                    {handshakeRelative(p.last_handshake)}
+                  </dd>
+                  <dt className="text-muted">Traffic</dt>
+                  <dd className="text-muted font-mono text-xs">
+                    {formatBytes(p.rx_bytes)} received ·{" "}
+                    {formatBytes(p.tx_bytes)} sent
                   </dd>
                 </dl>
                 <div className="mt-4 flex gap-2">
@@ -177,29 +190,72 @@ export function MyConfigPage() {
   );
 }
 
-function StatusBadge({ status }: { status: string }) {
-  switch (status) {
-    case "enabled":
-    case "active":
-      return (
-        <span className="status-badge ok">
-          <span className="dot" />
-          ENABLED
-        </span>
-      );
-    case "disabled":
-      return (
-        <span className="status-badge muted">
-          <span className="dot" />
-          DISABLED
-        </span>
-      );
-    default:
-      return (
-        <span className="status-badge muted">
-          <span className="dot" />
-          {status.toUpperCase()}
-        </span>
-      );
+// ConnectionBadge tells the user whether their tunnel is alive.
+// "Connected" requires both an enabled peer AND a recent
+// handshake (round-9: previously we only rendered the static DB
+// status, which was useless for a user trying to confirm their VPN
+// is talking). Disabled peers stay shown as such regardless of
+// handshake age.
+function ConnectionBadge({
+  connected,
+  enabled,
+}: {
+  connected: boolean;
+  enabled: boolean;
+}) {
+  if (!enabled) {
+    return (
+      <span className="status-badge muted">
+        <span className="dot" />
+        DISABLED
+      </span>
+    );
   }
+  if (connected) {
+    return (
+      <span className="status-badge ok">
+        <span className="dot" />
+        CONNECTED
+      </span>
+    );
+  }
+  return (
+    <span className="status-badge muted">
+      <span className="dot" />
+      NOT CONNECTED
+    </span>
+  );
+}
+
+// 3 minutes matches the round-1 PeersPage threshold the admin side
+// uses for the "live" dot — keep both surfaces aligned so an admin
+// and a user looking at the same peer see consistent state.
+function isLiveHandshake(last?: string | null): boolean {
+  if (!last || last.startsWith("0001-")) return false;
+  return Date.now() - new Date(last).getTime() < 3 * 60_000;
+}
+
+// handshakeRelative renders the handshake age in human words via
+// Intl.RelativeTimeFormat so "42 seconds ago" / "5 minutes ago"
+// fall out without a date library. Returns "Never" when the peer
+// has never handshaken.
+function handshakeRelative(last?: string | null): string {
+  if (!last || last.startsWith("0001-")) return "Never";
+  const diffMs = Date.now() - new Date(last).getTime();
+  const sec = Math.round(diffMs / 1000);
+  const rtf = new Intl.RelativeTimeFormat(undefined, { numeric: "auto" });
+  if (sec < 60) return rtf.format(-sec, "second");
+  const min = Math.round(sec / 60);
+  if (min < 60) return rtf.format(-min, "minute");
+  const hr = Math.round(min / 60);
+  if (hr < 24) return rtf.format(-hr, "hour");
+  const day = Math.round(hr / 24);
+  return rtf.format(-day, "day");
+}
+
+function formatBytes(n: number): string {
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KiB`;
+  if (n < 1024 * 1024 * 1024) return `${(n / (1024 * 1024)).toFixed(1)} MiB`;
+  return `${(n / (1024 * 1024 * 1024)).toFixed(2)} GiB`;
 }

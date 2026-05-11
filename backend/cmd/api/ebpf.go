@@ -179,7 +179,13 @@ func (s *ebpfStack) attachXDP(l *userspace.RulesLoader, ifaceName string, logger
 		logger.Warn("xdp attach failed", "iface", ifaceName, "err", err)
 		return
 	}
-	logger.Info("xdp_rules attached", "iface", ifaceName)
+	logger.Info(
+		"xdp attached",
+		"iface", ifaceName,
+		"hook", "xdp",
+		"program", userspace.ProgramXDPRules,
+		"prog_id", progIDFor(l, userspace.ProgramXDPRules),
+	)
 }
 
 func (s *ebpfStack) attachXDPLocked(l *userspace.RulesLoader, ifaceName string) error {
@@ -217,7 +223,18 @@ func (s *ebpfStack) attachTC(l *userspace.RulesLoader, ifaceName string, logger 
 		logger.Warn("tc attach failed", "iface", ifaceName, "err", err)
 		return
 	}
-	logger.Info("tc_rules_wg0 attached", "iface", ifaceName)
+	// Spell out the iface, the hook, and the running program ID so
+	// the operator can sanity-check `bpftool prog show | grep <id>`
+	// against this log line. The old "tc_rules_wg0 attached" read
+	// like a static program-name reference and confused operators
+	// running on non-wg0 interfaces.
+	logger.Info(
+		"tc attached",
+		"iface", ifaceName,
+		"hook", "ingress",
+		"program", userspace.ProgramTCRulesWg0,
+		"prog_id", progIDFor(l, userspace.ProgramTCRulesWg0),
+	)
 }
 
 func (s *ebpfStack) attachTCLocked(l *userspace.RulesLoader, ifaceName string) error {
@@ -260,7 +277,13 @@ func (s *ebpfStack) AttachTC(name string) error {
 		return err
 	}
 	if s.logger != nil {
-		s.logger.Info("tc_rules attached at runtime", "iface", name)
+		s.logger.Info(
+			"tc attached at runtime",
+			"iface", name,
+			"hook", "ingress",
+			"program", userspace.ProgramTCRulesWg0,
+			"prog_id", progIDFor(s.loader, userspace.ProgramTCRulesWg0),
+		)
 	}
 	return nil
 }
@@ -285,9 +308,78 @@ func (s *ebpfStack) DetachTC(name string) error {
 		return err
 	}
 	if s.logger != nil {
-		s.logger.Info("tc_rules detached", "iface", name)
+		s.logger.Info(
+			"tc detached",
+			"iface", name,
+			"hook", "ingress",
+			"program", userspace.ProgramTCRulesWg0,
+		)
 	}
 	return nil
+}
+
+// AttachedPrograms returns a snapshot of every TC / XDP program
+// this stack has bound to a kernel interface. Used by the Support
+// page so an operator can confirm attachment without ssh-ing in.
+// Locked-snapshot to avoid racing concurrent attach/detach.
+func (s *ebpfStack) AttachedPrograms() []diag.EBPFAttachment {
+	if s == nil {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]diag.EBPFAttachment, 0, len(s.tcLinks)+len(s.xdpLinks))
+	for name := range s.tcLinks {
+		out = append(out, diag.EBPFAttachment{
+			Iface:   name,
+			Hook:    "ingress",
+			Program: userspace.ProgramTCRulesWg0,
+			ProgID:  progIDFor(s.loader, userspace.ProgramTCRulesWg0),
+		})
+	}
+	for name := range s.xdpLinks {
+		out = append(out, diag.EBPFAttachment{
+			Iface:   name,
+			Hook:    "xdp",
+			Program: userspace.ProgramXDPRules,
+			ProgID:  progIDFor(s.loader, userspace.ProgramXDPRules),
+		})
+	}
+	return out
+}
+
+// PinPath returns the bpffs directory the loader uses, or "" when
+// pinning is disabled. Surfaced in /diag/ebpf so the operator can
+// `ls /sys/fs/bpf/<path>` and confirm the maps survive restart.
+func (s *ebpfStack) PinPath() string {
+	if s == nil || s.loader == nil {
+		return ""
+	}
+	return bpfPinDir
+}
+
+// progIDFor returns the kernel-assigned program id for the named
+// program in the loader's collection, or 0 if the program is
+// missing or the kernel-side info isn't available. Used in attach
+// log lines so the operator can correlate `bpftool prog show`
+// output with what the API attached.
+func progIDFor(l *userspace.RulesLoader, name string) uint32 {
+	if l == nil {
+		return 0
+	}
+	prog, ok := l.Program(name)
+	if !ok || prog == nil {
+		return 0
+	}
+	info, err := prog.Info()
+	if err != nil || info == nil {
+		return 0
+	}
+	id, ok := info.ID()
+	if !ok {
+		return 0
+	}
+	return uint32(id)
 }
 
 // recordWarning is the bridge from the eBPF stack into the

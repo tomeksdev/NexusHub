@@ -26,6 +26,12 @@ export interface Rule {
   // when a rule is operator-enabled but the kernel never accepted
   // it (or the syncer is the noop).
   kernel_loaded?: boolean;
+  // Live hit counters from the kernel's rule_hits map, summed
+  // across CPUs. Undefined ⇒ syncer doesn't expose them (Noop, or
+  // the rule has never matched a packet). Operator-facing column
+  // helps answer "rule is LOADED but is it seeing traffic?".
+  rule_hits_packets?: number;
+  rule_hits_bytes?: number;
   created_at: string;
   updated_at: string;
 }
@@ -41,6 +47,40 @@ function actionBadgeClass(a: Rule["action"]): string {
     case "log":
       return "status-badge muted";
   }
+}
+
+// HitsCell shows the kernel-side packets/bytes counter for the
+// rule, summed across CPUs. Undefined → "—" (syncer doesn't
+// expose the data, or the rule has never matched a packet).
+// Zero with both fields present is rendered as "0" because that
+// IS the actionable signal: the rule loaded but no packet
+// hit it yet — useful when debugging "why isn't my deny working".
+function HitsCell({ packets, bytes }: { packets?: number; bytes?: number }) {
+  if (packets === undefined || bytes === undefined) {
+    return <span className="text-faint">—</span>;
+  }
+  return (
+    <span
+      className="font-mono text-xs"
+      title={`${packets.toLocaleString()} packets, ${bytes.toLocaleString()} bytes`}
+    >
+      {formatCount(packets)} pkts
+      <span className="text-faint"> · {formatBytes(bytes)}</span>
+    </span>
+  );
+}
+
+function formatCount(n: number): string {
+  if (n < 1000) return String(n);
+  if (n < 1_000_000) return `${(n / 1000).toFixed(1)}k`;
+  return `${(n / 1_000_000).toFixed(1)}M`;
+}
+
+function formatBytes(n: number): string {
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KiB`;
+  if (n < 1024 * 1024 * 1024) return `${(n / (1024 * 1024)).toFixed(1)} MiB`;
+  return `${(n / (1024 * 1024 * 1024)).toFixed(2)} GiB`;
 }
 
 // KernelBadge tells the operator whether the rule is actually
@@ -98,6 +138,11 @@ export function RulesPage() {
     queryKey: ["rules"],
     queryFn: () =>
       api<PageEnvelope<Rule>>("/api/v1/rules?limit=200&sort=-priority"),
+    // 5 s refetch so the kernel-side hit counters tick visibly
+    // when the operator is debugging "is this rule matching
+    // anything". Quick enough to feel live, cheap enough that an
+    // idle admin tab doesn't hammer the backend.
+    refetchInterval: 5_000,
   });
 
   const toggleMut = useMutation({
@@ -172,6 +217,7 @@ export function RulesPage() {
                 <th>Destination</th>
                 <th>Active</th>
                 <th>Kernel</th>
+                <th>Hits</th>
                 <th aria-label="Actions" />
               </tr>
             </thead>
@@ -225,6 +271,12 @@ export function RulesPage() {
                   </td>
                   <td>
                     <KernelBadge active={r.is_active} loaded={!!r.kernel_loaded} />
+                  </td>
+                  <td>
+                    <HitsCell
+                      packets={r.rule_hits_packets}
+                      bytes={r.rule_hits_bytes}
+                    />
                   </td>
                   <td className="text-right whitespace-nowrap">
                     <div className="inline-flex gap-2">
