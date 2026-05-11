@@ -10,10 +10,26 @@ interface Props {
   // Copy/Download/Rotate PSK; clicking it calls this callback so
   // the parent can swap to the edit modal without stacking dialogs.
   onEdit?: () => void;
+  // Override the base URL used for config/QR/rotate-PSK calls. The
+  // user-role MyConfigPage passes `/api/v1/me/peers/<id>` here so
+  // it hits the ownership-gated /me endpoints instead of the
+  // admin-only /peers ones. Default keeps admin behaviour.
+  configPathOverride?: string;
   onClose: () => void;
 }
 
-export function PeerConfigModal({ peerId, peerName, onEdit, onClose }: Props) {
+export function PeerConfigModal({
+  peerId,
+  peerName,
+  onEdit,
+  configPathOverride,
+  onClose,
+}: Props) {
+  // basePath is the URL prefix for the three calls this modal
+  // makes: GET /config, GET /config.png, POST /rotate-psk. Admin
+  // pages get the default; the user MyConfigPage passes the /me
+  // override so it doesn't 403 on its own peer.
+  const basePath = configPathOverride ?? `/api/v1/peers/${peerId}`;
   const [conf, setConf] = useState<string | null>(null);
   const [qrUrl, setQrUrl] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -26,8 +42,8 @@ export function PeerConfigModal({ peerId, peerName, onEdit, onClose }: Props) {
     let cancelled = false;
 
     Promise.all([
-      apiText(`/api/v1/peers/${peerId}/config`),
-      apiBlob(`/api/v1/peers/${peerId}/config.png`),
+      apiText(`${basePath}/config`),
+      apiBlob(`${basePath}/config.png`),
     ])
       .then(([text, blob]) => {
         if (cancelled) return;
@@ -160,13 +176,20 @@ export function PeerConfigModal({ peerId, peerName, onEdit, onClose }: Props) {
                   Edit peer
                 </button>
               )}
-              <button
-                onClick={rotatePSK}
-                disabled={rotating}
-                className="btn-primary ml-auto"
-              >
-                {rotating ? "Rotating…" : "Rotate PSK"}
-              </button>
+              {/* Rotate PSK is an admin-only operation — it modifies
+                  stored credentials, which the user-self-service
+                  /me/peers surface doesn't expose. Hide the button
+                  entirely when the modal was opened with a /me
+                  override so a user doesn't see a button that 403s. */}
+              {!configPathOverride && (
+                <button
+                  onClick={rotatePSK}
+                  disabled={rotating}
+                  className="btn-primary ml-auto"
+                >
+                  {rotating ? "Rotating…" : "Rotate PSK"}
+                </button>
+              )}
             </div>
           </div>
           <div className="flex flex-col items-center gap-2">

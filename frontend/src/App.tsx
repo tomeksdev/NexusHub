@@ -94,13 +94,15 @@ const ADMIN_NAV: NavSection[] = [
   },
 ];
 
+// USER_NAV — sidebar for the `user` role. Monitoring is admin-only
+// (the /metrics endpoint requires admin); exposing it as a sidebar
+// entry that immediately 403s was a worse experience than not
+// showing it at all. Restore if/when there's a user-scoped metrics
+// view.
 const USER_NAV: NavSection[] = [
   {
     title: "Main",
-    items: [
-      { id: "my_config", label: "My Config", icon: Smartphone },
-      { id: "my_monitoring", label: "Monitoring", icon: BarChart3 },
-    ],
+    items: [{ id: "my_config", label: "My Config", icon: Smartphone }],
   },
   {
     title: "Profile",

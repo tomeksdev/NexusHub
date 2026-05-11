@@ -1,7 +1,7 @@
-import { useState, type FormEvent, type ReactNode } from "react";
+import { useRef, useState, type FormEvent, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
-import { CidrList } from "../components/CidrList";
+import { CidrList, type CidrListHandle } from "../components/CidrList";
 import { ConfigPreview } from "../components/ConfigPreview";
 import { Modal } from "../components/Modal";
 import { ApiError, api, type PageEnvelope } from "../lib/api";
@@ -71,6 +71,8 @@ export function PeerEditModal({ peer, onClose, onSaved }: Props) {
     peer.persistent_keepalive != null ? String(peer.persistent_keepalive) : "",
   );
   const [enabled, setEnabled] = useState(peer.status !== "disabled");
+  const allowedRef = useRef<CidrListHandle>(null);
+  const clientAllowedRef = useRef<CidrListHandle>(null);
 
   const usersQ = useQuery({
     queryKey: ["users-picker"],
@@ -91,6 +93,14 @@ export function PeerEditModal({ peer, onClose, onSaved }: Props) {
 
   const mut = useMutation<unknown, ApiError>({
     mutationFn: () => {
+      // Commit any pending CidrList draft so a Save click before
+      // the operator pressed Enter/+ Add doesn't drop the typed
+      // network. flush() returns the canonical array synchronously
+      // (state updates lag a render).
+      const finalAllowed = allowedRef.current?.flush() ?? allowedIPs;
+      const finalClientAllowed =
+        clientAllowedRef.current?.flush() ?? clientAllowedIPs;
+
       const body: Patch = {};
       const trimmedName = name.trim();
       if (trimmedName !== peer.name) body.name = trimmedName;
@@ -103,12 +113,16 @@ export function PeerEditModal({ peer, onClose, onSaved }: Props) {
       if (owner !== origOwner) body.owner_user_id = owner === "" ? null : owner;
 
       // Compare arrays element-wise so order changes don't trigger
-      // a needless write.
-      const sameAllowed = arraysEqual(allowedIPs, peer.allowed_ips);
-      if (!sameAllowed) body.allowed_ips = allowedIPs;
+      // a needless write. Use the flushed values so a draft typed
+      // right before Save still makes it into the diff.
+      const sameAllowed = arraysEqual(finalAllowed, peer.allowed_ips);
+      if (!sameAllowed) body.allowed_ips = finalAllowed;
 
-      const sameClient = arraysEqual(clientAllowedIPs, peer.client_allowed_ips);
-      if (!sameClient) body.client_allowed_ips = clientAllowedIPs;
+      const sameClient = arraysEqual(
+        finalClientAllowed,
+        peer.client_allowed_ips,
+      );
+      if (!sameClient) body.client_allowed_ips = finalClientAllowed;
 
       const ep = endpoint.trim();
       const origEp = peer.endpoint ?? "";
@@ -148,6 +162,36 @@ export function PeerEditModal({ peer, onClose, onSaved }: Props) {
       maxWidthClass="max-w-lg"
     >
       <form onSubmit={submit} className="space-y-4">
+        {/* Location + inherited endpoint context, shown read-only at
+            the top so the operator never wonders "what does 'leave
+            blank to inherit' actually inherit". */}
+        <div
+          className="rounded-md p-3 text-sm"
+          style={{
+            background: "rgba(255,255,255,0.04)",
+            border: "1px solid var(--color-line)",
+          }}
+        >
+          <dl className="grid grid-cols-[8rem_1fr] gap-y-1">
+            <dt className="text-muted">Location</dt>
+            <dd className="font-mono">
+              {ownIface?.name ?? (
+                <span className="text-faint">unknown</span>
+              )}
+            </dd>
+            <dt className="text-muted">Inherited endpoint</dt>
+            <dd className="font-mono">
+              {ownIface?.endpoint ? (
+                ownIface.endpoint
+              ) : (
+                <span className="text-faint">
+                  (no endpoint configured on this location)
+                </span>
+              )}
+            </dd>
+          </dl>
+        </div>
+
         <Field label="Name" required>
           <input
             value={name}
@@ -187,6 +231,7 @@ export function PeerEditModal({ peer, onClose, onSaved }: Props) {
           hint="Source IPs the server accepts from this peer. Must include the assigned IP."
         >
           <CidrList
+            ref={allowedRef}
             value={allowedIPs}
             onChange={setAllowedIPs}
             placeholder="10.0.0.5/32"
@@ -199,6 +244,7 @@ export function PeerEditModal({ peer, onClose, onSaved }: Props) {
           hint="Networks the peer routes through the tunnel. Add the additional networks the peer needs access to."
         >
           <CidrList
+            ref={clientAllowedRef}
             value={clientAllowedIPs}
             onChange={setClientAllowedIPs}
             placeholder="10.10.0.0/24"
@@ -207,7 +253,11 @@ export function PeerEditModal({ peer, onClose, onSaved }: Props) {
 
         <Field
           label="Endpoint override"
-          hint="Leave blank to inherit from the location."
+          hint={
+            ownIface?.endpoint
+              ? `Leave blank to use the location's endpoint: ${ownIface.endpoint}`
+              : "Leave blank to inherit from the location."
+          }
         >
           <input
             value={endpoint}

@@ -1,7 +1,13 @@
-import { useEffect, useState, type FormEvent, type ReactNode } from "react";
+import {
+  useEffect,
+  useRef,
+  useState,
+  type FormEvent,
+  type ReactNode,
+} from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
-import { CidrList } from "../components/CidrList";
+import { CidrList, type CidrListHandle } from "../components/CidrList";
 import { ConfigPreview } from "../components/ConfigPreview";
 import { Modal } from "../components/Modal";
 import { ApiError, api, type PageEnvelope } from "../lib/api";
@@ -75,6 +81,8 @@ export function PeerCreateModal({
   const [owner, setOwner] = useState<string>(ownerUserID ?? "");
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [endpointOverride, setEndpointOverride] = useState("");
+  const allowedRef = useRef<CidrListHandle>(null);
+  const clientAllowedRef = useRef<CidrListHandle>(null);
 
   // Locations (interfaces) the operator can pick from. The label
   // shows "wgN — host:port" so it's clear what each option binds to.
@@ -124,6 +132,13 @@ export function PeerCreateModal({
 
   const mut = useMutation<PeerResponse, ApiError>({
     mutationFn: () => {
+      // Force-commit any pending CidrList draft text so an operator
+      // who typed a CIDR and clicked Save without pressing Enter
+      // doesn't lose the network silently.
+      const finalAllowed = allowedRef.current?.flush() ?? allowedIPs;
+      const finalClientAllowed =
+        clientAllowedRef.current?.flush() ?? clientAllowedIPs;
+
       const body: CreatePayload = {
         interface_id: selectedIface,
         name: name.trim(),
@@ -131,9 +146,9 @@ export function PeerCreateModal({
       if (owner) body.owner_user_id = owner;
       if (description.trim()) body.description = description.trim();
       if (assignedIP.trim()) body.assigned_ip = assignedIP.trim();
-      if (allowedIPs.length > 0) body.allowed_ips = allowedIPs;
-      if (clientAllowedIPs.length > 0)
-        body.client_allowed_ips = clientAllowedIPs;
+      if (finalAllowed.length > 0) body.allowed_ips = finalAllowed;
+      if (finalClientAllowed.length > 0)
+        body.client_allowed_ips = finalClientAllowed;
       const ka = parseInt(keepalive, 10);
       if (!Number.isNaN(ka) && ka > 0) body.persistent_keepalive = ka;
       if (showAdvanced && endpointOverride.trim()) {
@@ -286,6 +301,7 @@ export function PeerCreateModal({
           hint="Source IPs the server accepts from this peer. Defaults to the assigned /32 if left empty."
         >
           <CidrList
+            ref={allowedRef}
             value={allowedIPs}
             onChange={setAllowedIPs}
             placeholder="10.8.0.5/32"
@@ -298,6 +314,7 @@ export function PeerCreateModal({
           hint="Networks the peer routes through the tunnel. Empty ⇒ interface CIDR (split-tunnel)."
         >
           <CidrList
+            ref={clientAllowedRef}
             value={clientAllowedIPs}
             onChange={setClientAllowedIPs}
             placeholder="0.0.0.0/0"

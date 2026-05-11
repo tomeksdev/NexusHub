@@ -250,6 +250,7 @@ export function PeersPage() {
                 <th>Name</th>
                 <th>Owner</th>
                 <th>Assigned IP</th>
+                <th>Networks</th>
                 <th>Status</th>
                 <th>Last handshake</th>
                 <th>RX / TX</th>
@@ -301,6 +302,9 @@ export function PeersPage() {
                       )}
                     </td>
                     <td className="font-mono text-muted">{p.assigned_ip}</td>
+                    <td className="text-muted">
+                      <NetworksCell items={p.client_allowed_ips ?? []} />
+                    </td>
                     <td>
                       <span className={statusClass(p.status)}>{p.status}</span>
                     </td>
@@ -417,6 +421,28 @@ function statusClass(s: string): string {
 
 function isZeroTime(s: string): boolean {
   return s.startsWith("0001-");
+}
+
+// NetworksCell renders the peer's client_allowed_ips compactly: up
+// to two CIDRs inline, then "+N" for the tail with the full list in
+// a hover tooltip. Empty array means the peer inherits the
+// location's CIDR — show "(default)" so it's obvious the field is
+// configured intentionally, not missing.
+function NetworksCell({ items }: { items: string[] }) {
+  if (items.length === 0) {
+    return <span className="text-faint">(default)</span>;
+  }
+  const head = items.slice(0, 2);
+  const rest = items.length - head.length;
+  return (
+    <span
+      title={items.join(", ")}
+      className="font-mono text-xs"
+    >
+      {head.join(", ")}
+      {rest > 0 && <span className="text-faint">{` +${rest}`}</span>}
+    </span>
+  );
 }
 
 // Sparkline renders deltas between adjacent points so a long-running

@@ -190,6 +190,7 @@ export function UserDetailPage({ userID, onBack }: Props) {
                   <th>Name</th>
                   <th>Location</th>
                   <th>Assigned IP</th>
+                  <th>Networks</th>
                   <th>Last handshake</th>
                   <th>RX / TX</th>
                   <th aria-label="Actions" />
@@ -228,6 +229,9 @@ export function UserDetailPage({ userID, onBack }: Props) {
                       </td>
                       <td className="font-mono text-muted">
                         {p.assigned_ip}
+                      </td>
+                      <td className="text-muted">
+                        <NetworksCell items={p.client_allowed_ips ?? []} />
                       </td>
                       <td className="text-muted">
                         {p.last_handshake &&
@@ -322,6 +326,23 @@ export function UserDetailPage({ userID, onBack }: Props) {
         />
       )}
     </div>
+  );
+}
+
+// NetworksCell duplicates the helper from PeersPage so the user
+// detail table renders the routed-CIDR summary identically. Kept
+// local to avoid pulling a tiny component into a separate file.
+function NetworksCell({ items }: { items: string[] }) {
+  if (items.length === 0) {
+    return <span className="text-faint">(default)</span>;
+  }
+  const head = items.slice(0, 2);
+  const rest = items.length - head.length;
+  return (
+    <span title={items.join(", ")} className="font-mono text-xs">
+      {head.join(", ")}
+      {rest > 0 && <span className="text-faint">{` +${rest}`}</span>}
+    </span>
   );
 }
 

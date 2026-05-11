@@ -167,6 +167,16 @@ func NewRouter(deps Deps) *gin.Engine {
 			Client:     deps.WG,
 		}
 
+		// /me/* lives in the authenticated-but-not-admin group so
+		// users with the `user` role can fetch their own peers and
+		// download their own .conf without admin help. Ownership
+		// is enforced inside MeHandler; foreign ids return 404 so
+		// the API doesn't leak existence of other users' peers.
+		meH := &MeHandler{Peers: deps.Peers, PeerH: peerH}
+		authed.GET("/me/peers", meH.ListPeers)
+		authed.GET("/me/peers/:id/config", meH.Config)
+		authed.GET("/me/peers/:id/config.png", meH.ConfigQR)
+
 		admin := authed.Group("")
 		admin.Use(middleware.RequireRole("super_admin", "admin"))
 		admin.GET("/interfaces", ifaceH.List)

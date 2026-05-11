@@ -755,14 +755,23 @@ func (h *PeerHandler) ConfigQR(c *gin.Context) {
 	c.Data(http.StatusOK, "image/png", png)
 }
 
-// renderConfig is the shared heavy lifter. It writes its own error
-// responses on failure and returns err so the caller can short-circuit.
+// renderConfig parses the peer id from the URL and delegates to
+// renderConfigFor. Used by the admin Config + ConfigQR endpoints.
 func (h *PeerHandler) renderConfig(c *gin.Context) (string, *repository.Peer, error) {
 	id, err := uuid.Parse(c.Param("id"))
 	if err != nil {
 		writeError(c, http.StatusBadRequest, apierror.CodeInvalidRequest, "invalid id")
 		return "", nil, err
 	}
+	return h.RenderConfigFor(c, id)
+}
+
+// RenderConfigFor builds the wg-quick config for a specific peer id.
+// Exported so the user self-service handler (/me/peers) can reuse
+// the renderer after performing its own ownership check. Writes its
+// own error responses and returns the error so callers can short-
+// circuit; on success the third return is nil.
+func (h *PeerHandler) RenderConfigFor(c *gin.Context, id uuid.UUID) (string, *repository.Peer, error) {
 	ctx := c.Request.Context()
 	peer, err := h.Peers.GetByID(ctx, id)
 	if errors.Is(err, repository.ErrPeerNotFound) {
