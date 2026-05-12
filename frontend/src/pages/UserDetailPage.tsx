@@ -199,7 +199,9 @@ export function UserDetailPage({ userID, onBack }: Props) {
                   <th>Name</th>
                   <th>Location</th>
                   <th>Assigned IP</th>
-                  <th>Networks</th>
+                  <th title="Client routed networks — the [Peer] AllowedIPs the peer's exported .conf installs. NOT the server-side wg show value.">
+                    Client routes
+                  </th>
                   <th>Last handshake</th>
                   <th>RX / TX</th>
                   <th aria-label="Actions" />

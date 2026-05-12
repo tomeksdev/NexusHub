@@ -262,7 +262,9 @@ export function PeersPage() {
                 <th>Name</th>
                 <th>Owner</th>
                 <th>Assigned IP</th>
-                <th>Networks</th>
+                <th title="Client routed networks — the [Peer] AllowedIPs the peer's exported .conf installs. NOT the server-side wg show value.">
+                  Client routes
+                </th>
                 <th>Status</th>
                 <th>Last handshake</th>
                 <th>RX / TX</th>
