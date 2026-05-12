@@ -105,6 +105,18 @@ export function PeersPage() {
   } | null>(null);
   const [editPeer, setEditPeer] = useState<Peer | null>(null);
   const [showCreate, setShowCreate] = useState(false);
+  // Per-peer version counter, bumped on every successful edit.
+  // Passed as React key to PeerConfigModal so reopening Config
+  // after an edit force-remounts the component — the round-10
+  // fix for "I saved the peer but the .conf still shows the old
+  // value" because react's element-identity preserved state
+  // across the close+reopen cycle.
+  const [peerVersions, setPeerVersions] = useState<Record<string, number>>(
+    {},
+  );
+  function bumpVersion(id: string) {
+    setPeerVersions((prev) => ({ ...prev, [id]: (prev[id] ?? 0) + 1 }));
+  }
 
   const deleteMut = useMutation({
     mutationFn: (id: string) =>
@@ -356,12 +368,14 @@ export function PeersPage() {
       )}
       {configPeer && (
         <PeerConfigModal
+          // Keyed on peer id + version so a Save in the edit modal
+          // forces a fresh /config fetch the next time the operator
+          // opens Config — even if the same modal instance was
+          // about to be reused.
+          key={`${configPeer.id}:${peerVersions[configPeer.id] ?? 0}`}
           peerId={configPeer.id}
           peerName={configPeer.name}
           onEdit={() => {
-            // Swap config → edit on the same peer. Look up the row
-            // again so the edit modal has the full record (the
-            // config modal only carried id+name).
             const full = items.find((p) => p.id === configPeer.id);
             if (full) {
               setConfigPeer(null);
@@ -387,7 +401,10 @@ export function PeersPage() {
             status: editPeer.status,
           }}
           onClose={() => setEditPeer(null)}
-          onSaved={() => setEditPeer(null)}
+          onSaved={() => {
+            bumpVersion(editPeer.id);
+            setEditPeer(null);
+          }}
         />
       )}
       {showCreate && data?.ifaceID && (

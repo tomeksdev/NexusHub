@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/netip"
+	"sort"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -70,11 +71,19 @@ type ruleResponse struct {
 	// operator who sees "Active: ON, Kernel: LOADED, Hits: 0"
 	// after pinging through the rule's src→dst path knows the
 	// data plane never saw the packet — actionable.
-	RuleHitsPackets *uint64    `json:"rule_hits_packets,omitempty"`
-	RuleHitsBytes   *uint64    `json:"rule_hits_bytes,omitempty"`
-	CreatedBy       *uuid.UUID `json:"created_by,omitempty"`
-	CreatedAt       time.Time  `json:"created_at"`
-	UpdatedAt       time.Time  `json:"updated_at"`
+	RuleHitsPackets *uint64 `json:"rule_hits_packets,omitempty"`
+	RuleHitsBytes   *uint64 `json:"rule_hits_bytes,omitempty"`
+	// ShadowedByRuleName, when non-nil, names a higher-priority
+	// active rule whose src_cidr collides with this rule's. The
+	// v2.0 kernel engine stores one rule per src CIDR; this rule
+	// is shadowed and won't enforce until the operator disables
+	// the conflicting rule (or until the v2.1 engine rewrite
+	// supports multiple rules per source). The frontend renders
+	// a "Shadowed by X" badge.
+	ShadowedByRuleName *string    `json:"shadowed_by_rule_name,omitempty"`
+	CreatedBy          *uuid.UUID `json:"created_by,omitempty"`
+	CreatedAt          time.Time  `json:"created_at"`
+	UpdatedAt          time.Time  `json:"updated_at"`
 }
 
 // toRuleResponseFor builds the response for a single repo rule and
@@ -287,11 +296,71 @@ func (h *RuleHandler) List(c *gin.Context) {
 		writeError(c, http.StatusInternalServerError, apierror.CodeInternal, "internal error")
 		return
 	}
+
+	// Compute shadow relationships across the active subset. v2.0
+	// engine indexes by src_cidr (LPM trie); two active rules with
+	// the same src_cidr overwrite each other in the kernel map.
+	// Highest-priority wins; the rest are flagged "shadowed by X"
+	// so the operator can see which rule the kernel is actually
+	// enforcing.
+	shadowedBy := h.computeShadowedBy(items)
+
 	out := make([]ruleResponse, 0, len(items))
 	for i := range items {
-		out = append(out, h.toRuleResponseFor(&items[i]))
+		resp := h.toRuleResponseFor(&items[i])
+		if name, ok := shadowedBy[items[i].ID]; ok {
+			n := name
+			resp.ShadowedByRuleName = &n
+		}
+		out = append(out, resp)
 	}
 	c.JSON(http.StatusOK, httppage.Wrap(out, total, pg, sortField, sortDesc))
+}
+
+// computeShadowedBy walks the active rules grouped by normalised
+// src_cidr and returns rule_id → name of the higher-priority rule
+// that wins the kernel slot. Rules without a src_cidr can't
+// collide and are skipped. Inactive rules don't shadow anything.
+//
+// Stable selection: at equal priority, lower UUID string wins —
+// matches the syncer's "last write wins" but at least the choice
+// is deterministic between page loads.
+func (h *RuleHandler) computeShadowedBy(items []repository.Rule) map[uuid.UUID]string {
+	type entry struct {
+		idx int
+		id  uuid.UUID
+	}
+	// Group active rules with a src_cidr by their string-form
+	// CIDR. Pre-sort so the first item in each group is the
+	// "winner".
+	groups := map[string][]entry{}
+	for i := range items {
+		r := &items[i]
+		if !r.IsActive || r.SrcCIDR == nil {
+			continue
+		}
+		key := r.SrcCIDR.String()
+		groups[key] = append(groups[key], entry{idx: i, id: r.ID})
+	}
+	out := map[uuid.UUID]string{}
+	for _, list := range groups {
+		if len(list) < 2 {
+			continue
+		}
+		// Pick the winner: highest priority; ties broken by id.
+		sort.Slice(list, func(a, b int) bool {
+			ra, rb := items[list[a].idx], items[list[b].idx]
+			if ra.Priority != rb.Priority {
+				return ra.Priority > rb.Priority
+			}
+			return list[a].id.String() < list[b].id.String()
+		})
+		winner := items[list[0].idx]
+		for _, e := range list[1:] {
+			out[e.id] = winner.Name
+		}
+	}
+	return out
 }
 
 func (h *RuleHandler) Get(c *gin.Context) {

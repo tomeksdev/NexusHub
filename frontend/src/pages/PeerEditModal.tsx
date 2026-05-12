@@ -227,8 +227,8 @@ export function PeerEditModal({ peer, onClose, onSaved }: Props) {
         </Field>
 
         <Field
-          label="Allowed IPs (server-side)"
-          hint="Source IPs the server accepts from this peer. Must include the assigned IP."
+          label="Server-side accepted source IPs"
+          hint="Affects wg show. The kernel WG module accepts decrypted packets from this peer only when their source falls inside one of these CIDRs. Must include the peer's assigned /32."
         >
           <CidrList
             ref={allowedRef}
@@ -240,8 +240,8 @@ export function PeerEditModal({ peer, onClose, onSaved }: Props) {
         </Field>
 
         <Field
-          label="Client AllowedIPs (in exported .conf)"
-          hint="Networks the peer routes through the tunnel. Add the additional networks the peer needs access to."
+          label="Client routed networks (in exported .conf)"
+          hint="Affects the [Peer] AllowedIPs line in the .conf the peer installs. These are the networks the client will route THROUGH the tunnel. Server-side changes above do NOT update this list automatically — use the helper below if you want them in sync."
         >
           <CidrList
             ref={clientAllowedRef}
@@ -249,6 +249,25 @@ export function PeerEditModal({ peer, onClose, onSaved }: Props) {
             onChange={setClientAllowedIPs}
             placeholder="10.10.0.0/24"
           />
+          <button
+            type="button"
+            onClick={() => {
+              // Pull the current server-side value (flush in case
+              // the operator typed something but didn't commit) and
+              // mirror it into the client side. Then we deduplicate
+              // against whatever's already in client so a re-click
+              // doesn't keep appending.
+              const fromServer =
+                allowedRef.current?.flush() ?? allowedIPs;
+              const merged = Array.from(
+                new Set([...clientAllowedIPs, ...fromServer]),
+              );
+              setClientAllowedIPs(merged);
+            }}
+            className="btn-ghost mt-2"
+          >
+            + Copy server-side routes here
+          </button>
         </Field>
 
         <Field

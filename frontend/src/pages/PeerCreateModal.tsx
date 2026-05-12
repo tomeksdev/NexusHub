@@ -297,8 +297,8 @@ export function PeerCreateModal({
         </Field>
 
         <Field
-          label="Allowed IPs (server-side)"
-          hint="Source IPs the server accepts from this peer. Defaults to the assigned /32 if left empty."
+          label="Server-side accepted source IPs"
+          hint="Affects wg show. Source IPs the server accepts from this peer; defaults to the assigned /32 if left empty."
         >
           <CidrList
             ref={allowedRef}
@@ -310,8 +310,8 @@ export function PeerCreateModal({
         </Field>
 
         <Field
-          label="Client AllowedIPs (in exported .conf)"
-          hint="Networks the peer routes through the tunnel. Empty ⇒ interface CIDR (split-tunnel)."
+          label="Client routed networks (in exported .conf)"
+          hint="Affects the peer's [Peer] AllowedIPs line. Networks the client routes THROUGH the tunnel. Empty ⇒ falls back to the location's CIDR (split-tunnel)."
         >
           <CidrList
             ref={clientAllowedRef}

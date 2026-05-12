@@ -55,6 +55,15 @@ export function UserDetailPage({ userID, onBack }: Props) {
   } | null>(null);
   const [editPeer, setEditPeer] = useState<EditablePeer | null>(null);
   const [showCreate, setShowCreate] = useState(false);
+  // Per-peer version counter — bumped on edit save and used as the
+  // React key on PeerConfigModal so the operator never sees a
+  // stale .conf after editing. Mirrors the PeersPage pattern.
+  const [peerVersions, setPeerVersions] = useState<Record<string, number>>(
+    {},
+  );
+  function bumpVersion(id: string) {
+    setPeerVersions((prev) => ({ ...prev, [id]: (prev[id] ?? 0) + 1 }));
+  }
 
   function toEditable(p: Peer): EditablePeer {
     return {
@@ -290,6 +299,7 @@ export function UserDetailPage({ userID, onBack }: Props) {
 
       {configPeer && (
         <PeerConfigModal
+          key={`${configPeer.id}:${peerVersions[configPeer.id] ?? 0}`}
           peerId={configPeer.id}
           peerName={configPeer.name}
           onEdit={() => {
@@ -307,6 +317,7 @@ export function UserDetailPage({ userID, onBack }: Props) {
           peer={editPeer}
           onClose={() => setEditPeer(null)}
           onSaved={() => {
+            bumpVersion(editPeer.id);
             setEditPeer(null);
             qc.invalidateQueries({ queryKey: ["peers-by-owner", userID] });
           }}
