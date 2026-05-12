@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/cilium/ebpf"
+	"github.com/cilium/ebpf/asm"
 	"github.com/cilium/ebpf/btf"
 	"github.com/cilium/ebpf/features"
 )
@@ -16,63 +17,50 @@ import (
 // load-time error ("could not load program: invalid argument") is
 // accurate but hides which missing feature caused the failure.
 //
-// Probe returns the default, cheaply-obtained view. Callers MUST decide
-// themselves whether a missing feature is fatal: HasKernelBTF can be
-// absent on many production kernels (the compiled .o does not use
-// CO-RE relocations), while HasRingbuf is load-bearing because
-// log_events is BPF_MAP_TYPE_RINGBUF.
+// v2.1 — LPM trie is gone (the engine no longer uses LPM_TRIE maps).
+// bpf_loop replaces it as the load-bearing kernel feature: rules.c
+// invokes it per packet to iterate the active rule table.
 type Capabilities struct {
 	// HasKernelBTF reports whether the running kernel exposes BTF at
 	// /sys/kernel/btf/vmlinux. rules.c compiles without CO-RE so the
-	// program loads either way — the flag is informational, surfacing
-	// that the kernel was built without CONFIG_DEBUG_INFO_BTF=y.
+	// program loads either way — the flag is informational.
 	HasKernelBTF bool
 
 	// HasRingbuf reports whether BPF_MAP_TYPE_RINGBUF is supported
 	// (kernel 5.8+). log_events is a ringbuf, so a false here means
-	// NewRulesLoader will fail; Probe surfaces the gap earlier and
-	// with a clearer name than the verifier error.
+	// NewRulesLoader will fail.
 	HasRingbuf bool
-
-	// HasLPMTrie reports whether BPF_MAP_TYPE_LPM_TRIE is supported
-	// (kernel 4.11+). The four rule_src/dst_v4/v6 maps are LPM tries,
-	// so this too is load-bearing.
-	HasLPMTrie bool
 
 	// HasPerCPUHash reports whether BPF_MAP_TYPE_PERCPU_HASH is
 	// supported (kernel 4.6+). Required for rate_state_v4/v6.
 	HasPerCPUHash bool
 
+	// HasBPFLoop reports whether the bpf_loop helper is available
+	// (kernel 5.17+). v2.1 rules.c calls bpf_loop on every packet to
+	// iterate the active rule table; without it the program won't
+	// load. This is the load-bearing capability that v2.0 didn't need.
+	HasBPFLoop bool
+
 	// ProbeErrs collects errors that were neither "supported" nor
 	// "not supported" — typically EPERM when the process lacks CAP_BPF
-	// or CAP_SYS_ADMIN. Treat these as diagnostic hints: the real
-	// load will fail with the same root cause.
+	// or CAP_SYS_ADMIN.
 	ProbeErrs []error
 }
 
 // Probe tests the running kernel for every feature the loader
-// exercises. Safe to call multiple times — cilium/ebpf caches probe
-// results internally after the first call.
+// exercises.
 func Probe() Capabilities {
 	var c Capabilities
 	c.HasKernelBTF, c.ProbeErrs = runProbe("btf", btfProbe, c.ProbeErrs)
 	c.HasRingbuf, c.ProbeErrs = runProbe("ringbuf", mapProbe(ebpf.RingBuf), c.ProbeErrs)
-	c.HasLPMTrie, c.ProbeErrs = runProbe("lpm_trie", mapProbe(ebpf.LPMTrie), c.ProbeErrs)
 	c.HasPerCPUHash, c.ProbeErrs = runProbe("percpu_hash", mapProbe(ebpf.PerCPUHash), c.ProbeErrs)
+	c.HasBPFLoop, c.ProbeErrs = runProbe("bpf_loop", bpfLoopProbe, c.ProbeErrs)
 	return c
 }
 
 // MissingRequired returns a descriptive error listing every feature
 // whose absence prevents the loader from starting, or nil when every
-// required feature is present. HasKernelBTF is NOT treated as required
-// because the compiled program has no CO-RE relocations.
-//
-// Typical caller:
-//
-//	caps := userspace.Probe()
-//	if err := caps.MissingRequired(); err != nil {
-//	    return fmt.Errorf("ebpf kernel check: %w", err)
-//	}
+// required feature is present.
 func (c Capabilities) MissingRequired() error {
 	missing := c.missingList()
 	if len(missing) == 0 {
@@ -82,8 +70,7 @@ func (c Capabilities) MissingRequired() error {
 }
 
 // MissingFeatures returns the names of load-blocking features that
-// Probe found unavailable. The list is stable — callers can match
-// specific strings in alerting rules or tests.
+// Probe found unavailable.
 func (c Capabilities) MissingFeatures() []string {
 	return c.missingList()
 }
@@ -93,24 +80,22 @@ func (c Capabilities) missingList() []string {
 	if !c.HasRingbuf {
 		missing = append(missing, "BPF_MAP_TYPE_RINGBUF (kernel 5.8+)")
 	}
-	if !c.HasLPMTrie {
-		missing = append(missing, "BPF_MAP_TYPE_LPM_TRIE (kernel 4.11+)")
-	}
 	if !c.HasPerCPUHash {
 		missing = append(missing, "BPF_MAP_TYPE_PERCPU_HASH (kernel 4.6+)")
+	}
+	if !c.HasBPFLoop {
+		missing = append(missing, "bpf_loop helper (kernel 5.17+)")
 	}
 	return missing
 }
 
-// Summary returns a single-line human-readable string suitable for
-// startup logging. Includes both present and missing features so
-// operators can see the full state at a glance.
+// Summary returns a single-line human-readable string for startup logs.
 func (c Capabilities) Summary() string {
 	parts := []string{
 		feat("kernel_btf", c.HasKernelBTF),
 		feat("ringbuf", c.HasRingbuf),
-		feat("lpm_trie", c.HasLPMTrie),
 		feat("percpu_hash", c.HasPerCPUHash),
+		feat("bpf_loop", c.HasBPFLoop),
 	}
 	return strings.Join(parts, " ")
 }
@@ -123,12 +108,9 @@ func feat(name string, ok bool) string {
 }
 
 // runProbe invokes one feature probe and classifies the result:
-//   - nil        → supported (returns true)
+//   - nil          → supported (returns true)
 //   - NotSupported → unsupported (returns false, no diag)
-//   - other      → supported=false AND collected as diagnostic
-//
-// The three-way classification matters: EPERM or a broken /sys mount
-// should not silently look the same as "kernel too old".
+//   - other        → supported=false AND collected as diagnostic
 func runProbe(name string, fn func() error, diags []error) (bool, []error) {
 	err := fn()
 	if err == nil {
@@ -144,10 +126,14 @@ func mapProbe(mt ebpf.MapType) func() error {
 	return func() error { return features.HaveMapType(mt) }
 }
 
-// btfProbe wraps btf.LoadKernelSpec so tests can substitute it. The
-// function is reassignable within the package; production callers
-// should not touch it.
+// btfProbe wraps btf.LoadKernelSpec so tests can substitute it.
 var btfProbe = func() error {
 	_, err := btf.LoadKernelSpec()
 	return err
+}
+
+// bpfLoopProbe checks for BPF_FUNC_loop by attempting a HaveProgramHelper
+// probe with a tracepoint program. Reassignable for tests.
+var bpfLoopProbe = func() error {
+	return features.HaveProgramHelper(ebpf.SocketFilter, asm.FnLoop)
 }

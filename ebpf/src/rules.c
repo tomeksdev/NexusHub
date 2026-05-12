@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: GPL-2.0
- * rules.c — full-gate rule enforcement, two programs sharing one map set.
+ * rules.c — v2.1 rule enforcement, two programs sharing one map set.
  *
  *   SEC("xdp") xdp_rules          → attached to eth0 (pre-tunnel, WAN).
  *                                    Sees Ethernet-framed packets.
@@ -8,42 +8,38 @@
  *                                    L3 device (ARPHRD_NONE); skb->data
  *                                    already points at the iphdr.
  *
- * Both programs feed the same decide_v4/decide_v6 pipeline:
- *   1. LPM lookup on src address in rule_src_v4/v6 → rule_id
- *   2. Hash lookup on rule_id in rule_meta → action + filters
- *   3. Protocol check
- *   4. TCP/UDP src+dst port range check (0/0 = wildcard)
- *   5. Dispatch on action:
- *        DENY        → drop
- *        RATE_LIMIT  → per-(rule, src) token bucket (IPv4); drop when empty
- *        LOG         → emit log_event to ring buffer, then pass
- *        ALLOW       → pass
+ * v2.1 — per-packet iteration. The v2.0 LPM-by-source design held one
+ * rule per src_cidr in a trie, so two rules sharing a source silently
+ * overwrote each other. v2.1 stores every active rule in a packed
+ * BPF_MAP_TYPE_ARRAY (rule_table_v4 / rule_table_v6) keyed by slot
+ * index and walks the whole list per packet via bpf_loop. The first
+ * full match (priority-sorted on the userspace side) wins.
+ *
+ * Both XDP and TC programs feed the same decide_v4/decide_v6 path:
+ *   1. Build a match_ctx with packet fields (addrs, protocol, ports,
+ *      direction, byte count).
+ *   2. bpf_loop(count, evaluate_rule_v[46], &ctx, 0). The callback
+ *      reads one record from rule_table_v[46], does inline CIDR +
+ *      protocol + port matching, and on a full match stamps ctx
+ *      with the verdict and returns 1 (stop). Returning 0 continues.
+ *   3. Dispatch the action stored in ctx.verdict.
  *
  * Verdicts flow as XDP codes throughout; the TC wrapper translates
- * XDP_DROP → TC_ACT_SHOT and everything else → TC_ACT_OK at the top.
- * Keeping the internal verdict representation uniform means decide_*
- * and rate_check_v4 need no per-hook branching.
+ * XDP_DROP → TC_ACT_SHOT at the top of tc_rules_wg0. Keeping the
+ * internal verdict representation uniform means decide_* and
+ * rate_check_* need no per-hook branching.
  *
- * Map layout matches ADR 0004. Rate-limit state is split per family
- * (rate_state_v4 + rate_state_v6) because PERCPU_HASH keys are
- * fixed-size and we don't want to waste 12 bytes per v4 bucket just
- * to share a map with v6.
- *
- * IPv4 and IPv6 live in separate LPM maps because trie keys must be
- * fixed-size. A single packet checks the family that matches its
- * ethtype/skb->protocol and returns.
- *
- * Round 6: rule_dst_* IS now consulted when meta->has_dst is set. The
- * src LPM remains the entry point (the only way into the rule), and a
- * dst LPM lookup gates the action. A rule with both src+dst CIDRs only
- * matches when both LPM hits return the same rule_id; this fixes the
- * pre-round-6 bug where dst-bearing rules silently degraded to src-only
- * (DENY src=X dst=Y was enforced as DENY src=X dst=any).
+ * IPv4 and IPv6 live in separate rule tables because record sizes
+ * differ (44 B vs 68 B). A single packet checks the family that
+ * matches its ethtype/skb->protocol and returns.
  *
  * IPv6 extension headers are NOT walked: nexthdr is assumed to be the
  * L4 protocol directly. Rules that need to match through HBH/Routing/
  * Fragment headers will miss in the meantime — documented limitation,
  * worth revisiting once we have production traffic samples.
+ *
+ * Min kernel: 5.17 for bpf_loop, 5.8 for ringbuf. The capabilities
+ * probe surfaces both before the loader tries to install.
  */
 
 #include <linux/bpf.h>
@@ -58,49 +54,38 @@
 
 char LICENSE[] SEC("license") = "GPL";
 
-/* HASH rule_id → struct rule_meta. One entry per active rule row. */
+/* rule_table_v4 — packed array of active IPv4 rules, slot 0..count-1.
+ * Slots >= rule_count_v4[0] are unused (is_active=0, but the loop never
+ * reaches them anyway). Userspace owns priority ordering. */
 struct {
-    __uint(type, BPF_MAP_TYPE_HASH);
+    __uint(type, BPF_MAP_TYPE_ARRAY);
     __type(key, __u32);
-    __type(value, struct rule_meta);
-    __uint(max_entries, MAX_RULES);
-} rule_meta SEC(".maps");
+    __type(value, struct rule_v4_record);
+    __uint(max_entries, MAX_ACTIVE_RULES_V4);
+} rule_table_v4 SEC(".maps");
 
-/* LPM_TRIE src_cidr → rule_id. One map per address family. */
+/* rule_count_v4 — single-slot u32 holding the number of populated
+ * slots in rule_table_v4. bpf_loop's iteration count comes from here. */
 struct {
-    __uint(type, BPF_MAP_TYPE_LPM_TRIE);
-    __type(key, struct lpm_v4_key);
+    __uint(type, BPF_MAP_TYPE_ARRAY);
+    __type(key, __u32);
     __type(value, __u32);
-    __uint(max_entries, MAX_LPM_V4);
-    __uint(map_flags, BPF_F_NO_PREALLOC);
-} rule_src_v4 SEC(".maps");
-
-struct {
-    __uint(type, BPF_MAP_TYPE_LPM_TRIE);
-    __type(key, struct lpm_v6_key);
-    __type(value, __u32);
-    __uint(max_entries, MAX_LPM_V6);
-    __uint(map_flags, BPF_F_NO_PREALLOC);
-} rule_src_v6 SEC(".maps");
-
-/* Dst maps are declared so the userspace loader can write to them and
- * the program can be extended in place once dst-based matching lands.
- * They're unused by the current decide_* path. */
-struct {
-    __uint(type, BPF_MAP_TYPE_LPM_TRIE);
-    __type(key, struct lpm_v4_key);
-    __type(value, __u32);
-    __uint(max_entries, MAX_LPM_V4);
-    __uint(map_flags, BPF_F_NO_PREALLOC);
-} rule_dst_v4 SEC(".maps");
+    __uint(max_entries, 1);
+} rule_count_v4 SEC(".maps");
 
 struct {
-    __uint(type, BPF_MAP_TYPE_LPM_TRIE);
-    __type(key, struct lpm_v6_key);
+    __uint(type, BPF_MAP_TYPE_ARRAY);
+    __type(key, __u32);
+    __type(value, struct rule_v6_record);
+    __uint(max_entries, MAX_ACTIVE_RULES_V6);
+} rule_table_v6 SEC(".maps");
+
+struct {
+    __uint(type, BPF_MAP_TYPE_ARRAY);
+    __type(key, __u32);
     __type(value, __u32);
-    __uint(max_entries, MAX_LPM_V6);
-    __uint(map_flags, BPF_F_NO_PREALLOC);
-} rule_dst_v6 SEC(".maps");
+    __uint(max_entries, 1);
+} rule_count_v6 SEC(".maps");
 
 /* PERCPU_HASH (rule_id, src_addr) → rate_tokens. Per-CPU to avoid
  * the global spinlock cost; the small overshoot from racing CPUs is
@@ -112,9 +97,6 @@ struct {
     __uint(max_entries, MAX_RATE_STATE);
 } rate_state_v4 SEC(".maps");
 
-/* v6 rate state. Same semantics as v4 with a wider key. We size both
- * maps to MAX_RATE_STATE independently — a deploy that rate-limits
- * mostly v4 traffic doesn't waste headroom on the v6 map. */
 struct {
     __uint(type, BPF_MAP_TYPE_PERCPU_HASH);
     __type(key, struct rate_key_v6);
@@ -125,8 +107,8 @@ struct {
 /* PERCPU_HASH rule_id → struct rule_hits. Lossless counter ticked
  * on every matched rule regardless of action — the ringbuf can drop
  * under load and only fires for ACTION_LOG, whereas this map
- * captures ALLOW/DENY/RATE_LIMIT matches too. Operators read it via
- * bpf map dump or the userspace loader's PeekRuleHits. */
+ * captures ALLOW/DENY/RATE_LIMIT matches too. Keyed by the
+ * userspace-assigned rule_id stored in each record. */
 struct {
     __uint(type, BPF_MAP_TYPE_PERCPU_HASH);
     __type(key, __u32);
@@ -135,11 +117,8 @@ struct {
 } rule_hits SEC(".maps");
 
 /* RINGBUF for ACTION_LOG telemetry. Userspace drains it into
- * connection_logs. Size is a power of two per ringbuf ABI; 1 MiB gives
- * ~18k events (56 B each) of headroom before drop, which covers a
- * consumer stall of tens of milliseconds at realistic log-rule rates.
- * The kernel-side drop on full is acceptable: logging is best-effort
- * and we'd rather lose events than stall the datapath. */
+ * connection_logs. 1 MiB gives ~18k events of headroom; the kernel-side
+ * drop on full is acceptable — logging is best-effort. */
 struct {
     __uint(type, BPF_MAP_TYPE_RINGBUF);
     __uint(max_entries, LOG_RINGBUF_SIZE);
@@ -147,11 +126,7 @@ struct {
 
 /* count_hit ticks the per-rule counter. Called once per matched
  * rule, before action dispatch, so every match is recorded even
- * when the action subsequently drops the packet. First touch
- * creates the entry with {1, bytes}; subsequent touches accumulate.
- * Failure to update (map full at MAX_RULES) is silently ignored —
- * the counter is operational telemetry, not a policy input, and
- * losing counts beats stalling the datapath. */
+ * when the action subsequently drops the packet. */
 static __always_inline void
 count_hit(__u32 rule_id, __u32 bytes)
 {
@@ -179,56 +154,102 @@ protocol_matches(__u8 want, __u8 got)
     return 0;
 }
 
-/* emit_log reserves a ringbuf slot and fills a log_event from the match
- * context. ports/bytes are in host order; src/dst are raw on-wire bytes
- * (network order for IPv4 in the first 4 bytes, zero-padded). Best
- * effort — if the ringbuf is full or reserve fails we silently drop the
- * event rather than stalling the datapath. */
-static __always_inline void
-emit_log(__u32 rule_id, struct rule_meta *meta, __u8 family, __u8 direction,
-         __u32 bytes, __u8 l4_proto, __u16 sport_net, __u16 dport_net,
-         const void *src_addr, const void *dst_addr, __u32 addr_len)
+/* v4_in_cidr — does addr (4 on-wire bytes) fall under cidr/prefix_len?
+ * Both inputs are network byte order. The function compares full bytes
+ * up to (prefix_len / 8), then masks the remaining bits in the next
+ * byte. Bounds are constant so the verifier accepts the indexed
+ * accesses without complaint. */
+static __always_inline int
+v4_in_cidr(const __u8 addr[4], const __u8 cidr[4], __u8 prefix_len)
 {
-    struct log_event *ev = bpf_ringbuf_reserve(&log_events, sizeof(*ev), 0);
-    if (!ev)
-        return;
+    if (prefix_len == 0)
+        return 1;
+    if (prefix_len > 32)
+        prefix_len = 32;
 
-    ev->ts_ns     = bpf_ktime_get_ns();
-    ev->rule_id   = rule_id;
-    ev->src_port  = bpf_ntohs(sport_net);
-    ev->dst_port  = bpf_ntohs(dport_net);
-    ev->bytes     = bytes;
-    ev->action    = meta->action;
-    ev->protocol  = l4_proto;
-    ev->family    = family;
-    ev->direction = direction;
+    __u8 full_bytes = prefix_len >> 3;
+    __u8 partial_bits = prefix_len & 7;
 
-    /* Zero both address slots first so the unused tail of an IPv4 event
-     * doesn't leak stack garbage to userspace. */
-    __builtin_memset(ev->src_addr, 0, sizeof(ev->src_addr));
-    __builtin_memset(ev->dst_addr, 0, sizeof(ev->dst_addr));
-    if (addr_len == 4) {
-        __builtin_memcpy(ev->src_addr, src_addr, 4);
-        __builtin_memcpy(ev->dst_addr, dst_addr, 4);
-    } else if (addr_len == 16) {
-        __builtin_memcpy(ev->src_addr, src_addr, 16);
-        __builtin_memcpy(ev->dst_addr, dst_addr, 16);
+    if (full_bytes >= 1 && addr[0] != cidr[0]) return 0;
+    if (full_bytes >= 2 && addr[1] != cidr[1]) return 0;
+    if (full_bytes >= 3 && addr[2] != cidr[2]) return 0;
+    if (full_bytes >= 4) return 1; /* exact /32 */
+
+    if (partial_bits == 0)
+        return 1;
+    __u8 idx = full_bytes & 3;
+    __u8 mask = (__u8)(0xFFu << (8 - partial_bits));
+    return (addr[idx] & mask) == (cidr[idx] & mask);
+}
+
+/* v6_in_cidr — same idea over 16 bytes. We aggregate the per-byte
+ * diff into a single `mismatch` accumulator instead of returning
+ * early; this makes the loop body branch-free, which lets clang
+ * fully unroll it under -O2 and keeps the verifier happy with 16
+ * straight-line bytewise compares. */
+static __always_inline int
+v6_in_cidr(const __u8 addr[16], const __u8 cidr[16], __u16 prefix_len)
+{
+    if (prefix_len == 0)
+        return 1;
+    if (prefix_len > 128)
+        prefix_len = 128;
+
+    __u8 full_bytes = prefix_len >> 3;
+    __u8 partial_bits = prefix_len & 7;
+    __u8 mismatch = 0;
+
+    #pragma unroll
+    for (int i = 0; i < 16; i++) {
+        __u8 mask_check = (i < full_bytes) ? 0xFFu : 0x00u;
+        mismatch |= (addr[i] ^ cidr[i]) & mask_check;
     }
+    if (mismatch)
+        return 0;
+    if (full_bytes >= 16)
+        return 1;
+    if (partial_bits == 0)
+        return 1;
+    __u8 idx = full_bytes & 0xF;
+    __u8 mask = (__u8)(0xFFu << (8 - partial_bits));
+    return (addr[idx] & mask) == (cidr[idx] & mask);
+}
 
-    bpf_ringbuf_submit(ev, 0);
+/* port_matches returns 1 if the observed port falls inside [from, to]
+ * or if both bounds are 0 (wildcard). Ports on the wire are network
+ * order; rule records store them in host order. */
+static __always_inline int
+port_matches(__u16 port_net, __u16 from_host, __u16 to_host)
+{
+    if (from_host == 0 && to_host == 0)
+        return 1;
+    __u16 port_host = bpf_ntohs(port_net);
+    return port_host >= from_host && port_host <= to_host;
+}
+
+/* read_l4_ports pulls src/dst ports from TCP or UDP headers. Returns 1
+ * on success and fills the sport and dport pointers (network order).
+ * Returns 0 if there's no usable L4 header — caller treats sport=
+ * dport=0, which means port-restricted rules won't match (correct)
+ * but wildcard rules still match (also correct). */
+static __always_inline int
+read_l4_ports(void *l4, void *data_end, __u8 proto, __u16 *sport, __u16 *dport)
+{
+    if (proto != IPPROTO_TCP && proto != IPPROTO_UDP)
+        return 0;
+    if (l4 + 4 > data_end)
+        return 0;
+    __u16 *ports = l4;
+    *sport = ports[0];
+    *dport = ports[1];
+    return 1;
 }
 
 /* token_bucket_step runs the shared refill + consume math on an
- * already-looked-up bucket. Split out from rate_check_* so v4 and v6
- * share the arithmetic; the map-specific lookup/update stays inlined
- * in each caller to keep the verifier's pointer-provenance check
- * happy. */
+ * already-looked-up bucket. */
 static __always_inline int
 token_bucket_step(struct rate_tokens *t, __u32 pps, __u64 cap_x1000, __u64 now)
 {
-    /* Refill. Cap elapsed at 1s before multiplying so (pps × elapsed)
-     * stays under u64 range even at pathological pps values. An older
-     * bucket would hit cap_x1000 anyway after the clamp below. */
     __u64 elapsed = now - t->last_seen_ns;
     if (elapsed > 1000000000ULL)
         elapsed = 1000000000ULL;
@@ -241,8 +262,6 @@ token_bucket_step(struct rate_tokens *t, __u32 pps, __u64 cap_x1000, __u64 now)
     t->last_seen_ns = now;
 
     if (new_tokens < 1000) {
-        /* Not enough tokens to pass a whole packet — drop and keep the
-         * (possibly slightly refilled) balance for next time. */
         t->tokens_x1000 = new_tokens;
         return XDP_DROP;
     }
@@ -251,27 +270,20 @@ token_bucket_step(struct rate_tokens *t, __u32 pps, __u64 cap_x1000, __u64 now)
 }
 
 /* rate_check_v4 implements a token-bucket per (rule_id, src_addr).
- * Capacity = rate_burst tokens (or rate_pps if burst is unset);
- * refill rate = rate_pps tokens per second. A packet consumes 1
- * token; when the bucket is empty the packet is dropped.
- *
- * tokens_x1000 is scaled ×1000 so refill keeps sub-packet precision
- * across short inter-arrival times. One packet = 1000 units consumed.
- *
- * Fail-open on bucket allocation failure (map is full): the DoS risk
- * of letting a single flow through beats silently dropping legitimate
- * traffic when the operator didn't size the map right. */
+ * src_addr_bytes is on-wire (network order). pps/burst come from the
+ * matched rule record. Fail-open on map-full. */
 static __always_inline int
-rate_check_v4(__u32 rule_id, __u32 src_addr, struct rule_meta *meta)
+rate_check_v4(__u32 rule_id, const __u8 src_addr_bytes[4],
+              __u32 pps, __u32 burst)
 {
-    __u32 pps = meta->rate_pps;
     if (pps == 0)
-        return XDP_PASS; /* malformed rule — no throttle configured */
+        return XDP_PASS;
 
-    __u32 burst = meta->rate_burst ? meta->rate_burst : pps;
-    __u64 cap_x1000 = (__u64)burst * 1000ULL;
+    __u32 cap = burst ? burst : pps;
+    __u64 cap_x1000 = (__u64)cap * 1000ULL;
 
-    struct rate_key_v4 k = { .rule_id = rule_id, .addr = src_addr };
+    struct rate_key_v4 k = { .rule_id = rule_id };
+    __builtin_memcpy(&k.addr, src_addr_bytes, 4);
     __u64 now = bpf_ktime_get_ns();
 
     struct rate_tokens *t = bpf_map_lookup_elem(&rate_state_v4, &k);
@@ -281,7 +293,7 @@ rate_check_v4(__u32 rule_id, __u32 src_addr, struct rule_meta *meta)
             .last_seen_ns = now,
         };
         if (bpf_map_update_elem(&rate_state_v4, &k, &fresh, BPF_ANY) != 0)
-            return XDP_PASS; /* map full: fail open */
+            return XDP_PASS;
         t = bpf_map_lookup_elem(&rate_state_v4, &k);
         if (!t)
             return XDP_PASS;
@@ -289,18 +301,15 @@ rate_check_v4(__u32 rule_id, __u32 src_addr, struct rule_meta *meta)
     return token_bucket_step(t, pps, cap_x1000, now);
 }
 
-/* rate_check_v6 mirrors rate_check_v4 against rate_state_v6. The key
- * is wider (16-byte address) but the map contract and fail-open
- * semantics on map-full are identical. */
 static __always_inline int
-rate_check_v6(__u32 rule_id, const __u8 src_addr[16], struct rule_meta *meta)
+rate_check_v6(__u32 rule_id, const __u8 src_addr[16],
+              __u32 pps, __u32 burst)
 {
-    __u32 pps = meta->rate_pps;
     if (pps == 0)
         return XDP_PASS;
 
-    __u32 burst = meta->rate_burst ? meta->rate_burst : pps;
-    __u64 cap_x1000 = (__u64)burst * 1000ULL;
+    __u32 cap = burst ? burst : pps;
+    __u64 cap_x1000 = (__u64)cap * 1000ULL;
 
     struct rate_key_v6 k = { .rule_id = rule_id };
     __builtin_memcpy(k.addr, src_addr, 16);
@@ -321,92 +330,192 @@ rate_check_v6(__u32 rule_id, const __u8 src_addr[16], struct rule_meta *meta)
     return token_bucket_step(t, pps, cap_x1000, now);
 }
 
-/* port_matches returns 1 if the observed port falls inside [from, to]
- * or if both bounds are 0 (wildcard). Ports on the wire are network
- * order; rule_meta stores them in host order. */
-static __always_inline int
-port_matches(__u16 port_net, __u16 from_host, __u16 to_host)
+/* emit_log reserves a ringbuf slot and fills a log_event from the match.
+ * Best effort — if the ringbuf is full or reserve fails we silently
+ * drop the event rather than stalling the datapath. */
+static __always_inline void
+emit_log(__u32 rule_id, __u8 action, __u8 family, __u8 direction,
+         __u32 bytes, __u8 l4_proto, __u16 sport_net, __u16 dport_net,
+         const void *src_addr, const void *dst_addr, __u32 addr_len)
 {
-    if (from_host == 0 && to_host == 0)
-        return 1;
-    __u16 port_host = bpf_ntohs(port_net);
-    return port_host >= from_host && port_host <= to_host;
+    struct log_event *ev = bpf_ringbuf_reserve(&log_events, sizeof(*ev), 0);
+    if (!ev)
+        return;
+
+    ev->ts_ns     = bpf_ktime_get_ns();
+    ev->rule_id   = rule_id;
+    ev->src_port  = bpf_ntohs(sport_net);
+    ev->dst_port  = bpf_ntohs(dport_net);
+    ev->bytes     = bytes;
+    ev->action    = action;
+    ev->protocol  = l4_proto;
+    ev->family    = family;
+    ev->direction = direction;
+
+    __builtin_memset(ev->src_addr, 0, sizeof(ev->src_addr));
+    __builtin_memset(ev->dst_addr, 0, sizeof(ev->dst_addr));
+    if (addr_len == 4) {
+        __builtin_memcpy(ev->src_addr, src_addr, 4);
+        __builtin_memcpy(ev->dst_addr, dst_addr, 4);
+    } else if (addr_len == 16) {
+        __builtin_memcpy(ev->src_addr, src_addr, 16);
+        __builtin_memcpy(ev->dst_addr, dst_addr, 16);
+    }
+
+    bpf_ringbuf_submit(ev, 0);
 }
 
-static __always_inline int
-ports_match(struct rule_meta *meta, __u16 sport_net, __u16 dport_net)
+/* match_ctx_v4 / _v6 — bpf_loop callback state. The verifier inspects
+ * the callback once and proves it terminates within nr_loops; the ctx
+ * pointer it carries between iterations must outlive the call (we
+ * stack-allocate it in decide_*). All packet bytes the callback needs
+ * are copied into the ctx up front so the verifier doesn't have to
+ * track packet-pointer provenance across the loop boundary. */
+struct match_ctx_v4 {
+    __u8  src_addr[4];
+    __u8  dst_addr[4];
+    __u8  protocol;
+    __u8  direction;
+    __u8  _pad[2];
+    __u16 sport_net;
+    __u16 dport_net;
+    __u32 bytes;
+    int   verdict;
+    __u8  matched;
+    __u8  _pad2[3];
+};
+
+struct match_ctx_v6 {
+    __u8  src_addr[16];
+    __u8  dst_addr[16];
+    __u8  protocol;
+    __u8  direction;
+    __u8  _pad[2];
+    __u16 sport_net;
+    __u16 dport_net;
+    __u32 bytes;
+    int   verdict;
+    __u8  matched;
+    __u8  _pad2[3];
+};
+
+/* evaluate_rule_v4 — bpf_loop callback. Returns 1 to stop the loop
+ * (first match wins, priority-sorted by userspace), 0 to continue.
+ * The signature is the kernel ABI for bpf_loop callbacks: (idx, ctx). */
+static long
+evaluate_rule_v4(__u32 idx, void *_ctx)
 {
-    if (!port_matches(sport_net, meta->src_port_from, meta->src_port_to))
+    struct match_ctx_v4 *ctx = _ctx;
+    __u32 key = idx;
+    struct rule_v4_record *r = bpf_map_lookup_elem(&rule_table_v4, &key);
+    if (!r)
+        return 1; /* impossible for an ARRAY map; treat as terminate */
+    if (!r->is_active)
         return 0;
-    if (!port_matches(dport_net, meta->dst_port_from, meta->dst_port_to))
+
+    /* Direction. Today both hooks pass direction=0 (ingress); a rule
+     * created with direction=egress is a no-op until the egress hook
+     * lands. DIR_BOTH matches every hook. */
+    if (r->direction != DIR_BOTH && r->direction != ctx->direction)
         return 0;
+
+    if (r->has_protocol && !protocol_matches(r->protocol, ctx->protocol))
+        return 0;
+    if (!r->has_protocol && r->protocol != PROTO_ANY &&
+        !protocol_matches(r->protocol, ctx->protocol))
+        return 0;
+
+    if (r->has_src && !v4_in_cidr(ctx->src_addr, r->src_addr, r->src_prefix_len))
+        return 0;
+    if (r->has_dst && !v4_in_cidr(ctx->dst_addr, r->dst_addr, r->dst_prefix_len))
+        return 0;
+
+    if (!port_matches(ctx->sport_net, r->src_port_from, r->src_port_to))
+        return 0;
+    if (!port_matches(ctx->dport_net, r->dst_port_from, r->dst_port_to))
+        return 0;
+
+    /* Full match — tick the counter, dispatch the action, stop. */
+    count_hit(r->rule_id, ctx->bytes);
+    ctx->matched = 1;
+
+    if (r->action == ACTION_RATE_LIMIT) {
+        ctx->verdict = rate_check_v4(r->rule_id, ctx->src_addr,
+                                     r->rate_pps, r->rate_burst);
+        return 1;
+    }
+    if (r->action == ACTION_LOG) {
+        emit_log(r->rule_id, r->action, 2 /*AF_INET*/, ctx->direction,
+                 ctx->bytes, ctx->protocol, ctx->sport_net, ctx->dport_net,
+                 ctx->src_addr, ctx->dst_addr, 4);
+        ctx->verdict = XDP_PASS;
+        return 1;
+    }
+    if (r->action == ACTION_DENY) {
+        ctx->verdict = XDP_DROP;
+        return 1;
+    }
+    /* ACTION_ALLOW */
+    ctx->verdict = XDP_PASS;
     return 1;
 }
 
-/* read_l4_ports pulls src/dst ports from TCP or UDP headers. Returns 1
- * on success and fills the sport and dport pointers (network order). Returns 0 if
- * there's no usable L4 header — caller treats sport=dport=0, which
- * means port-restricted rules won't match (correct) but wildcard
- * rules still match (also correct).
- *
- * Both TCP and UDP lead with src(2) + dst(2); reading four bytes is
- * enough regardless. */
-static __always_inline int
-read_l4_ports(void *l4, void *data_end, __u8 proto, __u16 *sport, __u16 *dport)
+static long
+evaluate_rule_v6(__u32 idx, void *_ctx)
 {
-    if (proto != IPPROTO_TCP && proto != IPPROTO_UDP)
+    struct match_ctx_v6 *ctx = _ctx;
+    __u32 key = idx;
+    struct rule_v6_record *r = bpf_map_lookup_elem(&rule_table_v6, &key);
+    if (!r)
+        return 1;
+    if (!r->is_active)
         return 0;
-    if (l4 + 4 > data_end)
+
+    if (r->direction != DIR_BOTH && r->direction != ctx->direction)
         return 0;
-    __u16 *ports = l4;
-    *sport = ports[0];
-    *dport = ports[1];
+
+    if (r->has_protocol && !protocol_matches(r->protocol, ctx->protocol))
+        return 0;
+    if (!r->has_protocol && r->protocol != PROTO_ANY &&
+        !protocol_matches(r->protocol, ctx->protocol))
+        return 0;
+
+    if (r->has_src && !v6_in_cidr(ctx->src_addr, r->src_addr, r->src_prefix_len))
+        return 0;
+    if (r->has_dst && !v6_in_cidr(ctx->dst_addr, r->dst_addr, r->dst_prefix_len))
+        return 0;
+
+    if (!port_matches(ctx->sport_net, r->src_port_from, r->src_port_to))
+        return 0;
+    if (!port_matches(ctx->dport_net, r->dst_port_from, r->dst_port_to))
+        return 0;
+
+    count_hit(r->rule_id, ctx->bytes);
+    ctx->matched = 1;
+
+    if (r->action == ACTION_RATE_LIMIT) {
+        ctx->verdict = rate_check_v6(r->rule_id, ctx->src_addr,
+                                     r->rate_pps, r->rate_burst);
+        return 1;
+    }
+    if (r->action == ACTION_LOG) {
+        emit_log(r->rule_id, r->action, 10 /*AF_INET6*/, ctx->direction,
+                 ctx->bytes, ctx->protocol, ctx->sport_net, ctx->dport_net,
+                 ctx->src_addr, ctx->dst_addr, 16);
+        ctx->verdict = XDP_PASS;
+        return 1;
+    }
+    if (r->action == ACTION_DENY) {
+        ctx->verdict = XDP_DROP;
+        return 1;
+    }
+    ctx->verdict = XDP_PASS;
     return 1;
 }
 
 static __always_inline int
 decide_v4(struct iphdr *iph, void *data_end, __u8 direction, __u32 bytes)
 {
-    struct lpm_v4_key key = { .prefixlen = 32 };
-    __builtin_memcpy(key.addr, &iph->saddr, 4);
-
-    __u32 *rid = bpf_map_lookup_elem(&rule_src_v4, &key);
-    if (!rid)
-        return XDP_PASS;
-
-    struct rule_meta *meta = bpf_map_lookup_elem(&rule_meta, rid);
-    if (!meta || !meta->is_active)
-        return XDP_PASS;
-
-    /* Honour the rule's configured direction. DIR_BOTH matches every
-     * hook; otherwise the rule's direction must equal the caller's.
-     * Both hook entry points currently pass direction=0 (INGRESS)
-     * because XDP is pre-routing ingress and our TC hook is clsact
-     * ingress — rules created with direction=egress are no-ops until
-     * an egress hook is added. */
-    if (meta->direction != DIR_BOTH && meta->direction != direction)
-        return XDP_PASS;
-
-    if (!protocol_matches(meta->protocol, iph->protocol))
-        return XDP_PASS;
-
-    /* Destination CIDR gating. has_dst=1 means the rule was created
-     * with a specific dst_cidr; we must verify the packet's dst falls
-     * inside that prefix. The dst LPM stores rule_id values keyed on
-     * the same rule_id this src lookup produced — so a hit whose
-     * value differs from *rid means "the dst matched a different
-     * rule's prefix" and this rule does not apply. */
-    if (meta->has_dst) {
-        struct lpm_v4_key dkey = { .prefixlen = 32 };
-        __builtin_memcpy(dkey.addr, &iph->daddr, 4);
-        __u32 *drid = bpf_map_lookup_elem(&rule_dst_v4, &dkey);
-        if (!drid || *drid != *rid)
-            return XDP_PASS;
-    }
-
-    /* ihl is a 4-bit bitfield; mask keeps the verifier happy and
-     * guards against compiler-level reinterpretation. Values <5 are
-     * malformed (header shorter than 20 bytes) — skip. */
     __u32 ihl = iph->ihl & 0xF;
     if (ihl < 5)
         return XDP_PASS;
@@ -414,82 +523,62 @@ decide_v4(struct iphdr *iph, void *data_end, __u8 direction, __u32 bytes)
 
     __u16 sport = 0, dport = 0;
     read_l4_ports(l4, data_end, iph->protocol, &sport, &dport);
-    if (!ports_match(meta, sport, dport))
+
+    __u32 zero = 0;
+    __u32 *count_ptr = bpf_map_lookup_elem(&rule_count_v4, &zero);
+    __u32 count = count_ptr ? *count_ptr : 0;
+    if (count > MAX_ACTIVE_RULES_V4)
+        count = MAX_ACTIVE_RULES_V4;
+    if (count == 0)
         return XDP_PASS;
 
-    count_hit(*rid, bytes);
+    struct match_ctx_v4 ctx = {
+        .protocol  = iph->protocol,
+        .direction = direction,
+        .sport_net = sport,
+        .dport_net = dport,
+        .bytes     = bytes,
+        .verdict   = XDP_PASS,
+        .matched   = 0,
+    };
+    __builtin_memcpy(ctx.src_addr, &iph->saddr, 4);
+    __builtin_memcpy(ctx.dst_addr, &iph->daddr, 4);
 
-    if (meta->action == ACTION_RATE_LIMIT)
-        return rate_check_v4(*rid, iph->saddr, meta);
-
-    if (meta->action == ACTION_LOG) {
-        emit_log(*rid, meta, 2 /*AF_INET*/, direction, bytes, iph->protocol,
-                 sport, dport, &iph->saddr, &iph->daddr, 4);
-        return XDP_PASS;
-    }
-
-    if (meta->action == ACTION_DENY)
-        return XDP_DROP;
-
-    return XDP_PASS;
+    bpf_loop(count, evaluate_rule_v4, &ctx, 0);
+    return ctx.verdict;
 }
 
 static __always_inline int
 decide_v6(struct ipv6hdr *ip6h, void *data_end, __u8 direction, __u32 bytes)
 {
-    struct lpm_v6_key key = { .prefixlen = 128 };
-    __builtin_memcpy(key.addr, &ip6h->saddr, 16);
-
-    __u32 *rid = bpf_map_lookup_elem(&rule_src_v6, &key);
-    if (!rid)
-        return XDP_PASS;
-
-    struct rule_meta *meta = bpf_map_lookup_elem(&rule_meta, rid);
-    if (!meta || !meta->is_active)
-        return XDP_PASS;
-
-    /* Honour the rule's configured direction — same rationale as the
-     * v4 path above. */
-    if (meta->direction != DIR_BOTH && meta->direction != direction)
-        return XDP_PASS;
-
-    if (!protocol_matches(meta->protocol, ip6h->nexthdr))
-        return XDP_PASS;
-
-    /* Destination CIDR gating — same logic as v4. has_dst=1 forces a
-     * dst LPM lookup; the matched rule_id must equal the src-side
-     * one, otherwise this rule does not apply to the packet. */
-    if (meta->has_dst) {
-        struct lpm_v6_key dkey = { .prefixlen = 128 };
-        __builtin_memcpy(dkey.addr, &ip6h->daddr, 16);
-        __u32 *drid = bpf_map_lookup_elem(&rule_dst_v6, &dkey);
-        if (!drid || *drid != *rid)
-            return XDP_PASS;
-    }
-
     /* No extension-header walk — nexthdr must be the L4 protocol. */
     void *l4 = (void *)(ip6h + 1);
 
     __u16 sport = 0, dport = 0;
     read_l4_ports(l4, data_end, ip6h->nexthdr, &sport, &dport);
-    if (!ports_match(meta, sport, dport))
+
+    __u32 zero = 0;
+    __u32 *count_ptr = bpf_map_lookup_elem(&rule_count_v6, &zero);
+    __u32 count = count_ptr ? *count_ptr : 0;
+    if (count > MAX_ACTIVE_RULES_V6)
+        count = MAX_ACTIVE_RULES_V6;
+    if (count == 0)
         return XDP_PASS;
 
-    count_hit(*rid, bytes);
+    struct match_ctx_v6 ctx = {
+        .protocol  = ip6h->nexthdr,
+        .direction = direction,
+        .sport_net = sport,
+        .dport_net = dport,
+        .bytes     = bytes,
+        .verdict   = XDP_PASS,
+        .matched   = 0,
+    };
+    __builtin_memcpy(ctx.src_addr, &ip6h->saddr, 16);
+    __builtin_memcpy(ctx.dst_addr, &ip6h->daddr, 16);
 
-    if (meta->action == ACTION_RATE_LIMIT)
-        return rate_check_v6(*rid, (const __u8 *)&ip6h->saddr, meta);
-
-    if (meta->action == ACTION_LOG) {
-        emit_log(*rid, meta, 10 /*AF_INET6*/, direction, bytes, ip6h->nexthdr,
-                 sport, dport, &ip6h->saddr, &ip6h->daddr, 16);
-        return XDP_PASS;
-    }
-
-    if (meta->action == ACTION_DENY)
-        return XDP_DROP;
-
-    return XDP_PASS;
+    bpf_loop(count, evaluate_rule_v6, &ctx, 0);
+    return ctx.verdict;
 }
 
 SEC("xdp")
@@ -502,8 +591,6 @@ int xdp_rules(struct xdp_md *ctx)
     if ((void *)(eth + 1) > data_end)
         return XDP_PASS;
 
-    /* Byte count is the full L2 frame size. Cast through long so the
-     * verifier sees a scalar subtraction rather than two packet ptrs. */
     __u32 bytes = (__u32)((long)data_end - (long)data);
 
     __u16 proto = bpf_ntohs(eth->h_proto);
@@ -525,39 +612,18 @@ int xdp_rules(struct xdp_md *ctx)
     return XDP_PASS;
 }
 
-/* xdp_to_tc maps our internal XDP verdicts onto TC action codes so the
- * shared decide_* helpers can stay hook-agnostic. XDP_DROP is the only
- * "stop" verdict decide_* ever emits; everything else means "let it
- * through". TC_ACT_OK tells the kernel to keep processing the packet
- * along the normal ingress path (policy routing, iptables, sockets). */
 static __always_inline int
 xdp_to_tc(int verdict)
 {
     return verdict == XDP_DROP ? TC_ACT_SHOT : TC_ACT_OK;
 }
 
-/* tc_rules_wg0 — TC clsact ingress program for the WireGuard tunnel.
- *
- * wg0 is registered as ARPHRD_NONE: the kernel delivers skbs with
- * skb->mac_len == 0 and skb->data already positioned at the L3 header.
- * There is no Ethernet frame to skip past.
- *
- * skb->protocol holds the L3 ethertype in network byte order, the same
- * value the WAN-side ethhdr would carry. bpf_ntohs it once and dispatch
- * identically to the XDP path.
- *
- * On any parse/bounds failure we fail open (TC_ACT_OK) — the WAN-side
- * XDP gate has already screened public-internet sources, and dropping
- * decrypted-but-unparseable inner traffic would blackhole peers. */
 SEC("tc")
 int tc_rules_wg0(struct __sk_buff *skb)
 {
     void *data     = (void *)(long)skb->data;
     void *data_end = (void *)(long)skb->data_end;
 
-    /* skb->len is the total L3 length the kernel sees; data_end-data may
-     * exclude non-linear skb fragments. Both are fine for log reporting;
-     * prefer skb->len so truncated telemetry matches traffic counters. */
     __u32 bytes = skb->len;
 
     __u16 proto = bpf_ntohs(skb->protocol);

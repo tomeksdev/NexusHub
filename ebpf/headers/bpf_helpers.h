@@ -69,6 +69,14 @@ static void (*bpf_ringbuf_submit)(void *data, __u64 flags) =
 static void (*bpf_ringbuf_discard)(void *data, __u64 flags) =
     (void *) BPF_FUNC_ringbuf_discard;
 
+/* bpf_loop (kernel 5.17+) — calls cb(index, ctx) up to nr_loops times,
+ * stopping early when cb returns non-zero. The verifier inspects cb
+ * once instead of unrolling, so we can iterate hundreds of rules
+ * without hitting the instruction-count ceiling. */
+static long (*bpf_loop)(__u32 nr_loops, void *callback_fn,
+                        void *callback_ctx, __u64 flags) =
+    (void *) BPF_FUNC_loop;
+
 /* Endian-swap builtins. On the BPF target, clang always emits the correct
  * code regardless of host endianness. */
 #define bpf_ntohs(x) __builtin_bswap16(x)

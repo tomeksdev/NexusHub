@@ -12,8 +12,8 @@ func TestCapabilitiesMissingRequiredEmptyWhenAllPresent(t *testing.T) {
 	c := Capabilities{
 		HasKernelBTF:  true,
 		HasRingbuf:    true,
-		HasLPMTrie:    true,
 		HasPerCPUHash: true,
+		HasBPFLoop:    true,
 	}
 	if err := c.MissingRequired(); err != nil {
 		t.Fatalf("expected nil, got %v", err)
@@ -24,13 +24,11 @@ func TestCapabilitiesMissingRequiredEmptyWhenAllPresent(t *testing.T) {
 }
 
 func TestCapabilitiesMissingRequiredOmitsBTF(t *testing.T) {
-	// Missing BTF must NOT be treated as load-blocking — rules.c
-	// compiles without CO-RE so the program loads fine either way.
 	c := Capabilities{
 		HasKernelBTF:  false,
 		HasRingbuf:    true,
-		HasLPMTrie:    true,
 		HasPerCPUHash: true,
+		HasBPFLoop:    true,
 	}
 	if err := c.MissingRequired(); err != nil {
 		t.Fatalf("BTF-less kernel should not be fatal, got %v", err)
@@ -45,17 +43,17 @@ func TestCapabilitiesMissingRequiredReportsEachGap(t *testing.T) {
 	}{
 		{
 			name:   "no ringbuf",
-			caps:   Capabilities{HasLPMTrie: true, HasPerCPUHash: true},
+			caps:   Capabilities{HasPerCPUHash: true, HasBPFLoop: true},
 			expect: "RINGBUF",
 		},
 		{
-			name:   "no lpm",
+			name:   "no bpf_loop",
 			caps:   Capabilities{HasRingbuf: true, HasPerCPUHash: true},
-			expect: "LPM_TRIE",
+			expect: "bpf_loop",
 		},
 		{
 			name:   "no percpu hash",
-			caps:   Capabilities{HasRingbuf: true, HasLPMTrie: true},
+			caps:   Capabilities{HasRingbuf: true, HasBPFLoop: true},
 			expect: "PERCPU_HASH",
 		},
 	}
@@ -78,7 +76,7 @@ func TestCapabilitiesMissingRequiredListsAllWhenNothingSupported(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error")
 	}
-	for _, want := range []string{"RINGBUF", "LPM_TRIE", "PERCPU_HASH"} {
+	for _, want := range []string{"RINGBUF", "PERCPU_HASH", "bpf_loop"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Fatalf("error %q missing %q", err.Error(), want)
 		}
@@ -86,9 +84,9 @@ func TestCapabilitiesMissingRequiredListsAllWhenNothingSupported(t *testing.T) {
 }
 
 func TestCapabilitiesSummary(t *testing.T) {
-	c := Capabilities{HasRingbuf: true, HasLPMTrie: true}
+	c := Capabilities{HasRingbuf: true, HasBPFLoop: true}
 	got := c.Summary()
-	want := []string{"kernel_btf=missing", "ringbuf=ok", "lpm_trie=ok", "percpu_hash=missing"}
+	want := []string{"kernel_btf=missing", "ringbuf=ok", "percpu_hash=missing", "bpf_loop=ok"}
 	for _, w := range want {
 		if !strings.Contains(got, w) {
 			t.Fatalf("summary %q missing %q", got, w)
@@ -97,8 +95,6 @@ func TestCapabilitiesSummary(t *testing.T) {
 }
 
 func TestRunProbeClassification(t *testing.T) {
-	// Verifies the three-way classifier: nil → ok (no diag);
-	// ErrNotSupported → missing (no diag); other → missing + diag.
 	probeErr := errors.New("kaboom")
 	cases := []struct {
 		name     string
@@ -124,8 +120,6 @@ func TestRunProbeClassification(t *testing.T) {
 	}
 }
 
-// wrapf keeps the test readable; fmt.Errorf("...%w", ...) is the
-// production call site this simulates.
 func wrapf(format string, args ...any) error {
 	return wrapped{format: format, args: args}
 }
@@ -154,9 +148,6 @@ func (w wrapped) Unwrap() error {
 }
 
 func TestProbeDoesNotPanic(t *testing.T) {
-	// Kernel-gated smoke test: on CI workers without BPF support,
-	// Probe should still return — populating ProbeErrs for EPERM is
-	// acceptable; it must not panic or deadlock.
 	c := Probe()
 	_ = c.Summary()
 	_ = c.MissingRequired()

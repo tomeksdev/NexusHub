@@ -1,7 +1,6 @@
 package userspace
 
 import (
-	"errors"
 	"net/netip"
 	"testing"
 
@@ -10,24 +9,43 @@ import (
 )
 
 // buildTestSpec returns a minimal CollectionSpec that mimics what
-// bpf2go emits for rules.c: one HASH + four LPM_TRIE + two PERCPU_HASH
-// maps, no programs. Key/value sizes must match
-// ebpf/headers/nexushub.h so Update/Delete/Lookup agree with the kernel.
+// bpf2go emits for rules.c after the v2.1 rewrite: two BPF_MAP_TYPE_ARRAY
+// rule tables, two BPF_MAP_TYPE_ARRAY single-slot counters, two
+// PERCPU_HASH rate-state maps, and one PERCPU_HASH counter. No
+// programs — kernel-attach is exercised against the real .o
+// elsewhere; this fixture is for loader unit tests.
 func buildTestSpec(t *testing.T) *ebpf.CollectionSpec {
 	t.Helper()
 	return &ebpf.CollectionSpec{
 		Maps: map[string]*ebpf.MapSpec{
-			mapRuleMeta: {
-				Name:       mapRuleMeta,
-				Type:       ebpf.Hash,
-				KeySize:    4, // u32 rule_id
-				ValueSize:  ruleMetaSize,
-				MaxEntries: 1024,
+			mapRuleTableV4: {
+				Name:       mapRuleTableV4,
+				Type:       ebpf.Array,
+				KeySize:    4,
+				ValueSize:  ruleV4RecordSize,
+				MaxEntries: MaxActiveRulesV4,
 			},
-			mapRuleSrcV4: lpmTrieSpec(mapRuleSrcV4, 8),
-			mapRuleSrcV6: lpmTrieSpec(mapRuleSrcV6, 20),
-			mapRuleDstV4: lpmTrieSpec(mapRuleDstV4, 8),
-			mapRuleDstV6: lpmTrieSpec(mapRuleDstV6, 20),
+			mapRuleCountV4: {
+				Name:       mapRuleCountV4,
+				Type:       ebpf.Array,
+				KeySize:    4,
+				ValueSize:  4,
+				MaxEntries: 1,
+			},
+			mapRuleTableV6: {
+				Name:       mapRuleTableV6,
+				Type:       ebpf.Array,
+				KeySize:    4,
+				ValueSize:  ruleV6RecordSize,
+				MaxEntries: MaxActiveRulesV6,
+			},
+			mapRuleCountV6: {
+				Name:       mapRuleCountV6,
+				Type:       ebpf.Array,
+				KeySize:    4,
+				ValueSize:  4,
+				MaxEntries: 1,
+			},
 			mapRateStateV4: {
 				Name:       mapRateStateV4,
 				Type:       ebpf.PerCPUHash,
@@ -53,20 +71,7 @@ func buildTestSpec(t *testing.T) *ebpf.CollectionSpec {
 	}
 }
 
-func lpmTrieSpec(name string, keySize uint32) *ebpf.MapSpec {
-	return &ebpf.MapSpec{
-		Name:       name,
-		Type:       ebpf.LPMTrie,
-		KeySize:    keySize, // prefixlen (4) + addr
-		ValueSize:  4,       // u32 rule_id
-		MaxEntries: 1024,
-		Flags:      1, // BPF_F_NO_PREALLOC, required for LPM_TRIE
-	}
-}
-
-// requireBPF skips the test if the kernel denies map creation. CI
-// runners without /sys/fs/bpf or without CAP_BPF fail gracefully
-// instead of poisoning the whole test run.
+// requireBPF skips the test if the kernel denies map creation.
 func requireBPF(t *testing.T) {
 	t.Helper()
 	if err := rlimit.RemoveMemlock(); err != nil {
@@ -74,7 +79,7 @@ func requireBPF(t *testing.T) {
 	}
 }
 
-func TestRulesLoaderPutGetDeleteMeta(t *testing.T) {
+func TestRulesLoaderPutGetClearV4(t *testing.T) {
 	requireBPF(t)
 	l, err := NewRulesLoader(buildTestSpec(t))
 	if err != nil {
@@ -82,168 +87,242 @@ func TestRulesLoaderPutGetDeleteMeta(t *testing.T) {
 	}
 	defer l.Close()
 
-	want := RuleMeta{
+	want := RuleV4Record{
 		Action: 1 /*DENY*/, Protocol: 1 /*TCP*/, Direction: 0, IsActive: 1,
+		HasSrc: 1, SrcPrefixLen: 24, SrcAddr: [4]byte{198, 51, 100, 0},
+		HasDst: 1, DstPrefixLen: 32, DstAddr: [4]byte{203, 0, 113, 5},
 		SrcPortFrom: 1024, SrcPortTo: 65535,
 		DstPortFrom: 443, DstPortTo: 443,
 		Priority: 100,
-		RatePPS:  0, RateBurst: 0,
+		RuleID:   7,
 	}
-	if err := l.PutRuleMeta(7, want); err != nil {
-		t.Fatalf("put meta: %v", err)
-	}
-	got, ok, err := l.GetRuleMeta(7)
-	if err != nil {
-		t.Fatalf("get meta: %v", err)
-	}
-	if !ok {
-		t.Fatal("meta missing after put")
-	}
-	if got != want {
-		t.Errorf("meta round-trip mismatch:\n  got  %+v\n  want %+v", got, want)
-	}
-
-	if err := l.DeleteRuleMeta(7); err != nil {
-		t.Fatalf("delete meta: %v", err)
-	}
-	_, ok, err = l.GetRuleMeta(7)
-	if err != nil {
-		t.Fatalf("get after delete: %v", err)
-	}
-	if ok {
-		t.Error("meta still present after delete")
-	}
-}
-
-func TestRulesLoaderDeleteMetaMissingIsNoop(t *testing.T) {
-	requireBPF(t)
-	l, err := NewRulesLoader(buildTestSpec(t))
-	if err != nil {
-		t.Fatalf("new loader: %v", err)
-	}
-	defer l.Close()
-	if err := l.DeleteRuleMeta(999); err != nil {
-		t.Errorf("delete of missing meta should be nil, got %v", err)
-	}
-}
-
-func TestRulesLoaderSrcPrefixV4(t *testing.T) {
-	requireBPF(t)
-	l, err := NewRulesLoader(buildTestSpec(t))
-	if err != nil {
-		t.Fatalf("new loader: %v", err)
-	}
-	defer l.Close()
-
-	pfx := netip.MustParsePrefix("198.51.100.0/24")
-	if err := l.PutSrcPrefix(pfx, 42); err != nil {
-		t.Fatalf("put src: %v", err)
-	}
-
-	// Host inside the prefix must hit.
-	insideKey, _ := addrToLPMv4(netip.MustParseAddr("198.51.100.5"))
-	var got uint32
-	if err := l.srcV4.Lookup(insideKey, &got); err != nil {
-		t.Fatalf("lookup inside prefix: %v", err)
-	}
-	if got != 42 {
-		t.Errorf("rule_id: got %d, want 42", got)
-	}
-
-	// Host outside must miss.
-	outsideKey, _ := addrToLPMv4(netip.MustParseAddr("198.51.101.5"))
-	if err := l.srcV4.Lookup(outsideKey, &got); !errors.Is(err, ebpf.ErrKeyNotExist) {
-		t.Errorf("lookup outside prefix: expected miss, got %v", err)
-	}
-
-	if err := l.DeleteSrcPrefix(pfx); err != nil {
-		t.Fatalf("delete src: %v", err)
-	}
-	if err := l.srcV4.Lookup(insideKey, &got); !errors.Is(err, ebpf.ErrKeyNotExist) {
-		t.Errorf("after delete: expected miss, got %v", err)
-	}
-}
-
-func TestRulesLoaderSrcAddrV4HostShortcut(t *testing.T) {
-	requireBPF(t)
-	l, err := NewRulesLoader(buildTestSpec(t))
-	if err != nil {
-		t.Fatalf("new loader: %v", err)
-	}
-	defer l.Close()
-
-	addr := netip.MustParseAddr("203.0.113.17")
-	if err := l.PutSrcAddr(addr, 99); err != nil {
-		t.Fatalf("put addr: %v", err)
-	}
-	key, _ := addrToLPMv4(addr)
-	var got uint32
-	if err := l.srcV4.Lookup(key, &got); err != nil {
-		t.Fatalf("lookup: %v", err)
-	}
-	if got != 99 {
-		t.Errorf("rule_id: got %d, want 99", got)
-	}
-	if err := l.DeleteSrcAddr(addr); err != nil {
-		t.Fatalf("delete addr: %v", err)
-	}
-}
-
-func TestRulesLoaderDstPrefixRoutesToDstMap(t *testing.T) {
-	requireBPF(t)
-	l, err := NewRulesLoader(buildTestSpec(t))
-	if err != nil {
-		t.Fatalf("new loader: %v", err)
-	}
-	defer l.Close()
-
-	pfx := netip.MustParsePrefix("10.0.0.0/8")
-	if err := l.PutDstPrefix(pfx, 55); err != nil {
-		t.Fatalf("put dst: %v", err)
-	}
-	// Confirm it went to dst_v4 only, not src_v4.
-	hostKey, _ := addrToLPMv4(netip.MustParseAddr("10.1.2.3"))
-	var got uint32
-	if err := l.dstV4.Lookup(hostKey, &got); err != nil {
-		t.Fatalf("dst lookup: %v", err)
-	}
-	if got != 55 {
-		t.Errorf("dst rule_id: got %d, want 55", got)
-	}
-	if err := l.srcV4.Lookup(hostKey, &got); !errors.Is(err, ebpf.ErrKeyNotExist) {
-		t.Errorf("src_v4 should not have entry, got %v (val=%d)", err, got)
-	}
-}
-
-func TestRulesLoaderMetaSurvivesLookupWithExplicitBytes(t *testing.T) {
-	requireBPF(t)
-	l, err := NewRulesLoader(buildTestSpec(t))
-	if err != nil {
-		t.Fatalf("new loader: %v", err)
-	}
-	defer l.Close()
-
-	// High-bit patterns catch endianness bugs.
-	want := RuleMeta{
-		Action: 2, Protocol: 2, Direction: 1, IsActive: 1,
-		SrcPortFrom: 0xABCD, DstPortTo: 0x1234,
-		Priority: 0xDEAD,
-		RatePPS:  0xCAFEBABE, RateBurst: 0x01020304,
-	}
-	if err := l.PutRuleMeta(123, want); err != nil {
+	if err := l.PutRuleV4(0, want); err != nil {
 		t.Fatalf("put: %v", err)
 	}
-	// Raw-bytes lookup: confirms the kernel sees the exact wire layout.
-	raw := make([]byte, ruleMetaSize)
-	if err := l.meta.Lookup(uint32(123), &raw); err != nil {
-		t.Fatalf("raw lookup: %v", err)
+	got, err := l.GetRuleV4(0)
+	if err != nil {
+		t.Fatalf("get: %v", err)
 	}
-	var decoded RuleMeta
-	if err := decoded.UnmarshalBinary(raw); err != nil {
+	if got != want {
+		t.Errorf("round-trip mismatch:\n  got  %+v\n  want %+v", got, want)
+	}
+
+	if err := l.ClearRuleV4(0); err != nil {
+		t.Fatalf("clear: %v", err)
+	}
+	got, err = l.GetRuleV4(0)
+	if err != nil {
+		t.Fatalf("get after clear: %v", err)
+	}
+	if got != (RuleV4Record{}) {
+		t.Errorf("slot not zero after clear: %+v", got)
+	}
+}
+
+func TestRulesLoaderPutRuleV4OutOfRange(t *testing.T) {
+	requireBPF(t)
+	l, err := NewRulesLoader(buildTestSpec(t))
+	if err != nil {
+		t.Fatalf("new loader: %v", err)
+	}
+	defer l.Close()
+
+	if err := l.PutRuleV4(MaxActiveRulesV4, RuleV4Record{}); err == nil {
+		t.Error("expected out-of-range error")
+	}
+}
+
+func TestRulesLoaderSetAndReadCountV4(t *testing.T) {
+	requireBPF(t)
+	l, err := NewRulesLoader(buildTestSpec(t))
+	if err != nil {
+		t.Fatalf("new loader: %v", err)
+	}
+	defer l.Close()
+
+	// Uninitialised: array index 0 reads as zero per BPF semantics.
+	c, err := l.RuleCountV4()
+	if err != nil {
+		t.Fatalf("read count: %v", err)
+	}
+	if c != 0 {
+		t.Errorf("initial count: got %d want 0", c)
+	}
+
+	if err := l.SetRuleCountV4(42); err != nil {
+		t.Fatalf("set: %v", err)
+	}
+	c, err = l.RuleCountV4()
+	if err != nil {
+		t.Fatalf("read count: %v", err)
+	}
+	if c != 42 {
+		t.Errorf("count: got %d want 42", c)
+	}
+
+	if err := l.SetRuleCountV4(MaxActiveRulesV4 + 1); err == nil {
+		t.Error("expected overflow error")
+	}
+}
+
+func TestRulesLoaderPutGetClearV6(t *testing.T) {
+	requireBPF(t)
+	l, err := NewRulesLoader(buildTestSpec(t))
+	if err != nil {
+		t.Fatalf("new loader: %v", err)
+	}
+	defer l.Close()
+
+	want := RuleV6Record{
+		Action: 1, Protocol: 1, IsActive: 1,
+		HasSrc: 1, SrcPrefixLen: 64,
+		HasDst: 0,
+		Priority: 99,
+		RuleID:   55,
+	}
+	for i := 0; i < 8; i++ {
+		want.SrcAddr[i] = byte(0x20 + i)
+	}
+	if err := l.PutRuleV6(3, want); err != nil {
+		t.Fatalf("put: %v", err)
+	}
+	got, err := l.GetRuleV6(3)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got != want {
+		t.Errorf("round-trip mismatch:\n  got  %+v\n  want %+v", got, want)
+	}
+
+	if err := l.ClearRuleV6(3); err != nil {
+		t.Fatalf("clear: %v", err)
+	}
+}
+
+func TestRuleV4RecordMarshalRoundTrip(t *testing.T) {
+	orig := RuleV4Record{
+		Action: 2, Protocol: 1, Direction: 2, IsActive: 1,
+		HasSrc: 1, HasDst: 1, HasProtocol: 1,
+		SrcPrefixLen: 24, DstPrefixLen: 32,
+		SrcPortFrom: 100, SrcPortTo: 200,
+		DstPortFrom: 300, DstPortTo: 400,
+		Priority: 500, RatePPS: 1000, RateBurst: 2000,
+		SrcAddr: [4]byte{10, 0, 0, 0},
+		DstAddr: [4]byte{192, 168, 1, 1},
+		RuleID:  0xCAFEBABE,
+	}
+	b, err := orig.MarshalBinary()
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if len(b) != ruleV4RecordSize {
+		t.Fatalf("len: got %d, want %d", len(b), ruleV4RecordSize)
+	}
+	var back RuleV4Record
+	if err := back.UnmarshalBinary(b); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if decoded != want {
-		t.Errorf("raw round-trip mismatch:\n  got  %+v\n  want %+v", decoded, want)
+	if back != orig {
+		t.Errorf("round-trip mismatch:\n  got  %+v\n  want %+v", back, orig)
+	}
+}
+
+func TestRuleV4RecordUnmarshalRejectsWrongLength(t *testing.T) {
+	var r RuleV4Record
+	if err := r.UnmarshalBinary(make([]byte, ruleV4RecordSize-1)); err == nil {
+		t.Error("expected error on short buffer")
+	}
+}
+
+// TestRuleV4RecordOnWireLayout pins the byte offsets the kernel reads
+// from. A future struct-field reorder would silently break enforcement
+// without any compile-time error; this test fails first.
+func TestRuleV4RecordOnWireLayout(t *testing.T) {
+	r := RuleV4Record{
+		Action:       0x01,
+		Protocol:     0x02,
+		Direction:    0x03,
+		IsActive:     0x04,
+		HasSrc:       0x05,
+		HasDst:       0x06,
+		HasProtocol:  0x07,
+		SrcPrefixLen: 24,
+		DstPrefixLen: 16,
+		RatePPS:      0xAABBCCDD,
+		RateBurst:    0x11223344,
+		SrcPortFrom:  0x1111,
+		SrcPortTo:    0x2222,
+		DstPortFrom:  0x3333,
+		DstPortTo:    0x4444,
+		Priority:     0x5555,
+		SrcAddr:      [4]byte{0xC0, 0xA8, 0x01, 0x01},
+		DstAddr:      [4]byte{0x0A, 0x00, 0x00, 0x02},
+		RuleID:       0xDEADBEEF,
+	}
+	b, err := r.MarshalBinary()
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	checks := []struct {
+		off int
+		got byte
+		w   byte
+	}{
+		{0, b[0], 0x01},                       // action
+		{1, b[1], 0x02},                       // protocol
+		{2, b[2], 0x03},                       // direction
+		{3, b[3], 0x04},                       // is_active
+		{4, b[4], 0x05},                       // has_src
+		{5, b[5], 0x06},                       // has_dst
+		{6, b[6], 0x07},                       // has_protocol
+		{7, b[7], 24},                         // src_prefix_len
+		{8, b[8], 16},                         // dst_prefix_len
+		{12, b[12], 0xDD}, {15, b[15], 0xAA},  // rate_pps LE
+		{16, b[16], 0x44}, {19, b[19], 0x11},  // rate_burst LE
+		{32, b[32], 0xC0}, {35, b[35], 0x01},  // src_addr on-wire
+		{36, b[36], 0x0A}, {39, b[39], 0x02},  // dst_addr on-wire
+		{40, b[40], 0xEF}, {43, b[43], 0xDE},  // rule_id LE
+	}
+	for _, c := range checks {
+		if c.got != c.w {
+			t.Errorf("offset %d: got 0x%02x want 0x%02x", c.off, c.got, c.w)
+		}
+	}
+}
+
+func TestRuleV6RecordMarshalRoundTrip(t *testing.T) {
+	orig := RuleV6Record{
+		Action: 1, Protocol: 2, Direction: 1, IsActive: 1,
+		HasSrc: 1, HasDst: 1, HasProtocol: 1,
+		SrcPrefixLen: 64, DstPrefixLen: 128,
+		SrcPortFrom: 1, SrcPortTo: 2, DstPortFrom: 3, DstPortTo: 4,
+		Priority: 7, RatePPS: 11, RateBurst: 22,
+		RuleID: 0x01020304,
+	}
+	for i := 0; i < 16; i++ {
+		orig.SrcAddr[i] = byte(0x10 + i)
+		orig.DstAddr[i] = byte(0x40 + i)
+	}
+	b, err := orig.MarshalBinary()
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if len(b) != ruleV6RecordSize {
+		t.Fatalf("len: got %d, want %d", len(b), ruleV6RecordSize)
+	}
+	var back RuleV6Record
+	if err := back.UnmarshalBinary(b); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if back != orig {
+		t.Errorf("round-trip mismatch:\n  got  %+v\n  want %+v", back, orig)
+	}
+}
+
+func TestRuleV6RecordUnmarshalRejectsWrongLength(t *testing.T) {
+	var r RuleV6Record
+	if err := r.UnmarshalBinary(make([]byte, ruleV6RecordSize-1)); err == nil {
+		t.Error("expected error on short buffer")
 	}
 }
 
@@ -256,83 +335,9 @@ func TestNewRulesLoaderRejectsNilSpec(t *testing.T) {
 func TestNewRulesLoaderRejectsMissingMap(t *testing.T) {
 	requireBPF(t)
 	spec := buildTestSpec(t)
-	delete(spec.Maps, mapRuleMeta)
+	delete(spec.Maps, mapRuleTableV4)
 	if _, err := NewRulesLoader(spec); err == nil {
-		t.Error("expected error when rule_meta map missing")
-	}
-}
-
-func TestRuleMetaMarshalRoundTrip(t *testing.T) {
-	orig := RuleMeta{
-		Action: 1, Protocol: 2, Direction: 2, IsActive: 1,
-		SrcPortFrom: 100, SrcPortTo: 200,
-		DstPortFrom: 300, DstPortTo: 400,
-		Priority: 500, RatePPS: 1000, RateBurst: 2000,
-		HasSrc: 1, HasDst: 1, HasProtocol: 1,
-	}
-	b, err := orig.MarshalBinary()
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
-	if len(b) != ruleMetaSize {
-		t.Fatalf("len: got %d, want %d", len(b), ruleMetaSize)
-	}
-	var back RuleMeta
-	if err := back.UnmarshalBinary(b); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	if back != orig {
-		t.Errorf("round-trip mismatch:\n  got  %+v\n  want %+v", back, orig)
-	}
-}
-
-func TestRuleMetaUnmarshalRejectsWrongLength(t *testing.T) {
-	var m RuleMeta
-	if err := m.UnmarshalBinary(make([]byte, ruleMetaSize-1)); err == nil {
-		t.Error("expected error on short buffer")
-	}
-}
-
-// TestRuleMetaConditionFlagBytes pins the on-wire offsets of the
-// has_src / has_dst / has_protocol bytes so a future refactor can't
-// silently shift them. The kernel program reads these by struct-
-// member offset, so a Go-side reorder would break enforcement
-// without any compile-time error.
-func TestRuleMetaConditionFlagBytes(t *testing.T) {
-	cases := []struct {
-		name string
-		m    RuleMeta
-		want [3]byte // has_src, has_dst, has_protocol at b[24:27]
-	}{
-		{"all unset", RuleMeta{}, [3]byte{0, 0, 0}},
-		{"src only", RuleMeta{HasSrc: 1}, [3]byte{1, 0, 0}},
-		{"dst only", RuleMeta{HasDst: 1}, [3]byte{0, 1, 0}},
-		{"proto only", RuleMeta{HasProtocol: 1}, [3]byte{0, 0, 1}},
-		{"src+dst", RuleMeta{HasSrc: 1, HasDst: 1}, [3]byte{1, 1, 0}},
-		{"all set", RuleMeta{HasSrc: 1, HasDst: 1, HasProtocol: 1}, [3]byte{1, 1, 1}},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			b, err := tc.m.MarshalBinary()
-			if err != nil {
-				t.Fatalf("marshal: %v", err)
-			}
-			got := [3]byte{b[24], b[25], b[26]}
-			if got != tc.want {
-				t.Errorf("flag bytes: got %v, want %v", got, tc.want)
-			}
-			// Round-trip back through Unmarshal so a future change
-			// to either side is caught here, not at runtime.
-			var back RuleMeta
-			if err := back.UnmarshalBinary(b); err != nil {
-				t.Fatalf("unmarshal: %v", err)
-			}
-			if back.HasSrc != tc.m.HasSrc ||
-				back.HasDst != tc.m.HasDst ||
-				back.HasProtocol != tc.m.HasProtocol {
-				t.Errorf("round-trip flags lost: got %+v want %+v", back, tc.m)
-			}
-		})
+		t.Error("expected error when rule_table_v4 map missing")
 	}
 }
 
@@ -398,8 +403,6 @@ func TestRulesLoaderRateV4SeedAndSumAcrossCPUs(t *testing.T) {
 		t.Fatalf("key: %v", err)
 	}
 
-	// Seed identical values on every CPU. PERCPU_HASH expects one
-	// value per CPU; cilium/ebpf infers the count from runtime.
 	cpus, err := ebpf.PossibleCPU()
 	if err != nil {
 		t.Fatalf("cpu count: %v", err)
@@ -465,15 +468,13 @@ func TestRateKeyV6MarshalLayout(t *testing.T) {
 		t.Fatalf("length = %d, want %d", len(b), rateKeyV6Size)
 	}
 	want := []byte{
-		// rule_id (LE u32)
 		0x04, 0x03, 0x02, 0x01,
-		// addr
 		0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17,
 		0x18, 0x19, 0x1a, 0x1b, 0x1c, 0x1d, 0x1e, 0x1f,
 	}
 	for i, w := range want {
 		if b[i] != w {
-			t.Fatalf("byte %d: got 0x%02x, want 0x%02x\n  got  %x\n  want %x", i, b[i], w, b, want)
+			t.Fatalf("byte %d: got 0x%02x, want 0x%02x", i, b[i], w)
 		}
 	}
 }
@@ -486,41 +487,38 @@ func TestRulesLoaderStatsReflectsSeededMaps(t *testing.T) {
 	}
 	defer l.Close()
 
-	// Empty loader: every map reports 0 entries but carries its cap.
+	// Empty loader: tables have MaxEntries=256, count=0; rate/hits empty.
 	s, err := l.Stats()
 	if err != nil {
 		t.Fatalf("stats empty: %v", err)
 	}
-	if s.RuleMeta.Entries != 0 || s.RuleMeta.MaxEntries == 0 {
-		t.Errorf("empty RuleMeta: got %+v", s.RuleMeta)
+	if s.RuleTableV4.Entries != 0 || s.RuleTableV4.MaxEntries != MaxActiveRulesV4 {
+		t.Errorf("empty RuleTableV4: got %+v", s.RuleTableV4)
 	}
-	if s.RateStateV4.Entries != 0 || s.RateStateV4.MaxEntries == 0 {
-		t.Errorf("empty RateStateV4: got %+v", s.RateStateV4)
-	}
-
-	// Seed: 2 meta rows, 2 src_v4 rows, 1 src_v6 row, 1 dst_v4 row,
-	// 1 v4 rate bucket, 1 v6 rate bucket. Counts must match exactly.
-	if err := l.PutRuleMeta(1, RuleMeta{IsActive: 1}); err != nil {
-		t.Fatalf("put meta 1: %v", err)
-	}
-	if err := l.PutRuleMeta(2, RuleMeta{IsActive: 1}); err != nil {
-		t.Fatalf("put meta 2: %v", err)
-	}
-	if err := l.PutSrcAddr(netip.MustParseAddr("10.0.0.1"), 1); err != nil {
-		t.Fatalf("put src v4 /32 #1: %v", err)
-	}
-	if err := l.PutSrcAddr(netip.MustParseAddr("10.0.0.2"), 2); err != nil {
-		t.Fatalf("put src v4 /32 #2: %v", err)
-	}
-	if err := l.PutSrcAddr(netip.MustParseAddr("2001:db8::1"), 1); err != nil {
-		t.Fatalf("put src v6 /128: %v", err)
-	}
-	if err := l.PutDstPrefix(netip.MustParsePrefix("192.168.1.0/24"), 1); err != nil {
-		t.Fatalf("put dst v4: %v", err)
+	if s.RuleTableV6.Entries != 0 || s.RuleTableV6.MaxEntries != MaxActiveRulesV6 {
+		t.Errorf("empty RuleTableV6: got %+v", s.RuleTableV6)
 	}
 
-	// Seed rate buckets via the maps directly so we don't need a
-	// packet to create them.
+	// Seed 3 v4 slots + 1 v6 slot.
+	if err := l.PutRuleV4(0, RuleV4Record{IsActive: 1, RuleID: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if err := l.PutRuleV4(1, RuleV4Record{IsActive: 1, RuleID: 2}); err != nil {
+		t.Fatal(err)
+	}
+	if err := l.PutRuleV4(2, RuleV4Record{IsActive: 1, RuleID: 3}); err != nil {
+		t.Fatal(err)
+	}
+	if err := l.SetRuleCountV4(3); err != nil {
+		t.Fatal(err)
+	}
+	if err := l.PutRuleV6(0, RuleV6Record{IsActive: 1, RuleID: 10}); err != nil {
+		t.Fatal(err)
+	}
+	if err := l.SetRuleCountV6(1); err != nil {
+		t.Fatal(err)
+	}
+
 	cpus, err := ebpf.PossibleCPU()
 	if err != nil {
 		t.Fatalf("cpu count: %v", err)
@@ -530,12 +528,6 @@ func TestRulesLoaderStatsReflectsSeededMaps(t *testing.T) {
 	if err := l.rateV4.Update(kv4, seed, ebpf.UpdateAny); err != nil {
 		t.Fatalf("seed v4 rate: %v", err)
 	}
-	kv6, _ := newRateKeyV6(1, netip.MustParseAddr("2001:db8::1"))
-	if err := l.rateV6.Update(kv6, seed, ebpf.UpdateAny); err != nil {
-		t.Fatalf("seed v6 rate: %v", err)
-	}
-
-	// Seed one rule_hits counter so Stats() picks up a non-zero entry.
 	hitsSeed := make([]RuleHits, cpus)
 	hitsSeed[0] = RuleHits{Packets: 1, Bytes: 100}
 	if err := l.ruleHits.Update(uint32(1), hitsSeed, ebpf.UpdateAny); err != nil {
@@ -546,24 +538,17 @@ func TestRulesLoaderStatsReflectsSeededMaps(t *testing.T) {
 	if err != nil {
 		t.Fatalf("stats seeded: %v", err)
 	}
-	checks := []struct {
-		name string
-		got  uint32
-		want uint32
-	}{
-		{"RuleMeta", s.RuleMeta.Entries, 2},
-		{"RuleSrcV4", s.RuleSrcV4.Entries, 2},
-		{"RuleSrcV6", s.RuleSrcV6.Entries, 1},
-		{"RuleDstV4", s.RuleDstV4.Entries, 1},
-		{"RuleDstV6", s.RuleDstV6.Entries, 0},
-		{"RateStateV4", s.RateStateV4.Entries, 1},
-		{"RateStateV6", s.RateStateV6.Entries, 1},
-		{"RuleHits", s.RuleHits.Entries, 1},
+	if s.RuleTableV4.Entries != 3 {
+		t.Errorf("RuleTableV4 entries = %d, want 3", s.RuleTableV4.Entries)
 	}
-	for _, c := range checks {
-		if c.got != c.want {
-			t.Errorf("%s entries = %d, want %d", c.name, c.got, c.want)
-		}
+	if s.RuleTableV6.Entries != 1 {
+		t.Errorf("RuleTableV6 entries = %d, want 1", s.RuleTableV6.Entries)
+	}
+	if s.RateStateV4.Entries != 1 {
+		t.Errorf("RateStateV4 entries = %d, want 1", s.RateStateV4.Entries)
+	}
+	if s.RuleHits.Entries != 1 {
+		t.Errorf("RuleHits entries = %d, want 1", s.RuleHits.Entries)
 	}
 }
 
@@ -617,8 +602,6 @@ func TestRulesLoaderPeekRuleHitsSumsAcrossCPUs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("cpu count: %v", err)
 	}
-	// Seed per-CPU slots with a distinctive pattern so the sum is
-	// easy to verify and we notice if a CPU gets skipped.
 	seed := make([]RuleHits, cpus)
 	var wantP, wantB uint64
 	for i := range seed {
@@ -731,11 +714,6 @@ func TestRulesLoaderRateV6SeedAndSumAcrossCPUs(t *testing.T) {
 }
 
 func TestRulesLoaderProgramAccessor(t *testing.T) {
-	// Exercises the accessor against a maps-only spec (the one all
-	// kernel-free tests use). Programs are intentionally absent so the
-	// accessor must report (nil, false) rather than panic. Production
-	// specs loaded from the bpf2go .o have both programs populated; the
-	// same accessor gives them back by SEC() name.
 	requireBPF(t)
 	l, err := NewRulesLoader(buildTestSpec(t))
 	if err != nil {

@@ -32,13 +32,6 @@ export interface Rule {
   // helps answer "rule is LOADED but is it seeing traffic?".
   rule_hits_packets?: number;
   rule_hits_bytes?: number;
-  // Non-null when this rule shares a src_cidr with a higher-
-  // priority active rule. Kernel engine v2.0 only stores one rule
-  // per src CIDR, so this one is effectively a no-op until the
-  // operator disables the conflict (or the v2.1 engine rewrite
-  // lands). Frontend renders a "Shadowed by X" badge in the
-  // Kernel column.
-  shadowed_by_rule_name?: string;
   created_at: string;
   updated_at: string;
 }
@@ -99,33 +92,15 @@ function formatBytes(n: number): string {
 function KernelBadge({
   active,
   loaded,
-  shadowedBy,
 }: {
   active: boolean;
   loaded: boolean;
-  shadowedBy?: string;
 }) {
   if (!active) {
     return (
       <span className="status-badge muted" title="Rule disabled in DB.">
         <span className="dot" />
         off
-      </span>
-    );
-  }
-  // Shadowed wins over loaded/not-loaded because the operator-facing
-  // story is "this rule won't enforce regardless of map state".
-  // Engine v2.0 keys the kernel by src_cidr → one rule per prefix,
-  // so a lower-priority rule with the same source is effectively
-  // a no-op. v2.1 lifts this limit.
-  if (shadowedBy) {
-    return (
-      <span
-        className="status-badge warning"
-        title={`Engine v2.0 stores one rule per src CIDR. This rule shares a source with "${shadowedBy}", which has higher priority and wins. Disable or re-scope one of them, or wait for the v2.1 engine to enforce both.`}
-      >
-        <span className="dot" />
-        shadowed by {shadowedBy}
       </span>
     );
   }
@@ -304,7 +279,6 @@ export function RulesPage() {
                     <KernelBadge
                       active={r.is_active}
                       loaded={!!r.kernel_loaded}
-                      shadowedBy={r.shadowed_by_rule_name}
                     />
                   </td>
                   <td>

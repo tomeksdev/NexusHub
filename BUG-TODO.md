@@ -110,23 +110,61 @@ Round-11 needs to start from a written plan. Document:
 
 ---
 
-## Out of scope (round 11)
+## Round 11 — engine rewrite shipped (the user's "must fix")
 
-- **Rule engine rewrite** (the user's "must fix" item). Lands as
-  one tight commit in round 11 after the ADR is finalised.
-- **Egress TC attach**. Today's TC is ingress-only; rules with
-  `direction=egress` are no-ops. Egress hook deferred until the
-  engine rewrite ships.
-- **IPv6 multi-rule support**: comes with the same rewrite.
+The shadow workaround from round 10 was the wrong answer. Replaced
+the LPM-by-source matching with per-packet iteration over a packed
+array, per ADR 0005. Multiple rules sharing a src or dst CIDR all
+enforce in priority order now; the "shadowed by X" badge is gone
+because it can't happen.
 
-## Acceptance — round-10 boxes
+- C side (`ebpf/src/rules.c`): dropped `rule_src_v4`, `rule_src_v6`,
+  `rule_dst_v4`, `rule_dst_v6`, `rule_meta`. Added `rule_table_v4`
+  (BPF_MAP_TYPE_ARRAY[256] of `struct rule_v4_record`),
+  `rule_count_v4` (ARRAY[1] of u32), and the v6 mirrors. `decide_v4`
+  / `decide_v6` build a `match_ctx`, call
+  `bpf_loop(count, evaluate_rule_*, &ctx, 0)`, and dispatch on the
+  verdict the callback stamps.
+- Go side: `userspace.RuleV4Record` / `RuleV6Record` replace
+  `RuleMeta`. New helpers: `PutRuleV4`, `ClearRuleV4`,
+  `SetRuleCountV4` (+ v6 mirrors). `KernelSyncer` keeps a uuid →
+  stable kernel_id map and rewrites the full packed array on every
+  Apply/Delete/Reconcile (priority-sorted, ties broken by UUID).
+- Capabilities probe: `HasLPMTrie` retired; `HasBPFLoop` added
+  (kernel 5.17+ now required).
+- API: `shadowed_by_rule_name` field removed from `ruleResponse`.
+  Frontend `RulesPage.KernelBadge` no longer renders the shadow path.
 
-- [ ] (R10) Create two active rules with the same `src_cidr`. The
-      lower-priority one shows a "shadowed by <name>" badge in the
-      Rules table.
-- [ ] (R10) Edit modal labels the two AllowedIPs fields clearly
+**Out of scope (still):** egress TC attach. Today's TC is ingress-only;
+rules with `direction=egress` remain no-ops on wg0 until an egress
+hook is added.
+
+**Operator migration (v2.0 → v2.1):** the pinned BPF maps on disk are
+incompatible (different shape, different names). After upgrading the
+binary, before the first start:
+
+    sudo rm -rf /sys/fs/bpf/nexushub
+
+The loader recreates the new map set on startup. DB rows don't
+change.
+
+## Acceptance — round-11 boxes
+
+- [ ] (R11) Create two active rules with the same `src_cidr`. Both
+      enforce — verify by ping (allow) + ssh attempt (deny) on the
+      bare-metal repro. The Rules table no longer shows a "shadowed"
+      badge.
+- [ ] (R11) `bpftool map dump name rule_table_v4` shows both rules
+      occupying slots 0 and 1 with the high-priority rule in slot 0.
+- [ ] (R11) `rule_count_v4` reads `2`.
+- [ ] (R11) Per-rule hit counters in the Rules table tick when their
+      respective packets cross the gate.
+
+## Acceptance — round-10 boxes (kept from R10)
+
+- [x] (R10) Edit modal labels the two AllowedIPs fields clearly
       and the "Copy server-side routes" button works.
-- [ ] (R10) Edit a peer, save, immediately open Config — the
+- [x] (R10) Edit a peer, save, immediately open Config — the
       `.conf` reflects the saved change.
-- [ ] (R10) `docs/architecture/0005-rule-engine.md` describes the
+- [x] (R10) `docs/architecture/0005-rule-engine.md` describes the
       v2.0 limitation and the v2.1 rewrite plan.

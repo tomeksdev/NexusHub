@@ -1,18 +1,20 @@
 // Package userspace provides the Go-side loader and map-manager for
 // NexusHub's eBPF programs.
 //
-// The RulesLoader owns an ebpf.Collection (the rule_meta HASH + four
-// LPM_TRIE maps per ADR 0004) and exposes typed CRUD for the kernel's
-// rule runtime. Program attach is a separate concern handled by
-// callers via the cilium/ebpf link package — keeping it out of this
-// type means the Loader is testable against maps only (no netns, no
-// kernel interface state).
+// v2.1 — per-packet iteration. The RulesLoader owns an ebpf.Collection
+// built from rules.c, exposing typed CRUD for two packed arrays
+// (rule_table_v4 / rule_table_v6) plus a one-slot count map per
+// family. ADR 0005 has the design rationale.
 //
-// The Loader is constructed from a *ebpf.CollectionSpec. In
-// production, call the bpf2go-generated loader to get a spec embedded
-// from the compiled .o; in tests, build a spec in-memory. This
-// two-step separates "what the kernel will run" from "how we got
-// the bytes".
+// Program attach is a separate concern handled by callers via
+// cilium/ebpf's link package — keeping it out of this type means the
+// Loader is testable against maps only (no netns, no kernel interface
+// state).
+//
+// The Loader is constructed from a *ebpf.CollectionSpec. In production,
+// call the bpf2go-generated loader to get a spec embedded from the
+// compiled .o; in tests, build a spec in-memory. This two-step
+// separates "what the kernel will run" from "how we got the bytes".
 package userspace
 
 import (
@@ -27,11 +29,10 @@ import (
 // Map names in the compiled ELF. These match the variable names in
 // ebpf/src/rules.c; changing one requires changing the other.
 const (
-	mapRuleMeta    = "rule_meta"
-	mapRuleSrcV4   = "rule_src_v4"
-	mapRuleSrcV6   = "rule_src_v6"
-	mapRuleDstV4   = "rule_dst_v4"
-	mapRuleDstV6   = "rule_dst_v6"
+	mapRuleTableV4 = "rule_table_v4"
+	mapRuleCountV4 = "rule_count_v4"
+	mapRuleTableV6 = "rule_table_v6"
+	mapRuleCountV6 = "rule_count_v6"
 	mapRateStateV4 = "rate_state_v4"
 	mapRateStateV6 = "rate_state_v6"
 	mapRuleHits    = "rule_hits"
@@ -39,101 +40,199 @@ const (
 )
 
 // Program names in the compiled ELF. These match the SEC() function
-// names in ebpf/src/rules.c: clang preserves the C symbol and bpf2go
-// surfaces them verbatim.
-//
-// ProgramXDPRules attaches to the WAN interface via link.AttachXDP;
-// ProgramTCRulesWg0 attaches to wg0's clsact ingress hook (the caller
-// owns tc qdisc setup — cilium/ebpf's tcx helpers or classic tc netlink
-// both work).
+// names in ebpf/src/rules.c.
 const (
 	ProgramXDPRules   = "xdp_rules"
 	ProgramTCRulesWg0 = "tc_rules_wg0"
 )
 
-// RuleMeta mirrors struct rule_meta in ebpf/headers/nexushub.h.
+// Per-family active-rule caps. Must agree with MAX_ACTIVE_RULES_{V4,V6}
+// in ebpf/headers/nexushub.h. The syncer rejects writes past these
+// bounds with a clear error.
+const (
+	MaxActiveRulesV4 = 256
+	MaxActiveRulesV6 = 256
+)
+
+// RuleV4Record mirrors struct rule_v4_record in ebpf/headers/nexushub.h.
 // Field order + sizes are load-bearing: the kernel reads raw bytes.
 //
-// Round 6: HasSrc / HasDst / HasProtocol replace the trailing 4-byte
-// _pad2 with three flag bytes + 1 pad. The flags let the kernel
-// distinguish "rule has no destination condition" from "rule has a
-// destination condition that didn't match" — the round-6 fix for
-// dst-bearing rules silently degrading to src-only enforcement.
-type RuleMeta struct {
-	Action      uint8  // ACTION_{ALLOW,DENY,RATE_LIMIT,LOG}
-	Protocol    uint8  // PROTO_{ANY,TCP,UDP,ICMP}
-	Direction   uint8  // DIR_{INGRESS,EGRESS,BOTH}
-	IsActive    uint8  // 0/1
-	SrcPortFrom uint16 // 0 when wildcard
-	SrcPortTo   uint16
-	DstPortFrom uint16
-	DstPortTo   uint16
-	Priority    uint16
-	RatePPS     uint32
-	RateBurst   uint32
-	HasSrc      uint8 // 1 if rule has src_cidr
-	HasDst      uint8 // 1 if rule has dst_cidr (forces dst LPM check in kernel)
-	HasProtocol uint8 // 1 if protocol != PROTO_ANY
+// Address fields hold on-wire (network byte order) bytes — the same
+// layout as iphdr->saddr/daddr — so the kernel can compare them
+// directly without endian swaps.
+type RuleV4Record struct {
+	Action        uint8  // ACTION_{ALLOW,DENY,RATE_LIMIT,LOG}
+	Protocol      uint8  // PROTO_{ANY,TCP,UDP,ICMP}
+	Direction     uint8  // DIR_{INGRESS,EGRESS,BOTH}
+	IsActive      uint8  // 0/1
+	HasSrc        uint8  // 1 → gate on SrcAddr/SrcPrefixLen
+	HasDst        uint8  // 1 → gate on DstAddr/DstPrefixLen
+	HasProtocol   uint8  // 1 → Protocol != PROTO_ANY
+	SrcPrefixLen  uint8  // 0..32 (bits)
+	DstPrefixLen  uint8  // 0..32 (bits)
+	RatePPS       uint32 // rate_limit configuration
+	RateBurst     uint32
+	SrcPortFrom   uint16
+	SrcPortTo     uint16
+	DstPortFrom   uint16
+	DstPortTo     uint16
+	Priority      uint16
+	SrcAddr       [4]byte // network byte order
+	DstAddr       [4]byte // network byte order
+	RuleID        uint32  // stable id used as rule_hits key
 }
 
-// ruleMetaSize is the on-wire length of struct rule_meta including
-// compiler padding. The C struct lays out as:
+// ruleV4RecordSize is the on-wire length of struct rule_v4_record
+// including compiler padding. Layout (matches the C struct exactly):
 //
-//	u8×4 + u16×5 + u16 _pad + u32×2 + u8×3 + u8 _pad2 = 28 bytes.
-const ruleMetaSize = 28
+//	u8 action|protocol|direction|is_active     = 4
+//	u8 has_src|has_dst|has_protocol|src_pfx    = 4
+//	u8 dst_pfx + u8[3] pad                     = 4
+//	u32 rate_pps + u32 rate_burst              = 8
+//	u16 src_port_from|to + u16 dst_port_from|to = 8
+//	u16 priority + u16 _pad2                   = 4
+//	u8[4] src_addr + u8[4] dst_addr            = 8
+//	u32 rule_id                                = 4
+//	                                       total = 44
+const ruleV4RecordSize = 44
 
-// MarshalBinary serializes RuleMeta into the exact byte layout the
-// kernel expects. Little-endian is correct for both bpf2go targets
-// (amd64, arm64) — if we ever add a big-endian target this needs
-// per-arch handling.
-func (m RuleMeta) MarshalBinary() ([]byte, error) {
-	b := make([]byte, ruleMetaSize)
-	b[0] = m.Action
-	b[1] = m.Protocol
-	b[2] = m.Direction
-	b[3] = m.IsActive
-	binary.LittleEndian.PutUint16(b[4:6], m.SrcPortFrom)
-	binary.LittleEndian.PutUint16(b[6:8], m.SrcPortTo)
-	binary.LittleEndian.PutUint16(b[8:10], m.DstPortFrom)
-	binary.LittleEndian.PutUint16(b[10:12], m.DstPortTo)
-	binary.LittleEndian.PutUint16(b[12:14], m.Priority)
-	// b[14:16] is _pad, left zero.
-	binary.LittleEndian.PutUint32(b[16:20], m.RatePPS)
-	binary.LittleEndian.PutUint32(b[20:24], m.RateBurst)
-	b[24] = m.HasSrc
-	b[25] = m.HasDst
-	b[26] = m.HasProtocol
-	// b[27] is _pad2, left zero.
+// MarshalBinary serializes RuleV4Record into the byte layout the kernel
+// expects. Little-endian for the multi-byte scalars on both supported
+// targets (amd64, arm64); address fields are copied verbatim because
+// they carry network byte order already.
+func (r RuleV4Record) MarshalBinary() ([]byte, error) {
+	b := make([]byte, ruleV4RecordSize)
+	b[0] = r.Action
+	b[1] = r.Protocol
+	b[2] = r.Direction
+	b[3] = r.IsActive
+	b[4] = r.HasSrc
+	b[5] = r.HasDst
+	b[6] = r.HasProtocol
+	b[7] = r.SrcPrefixLen
+	b[8] = r.DstPrefixLen
+	// b[9:12] _pad zeroed by make()
+	binary.LittleEndian.PutUint32(b[12:16], r.RatePPS)
+	binary.LittleEndian.PutUint32(b[16:20], r.RateBurst)
+	binary.LittleEndian.PutUint16(b[20:22], r.SrcPortFrom)
+	binary.LittleEndian.PutUint16(b[22:24], r.SrcPortTo)
+	binary.LittleEndian.PutUint16(b[24:26], r.DstPortFrom)
+	binary.LittleEndian.PutUint16(b[26:28], r.DstPortTo)
+	binary.LittleEndian.PutUint16(b[28:30], r.Priority)
+	// b[30:32] _pad2 zeroed
+	copy(b[32:36], r.SrcAddr[:])
+	copy(b[36:40], r.DstAddr[:])
+	binary.LittleEndian.PutUint32(b[40:44], r.RuleID)
 	return b, nil
 }
 
-// UnmarshalBinary is the inverse of MarshalBinary. Used by the
-// reconciler to read rule_meta entries back for drift detection.
-func (m *RuleMeta) UnmarshalBinary(b []byte) error {
-	if len(b) != ruleMetaSize {
-		return fmt.Errorf("rule_meta: expected %d bytes, got %d", ruleMetaSize, len(b))
+// UnmarshalBinary is the inverse of MarshalBinary.
+func (r *RuleV4Record) UnmarshalBinary(b []byte) error {
+	if len(b) != ruleV4RecordSize {
+		return fmt.Errorf("rule_v4_record: expected %d bytes, got %d", ruleV4RecordSize, len(b))
 	}
-	m.Action = b[0]
-	m.Protocol = b[1]
-	m.Direction = b[2]
-	m.IsActive = b[3]
-	m.SrcPortFrom = binary.LittleEndian.Uint16(b[4:6])
-	m.SrcPortTo = binary.LittleEndian.Uint16(b[6:8])
-	m.DstPortFrom = binary.LittleEndian.Uint16(b[8:10])
-	m.DstPortTo = binary.LittleEndian.Uint16(b[10:12])
-	m.Priority = binary.LittleEndian.Uint16(b[12:14])
-	m.RatePPS = binary.LittleEndian.Uint32(b[16:20])
-	m.RateBurst = binary.LittleEndian.Uint32(b[20:24])
-	m.HasSrc = b[24]
-	m.HasDst = b[25]
-	m.HasProtocol = b[26]
+	r.Action = b[0]
+	r.Protocol = b[1]
+	r.Direction = b[2]
+	r.IsActive = b[3]
+	r.HasSrc = b[4]
+	r.HasDst = b[5]
+	r.HasProtocol = b[6]
+	r.SrcPrefixLen = b[7]
+	r.DstPrefixLen = b[8]
+	r.RatePPS = binary.LittleEndian.Uint32(b[12:16])
+	r.RateBurst = binary.LittleEndian.Uint32(b[16:20])
+	r.SrcPortFrom = binary.LittleEndian.Uint16(b[20:22])
+	r.SrcPortTo = binary.LittleEndian.Uint16(b[22:24])
+	r.DstPortFrom = binary.LittleEndian.Uint16(b[24:26])
+	r.DstPortTo = binary.LittleEndian.Uint16(b[26:28])
+	r.Priority = binary.LittleEndian.Uint16(b[28:30])
+	copy(r.SrcAddr[:], b[32:36])
+	copy(r.DstAddr[:], b[36:40])
+	r.RuleID = binary.LittleEndian.Uint32(b[40:44])
+	return nil
+}
+
+// RuleV6Record mirrors struct rule_v6_record. IPv6 mirror of
+// RuleV4Record; prefix_len fields range 0..128.
+type RuleV6Record struct {
+	Action        uint8
+	Protocol      uint8
+	Direction     uint8
+	IsActive      uint8
+	HasSrc        uint8
+	HasDst        uint8
+	HasProtocol   uint8
+	SrcPrefixLen  uint8 // 0..128
+	DstPrefixLen  uint8 // 0..128
+	RatePPS       uint32
+	RateBurst     uint32
+	SrcPortFrom   uint16
+	SrcPortTo     uint16
+	DstPortFrom   uint16
+	DstPortTo     uint16
+	Priority      uint16
+	SrcAddr       [16]byte // network byte order
+	DstAddr       [16]byte // network byte order
+	RuleID        uint32
+}
+
+// ruleV6RecordSize: 12 (header bytes) + 8 (rate) + 8 (ports) + 4 (priority+pad) + 32 (addrs) + 4 (rule_id) = 68.
+const ruleV6RecordSize = 68
+
+func (r RuleV6Record) MarshalBinary() ([]byte, error) {
+	b := make([]byte, ruleV6RecordSize)
+	b[0] = r.Action
+	b[1] = r.Protocol
+	b[2] = r.Direction
+	b[3] = r.IsActive
+	b[4] = r.HasSrc
+	b[5] = r.HasDst
+	b[6] = r.HasProtocol
+	b[7] = r.SrcPrefixLen
+	b[8] = r.DstPrefixLen
+	// b[9:12] _pad zeroed
+	binary.LittleEndian.PutUint32(b[12:16], r.RatePPS)
+	binary.LittleEndian.PutUint32(b[16:20], r.RateBurst)
+	binary.LittleEndian.PutUint16(b[20:22], r.SrcPortFrom)
+	binary.LittleEndian.PutUint16(b[22:24], r.SrcPortTo)
+	binary.LittleEndian.PutUint16(b[24:26], r.DstPortFrom)
+	binary.LittleEndian.PutUint16(b[26:28], r.DstPortTo)
+	binary.LittleEndian.PutUint16(b[28:30], r.Priority)
+	// b[30:32] _pad2 zeroed
+	copy(b[32:48], r.SrcAddr[:])
+	copy(b[48:64], r.DstAddr[:])
+	binary.LittleEndian.PutUint32(b[64:68], r.RuleID)
+	return b, nil
+}
+
+func (r *RuleV6Record) UnmarshalBinary(b []byte) error {
+	if len(b) != ruleV6RecordSize {
+		return fmt.Errorf("rule_v6_record: expected %d bytes, got %d", ruleV6RecordSize, len(b))
+	}
+	r.Action = b[0]
+	r.Protocol = b[1]
+	r.Direction = b[2]
+	r.IsActive = b[3]
+	r.HasSrc = b[4]
+	r.HasDst = b[5]
+	r.HasProtocol = b[6]
+	r.SrcPrefixLen = b[7]
+	r.DstPrefixLen = b[8]
+	r.RatePPS = binary.LittleEndian.Uint32(b[12:16])
+	r.RateBurst = binary.LittleEndian.Uint32(b[16:20])
+	r.SrcPortFrom = binary.LittleEndian.Uint16(b[20:22])
+	r.SrcPortTo = binary.LittleEndian.Uint16(b[22:24])
+	r.DstPortFrom = binary.LittleEndian.Uint16(b[24:26])
+	r.DstPortTo = binary.LittleEndian.Uint16(b[26:28])
+	r.Priority = binary.LittleEndian.Uint16(b[28:30])
+	copy(r.SrcAddr[:], b[32:48])
+	copy(r.DstAddr[:], b[48:64])
+	r.RuleID = binary.LittleEndian.Uint32(b[64:68])
 	return nil
 }
 
 // RateTokens mirrors struct rate_tokens in ebpf/headers/nexushub.h.
-// PERCPU_HASH stores one copy per CPU; operator-facing code (metrics,
-// reconciler) sums across CPUs. The Go shape is a single snapshot —
-// callers collect per-CPU slices externally when needed.
 type RateTokens struct {
 	TokensX1000 uint64
 	LastSeenNs  uint64
@@ -157,8 +256,7 @@ func (r *RateTokens) UnmarshalBinary(b []byte) error {
 	return nil
 }
 
-// rateKeyV4 mirrors struct rate_key_v4 in ebpf/headers/nexushub.h.
-// addr is stored in network byte order to match the packet path.
+// rateKeyV4 mirrors struct rate_key_v4. addr is in network byte order.
 type rateKeyV4 struct {
 	RuleID uint32
 	Addr   [4]byte
@@ -173,9 +271,7 @@ func (k rateKeyV4) MarshalBinary() ([]byte, error) {
 	return b, nil
 }
 
-// rateKeyV6 mirrors struct rate_key_v6: u32 rule_id + u8[16] addr for
-// 20 bytes total. Go struct layout packs u32 at offset 0 + [16]byte at
-// offset 4; no tail padding when the struct is used as a map key.
+// rateKeyV6 mirrors struct rate_key_v6: u32 rule_id + u8[16] addr.
 type rateKeyV6 struct {
 	RuleID uint32
 	Addr   [16]byte
@@ -190,11 +286,7 @@ func (k rateKeyV6) MarshalBinary() ([]byte, error) {
 	return b, nil
 }
 
-// RuleHits mirrors struct rule_hits in ebpf/headers/nexushub.h. The
-// map is PERCPU_HASH so readers that want an aggregate — a single
-// "bytes across the fleet" number — must sum across CPUs. PeekRuleHits
-// handles that reduction for callers; direct Lookup on the underlying
-// map returns the per-CPU slice if finer granularity is needed.
+// RuleHits mirrors struct rule_hits. PERCPU_HASH; PeekRuleHits sums.
 type RuleHits struct {
 	Packets uint64
 	Bytes   uint64
@@ -221,62 +313,43 @@ func (h *RuleHits) UnmarshalBinary(b []byte) error {
 // RulesLoader manages the map set of the XDP/TC rule runtime. Every
 // rule operation is a single map-write — the eBPF programs pick up
 // changes on the next packet without reload. The log_events ringbuf
-// is optional: older test specs omit it, and OpenLogReader surfaces
-// that as an explicit error rather than panicking.
+// is optional: older test specs omit it.
 type RulesLoader struct {
 	coll *ebpf.Collection
 
-	meta      *ebpf.Map
-	srcV4     *ebpf.Map
-	srcV6     *ebpf.Map
-	dstV4     *ebpf.Map
-	dstV6     *ebpf.Map
+	tableV4   *ebpf.Map
+	countV4   *ebpf.Map
+	tableV6   *ebpf.Map
+	countV6   *ebpf.Map
 	rateV4    *ebpf.Map
 	rateV6    *ebpf.Map
-	ruleHits  *ebpf.Map // nil if the collection omits the counter map (tests)
-	logEvents *ebpf.Map // nil if the collection omits the ringbuf (tests)
+	ruleHits  *ebpf.Map // nil if the spec omits the counter map (tests)
+	logEvents *ebpf.Map // nil if the spec omits the ringbuf (tests)
 }
 
 // LoaderOptions controls how NewRulesLoaderWithOptions instantiates the
-// underlying ebpf.Collection. Zero value matches the historical
-// NewRulesLoader behaviour: anonymous maps, no pinning, every restart
-// gets a fresh set.
+// underlying ebpf.Collection.
 type LoaderOptions struct {
 	// PinPath, when non-empty, pins every map in the spec under
-	// <PinPath>/<map_name> via cilium/ebpf's PinByName. If a pin
-	// already exists at that path the existing map is reused — the
-	// kernel-side state survives an API restart and external tools
-	// (bpftool) see the same map set as the running process. Empty
-	// disables pinning entirely.
+	// <PinPath>/<map_name>. Empty disables pinning.
 	PinPath string
 }
 
-// NewRulesLoader is the historical constructor, equivalent to
-// NewRulesLoaderWithOptions with a zero LoaderOptions. Tests use this
-// shape because pinning requires bpffs which the test harness doesn't
-// provide.
+// NewRulesLoader is equivalent to NewRulesLoaderWithOptions with a zero
+// LoaderOptions. Tests use this shape because pinning requires bpffs.
 func NewRulesLoader(spec *ebpf.CollectionSpec) (*RulesLoader, error) {
 	return NewRulesLoaderWithOptions(spec, LoaderOptions{})
 }
 
-// NewRulesLoaderWithOptions builds the collection from spec, applies
-// the supplied options, pulls handles for every map the program
-// declares, and returns a ready-to-use loader. The caller owns Close()
-// — failing to call it leaks kernel resources (and on a pinned
-// deployment, leaves the bpffs entries behind for the next process to
-// reattach to).
+// NewRulesLoaderWithOptions builds the collection, pulls handles for
+// every map the program declares, and returns a ready-to-use loader.
+// The caller owns Close().
 func NewRulesLoaderWithOptions(spec *ebpf.CollectionSpec, opts LoaderOptions) (*RulesLoader, error) {
 	if spec == nil {
 		return nil, errors.New("nil spec")
 	}
 	collOpts := ebpf.CollectionOptions{}
 	if opts.PinPath != "" {
-		// PinByName tells the kernel loader to pin (or reuse) each map
-		// at <PinPath>/<map_name>. Mark every map in the spec; the
-		// loader will skip programs and rely on the runtime pinning
-		// helper. We mutate the per-map spec rather than the whole
-		// collection so optional maps (rule_hits, log_events) still
-		// follow the same rule.
 		for _, ms := range spec.Maps {
 			ms.Pinning = ebpf.PinByName
 		}
@@ -293,27 +366,22 @@ func NewRulesLoaderWithOptions(spec *ebpf.CollectionSpec, opts LoaderOptions) (*
 		}
 		return m, nil
 	}
-	meta, err := pick(mapRuleMeta)
+	tableV4, err := pick(mapRuleTableV4)
 	if err != nil {
 		coll.Close()
 		return nil, err
 	}
-	srcV4, err := pick(mapRuleSrcV4)
+	countV4, err := pick(mapRuleCountV4)
 	if err != nil {
 		coll.Close()
 		return nil, err
 	}
-	srcV6, err := pick(mapRuleSrcV6)
+	tableV6, err := pick(mapRuleTableV6)
 	if err != nil {
 		coll.Close()
 		return nil, err
 	}
-	dstV4, err := pick(mapRuleDstV4)
-	if err != nil {
-		coll.Close()
-		return nil, err
-	}
-	dstV6, err := pick(mapRuleDstV6)
+	countV6, err := pick(mapRuleCountV6)
 	if err != nil {
 		coll.Close()
 		return nil, err
@@ -329,14 +397,13 @@ func NewRulesLoaderWithOptions(spec *ebpf.CollectionSpec, opts LoaderOptions) (*
 		return nil, err
 	}
 	// rule_hits and log_events are optional — maps-only test specs
-	// may omit them. rule_hits absence surfaces via PeekRuleHits
-	// returning ok=false; log_events absence via OpenLogReader.
+	// may omit them.
 	ruleHitsMap := coll.Maps[mapRuleHits]
 	logEvents := coll.Maps[mapLogEvents]
 	return &RulesLoader{
-		coll: coll, meta: meta,
-		srcV4: srcV4, srcV6: srcV6,
-		dstV4: dstV4, dstV6: dstV6,
+		coll: coll,
+		tableV4: tableV4, countV4: countV4,
+		tableV6: tableV6, countV6: countV6,
 		rateV4:    rateV4,
 		rateV6:    rateV6,
 		ruleHits:  ruleHitsMap,
@@ -345,8 +412,6 @@ func NewRulesLoaderWithOptions(spec *ebpf.CollectionSpec, opts LoaderOptions) (*
 }
 
 // Close releases every map and program in the underlying collection.
-// Safe to call on a nil receiver so `defer loader.Close()` works
-// around an early-return constructor failure.
 func (l *RulesLoader) Close() error {
 	if l == nil || l.coll == nil {
 		return nil
@@ -356,77 +421,97 @@ func (l *RulesLoader) Close() error {
 	return nil
 }
 
-// MapStats is a single-map operational snapshot: how many entries are
-// live right now vs. the compile-time ceiling. Prometheus scrapes this
-// via the ebpfkernel.MetricsCollector; operator dashboards alert when
-// Entries/MaxEntries crosses a capacity threshold.
+// MapStats is a single-map operational snapshot.
 type MapStats struct {
 	Entries    uint32
 	MaxEntries uint32
 }
 
-// LoaderStats gathers one MapStats per BPF map the loader owns. Read
-// lazily (one pass per map) so an empty deploy costs a handful of
-// no-op iterations. Scrape cost scales with live entries, not with
-// MaxEntries — iteration stops at the last populated slot. RuleHits
-// is zero-valued when the spec omits the rule_hits map (tests).
+// LoaderStats gathers one MapStats per BPF map the loader owns.
+//
+// RuleTableV4/V6 report the number of *populated* slots — the
+// loader's view of how many rules the syncer has installed, equal
+// to the value in rule_count_v4/v6. ARRAY maps always have every
+// slot "allocated" so NextKey iteration would just return the
+// MaxEntries cap; the count map reading is what operators want.
 type LoaderStats struct {
-	RuleMeta    MapStats
-	RuleSrcV4   MapStats
-	RuleSrcV6   MapStats
-	RuleDstV4   MapStats
-	RuleDstV6   MapStats
+	RuleTableV4 MapStats
+	RuleTableV6 MapStats
 	RateStateV4 MapStats
 	RateStateV6 MapStats
 	RuleHits    MapStats
 }
 
-// Stats samples every managed map and returns the counts. Iteration
-// runs against the kernel map (not against cached userspace state) so
-// drift between syncer bookkeeping and the actual kernel table is
-// caught. Intended for Prometheus scrape cadence (~15s) — don't call
-// on the packet hot path.
+// Stats samples every managed map and returns the counts.
 func (l *RulesLoader) Stats() (LoaderStats, error) {
 	if l == nil || l.coll == nil {
 		return LoaderStats{}, errors.New("loader not initialized")
 	}
-	pairs := []struct {
-		m   *ebpf.Map
-		out *MapStats
-	}{
-		{l.meta, nil},
-		{l.srcV4, nil},
-		{l.srcV6, nil},
-		{l.dstV4, nil},
-		{l.dstV6, nil},
-		{l.rateV4, nil},
-		{l.rateV6, nil},
-		{l.ruleHits, nil},
-	}
 	var out LoaderStats
-	pairs[0].out = &out.RuleMeta
-	pairs[1].out = &out.RuleSrcV4
-	pairs[2].out = &out.RuleSrcV6
-	pairs[3].out = &out.RuleDstV4
-	pairs[4].out = &out.RuleDstV6
-	pairs[5].out = &out.RateStateV4
-	pairs[6].out = &out.RateStateV6
-	pairs[7].out = &out.RuleHits
-	for i, p := range pairs {
-		s, err := mapStats(p.m)
-		if err != nil {
-			return LoaderStats{}, fmt.Errorf("stats[%d]: %w", i, err)
-		}
-		*p.out = s
+
+	// rule_table_v4/v6 are arrays — entries == rule_count_v[46][0],
+	// capacity == MaxEntries from the spec.
+	v4Count, err := l.readCount(l.countV4)
+	if err != nil {
+		return LoaderStats{}, fmt.Errorf("read v4 count: %w", err)
 	}
+	v4Info, err := l.tableV4.Info()
+	if err != nil {
+		return LoaderStats{}, fmt.Errorf("v4 table info: %w", err)
+	}
+	out.RuleTableV4 = MapStats{Entries: v4Count, MaxEntries: v4Info.MaxEntries}
+
+	v6Count, err := l.readCount(l.countV6)
+	if err != nil {
+		return LoaderStats{}, fmt.Errorf("read v6 count: %w", err)
+	}
+	v6Info, err := l.tableV6.Info()
+	if err != nil {
+		return LoaderStats{}, fmt.Errorf("v6 table info: %w", err)
+	}
+	out.RuleTableV6 = MapStats{Entries: v6Count, MaxEntries: v6Info.MaxEntries}
+
+	rateV4Stats, err := mapStats(l.rateV4)
+	if err != nil {
+		return LoaderStats{}, fmt.Errorf("rate_v4 stats: %w", err)
+	}
+	out.RateStateV4 = rateV4Stats
+
+	rateV6Stats, err := mapStats(l.rateV6)
+	if err != nil {
+		return LoaderStats{}, fmt.Errorf("rate_v6 stats: %w", err)
+	}
+	out.RateStateV6 = rateV6Stats
+
+	hitsStats, err := mapStats(l.ruleHits)
+	if err != nil {
+		return LoaderStats{}, fmt.Errorf("rule_hits stats: %w", err)
+	}
+	out.RuleHits = hitsStats
+
 	return out, nil
 }
 
+// readCount reads slot 0 of an ARRAY[1] of u32. Returns 0 if the
+// map handle is nil.
+func (l *RulesLoader) readCount(m *ebpf.Map) (uint32, error) {
+	if m == nil {
+		return 0, nil
+	}
+	var key uint32
+	var val uint32
+	if err := m.Lookup(key, &val); err != nil {
+		if errors.Is(err, ebpf.ErrKeyNotExist) {
+			return 0, nil
+		}
+		return 0, err
+	}
+	return val, nil
+}
+
 // mapStats walks keys only (via NextKey) and returns (entries, cap).
-// Values are intentionally not fetched — we only care about
-// cardinality, and skipping the Lookup sidesteps the per-CPU value
-// marshaling rules. Works uniformly across HASH, LPM_TRIE, and
-// PERCPU_HASH.
+// Used for PERCPU_HASH maps where cardinality is meaningful; ARRAY
+// maps use readCount + MaxEntries instead.
 func mapStats(m *ebpf.Map) (MapStats, error) {
 	if m == nil {
 		return MapStats{}, nil
@@ -438,7 +523,6 @@ func mapStats(m *ebpf.Map) (MapStats, error) {
 	cur := make([]byte, info.KeySize)
 	nxt := make([]byte, info.KeySize)
 	var count uint32
-	// First call with nil asks the kernel for the first key.
 	err = m.NextKey(nil, &nxt)
 	for err == nil {
 		count++
@@ -451,14 +535,7 @@ func mapStats(m *ebpf.Map) (MapStats, error) {
 	return MapStats{}, fmt.Errorf("next key: %w", err)
 }
 
-// Program returns the loaded program with the given SEC() name. The
-// second value is false when the name is not in the collection — which
-// is the normal state for tests that build a maps-only spec. Callers
-// attach the returned *ebpf.Program via link.AttachXDP (for
-// ProgramXDPRules) or the tc/tcx helpers (for ProgramTCRulesWg0).
-//
-// The program remains owned by the loader; do not Close it directly.
-// Closing the returned link is the caller's responsibility.
+// Program returns the loaded program with the given SEC() name.
 func (l *RulesLoader) Program(name string) (*ebpf.Program, bool) {
 	if l == nil || l.coll == nil {
 		return nil, false
@@ -467,92 +544,86 @@ func (l *RulesLoader) Program(name string) (*ebpf.Program, bool) {
 	return p, ok
 }
 
-// PutRuleMeta writes (or overwrites) the meta entry for a rule. The
-// key is the rule_id — the same value stored in the src/dst LPM maps
-// so the XDP program can correlate a hit back to a meta row.
-func (l *RulesLoader) PutRuleMeta(ruleID uint32, meta RuleMeta) error {
-	return l.meta.Update(ruleID, meta, ebpf.UpdateAny)
-}
-
-// GetRuleMeta reads the meta entry for a rule. Used by the reconciler
-// to drift-check DB state against kernel state.
-func (l *RulesLoader) GetRuleMeta(ruleID uint32) (RuleMeta, bool, error) {
-	var m RuleMeta
-	if err := l.meta.Lookup(ruleID, &m); err != nil {
-		if errors.Is(err, ebpf.ErrKeyNotExist) {
-			return RuleMeta{}, false, nil
-		}
-		return RuleMeta{}, false, err
+// PutRuleV4 writes (or overwrites) a record at slot in rule_table_v4.
+// The caller is responsible for slot allocation and for setting
+// rule_count_v4 via SetRuleCountV4 once all writes are done.
+func (l *RulesLoader) PutRuleV4(slot uint32, r RuleV4Record) error {
+	if slot >= MaxActiveRulesV4 {
+		return fmt.Errorf("v4 slot %d out of range [0, %d)", slot, MaxActiveRulesV4)
 	}
-	return m, true, nil
+	return l.tableV4.Update(slot, r, ebpf.UpdateAny)
 }
 
-// DeleteRuleMeta removes the meta entry for a rule. Deleting a
-// non-existent key returns nil — the end state matches intent.
-func (l *RulesLoader) DeleteRuleMeta(ruleID uint32) error {
-	return dropENOENT(l.meta.Delete(ruleID))
-}
-
-// PutSrcPrefix adds (prefix → ruleID) to the appropriate src LPM map.
-// Re-adding an existing prefix overwrites the ruleID (BPF_ANY). This
-// matches the "DB is source of truth, maps converge" invariant.
-func (l *RulesLoader) PutSrcPrefix(p netip.Prefix, ruleID uint32) error {
-	return l.putPrefix(p, ruleID, l.srcV4, l.srcV6)
-}
-
-// DeleteSrcPrefix removes a prefix from the src LPM map.
-func (l *RulesLoader) DeleteSrcPrefix(p netip.Prefix) error {
-	return l.deletePrefix(p, l.srcV4, l.srcV6)
-}
-
-// PutDstPrefix / DeleteDstPrefix: same contract, dst maps.
-func (l *RulesLoader) PutDstPrefix(p netip.Prefix, ruleID uint32) error {
-	return l.putPrefix(p, ruleID, l.dstV4, l.dstV6)
-}
-
-func (l *RulesLoader) DeleteDstPrefix(p netip.Prefix) error {
-	return l.deletePrefix(p, l.dstV4, l.dstV6)
-}
-
-// PutSrcAddr is the /32 or /128 shortcut for per-peer bindings: the
-// peer's assigned IP gets added as a host prefix pointing at ruleID.
-func (l *RulesLoader) PutSrcAddr(a netip.Addr, ruleID uint32) error {
-	return l.PutSrcPrefix(netip.PrefixFrom(a, a.BitLen()), ruleID)
-}
-
-func (l *RulesLoader) DeleteSrcAddr(a netip.Addr) error {
-	return l.DeleteSrcPrefix(netip.PrefixFrom(a, a.BitLen()))
-}
-
-func (l *RulesLoader) putPrefix(p netip.Prefix, ruleID uint32, v4, v6 *ebpf.Map) error {
-	if p.Addr().Is4() {
-		k, err := prefixToLPMv4(p)
-		if err != nil {
-			return err
-		}
-		return v4.Update(k, ruleID, ebpf.UpdateAny)
+// GetRuleV4 reads back a record at slot in rule_table_v4. Used by the
+// reconciler to drift-check syncer state against the kernel.
+func (l *RulesLoader) GetRuleV4(slot uint32) (RuleV4Record, error) {
+	var r RuleV4Record
+	if err := l.tableV4.Lookup(slot, &r); err != nil {
+		return RuleV4Record{}, err
 	}
-	k, err := prefixToLPMv6(p)
-	if err != nil {
-		return err
-	}
-	return v6.Update(k, ruleID, ebpf.UpdateAny)
+	return r, nil
 }
 
-func (l *RulesLoader) deletePrefix(p netip.Prefix, v4, v6 *ebpf.Map) error {
-	if p.Addr().Is4() {
-		k, err := prefixToLPMv4(p)
-		if err != nil {
-			return err
-		}
-		return dropENOENT(v4.Delete(k))
+// ClearRuleV4 writes a zero-valued record into slot. ARRAY maps don't
+// support Delete; "removal" is overwrite-with-inactive. Slots past
+// rule_count_v4 are never iterated, but we still clear them so a
+// stale rule_id never appears in count_hit telemetry.
+func (l *RulesLoader) ClearRuleV4(slot uint32) error {
+	if slot >= MaxActiveRulesV4 {
+		return nil
 	}
-	k, err := prefixToLPMv6(p)
-	if err != nil {
-		return err
-	}
-	return dropENOENT(v6.Delete(k))
+	return l.tableV4.Update(slot, RuleV4Record{}, ebpf.UpdateAny)
 }
+
+// SetRuleCountV4 publishes the new active-rule count. Write this LAST
+// after all PutRuleV4 calls — bpf_loop iterates 0..count-1, so
+// shrinking count is a safe atomic "remove the tail" operation, and
+// growing count after every slot is populated avoids a transient state
+// where the kernel reads an empty record.
+func (l *RulesLoader) SetRuleCountV4(count uint32) error {
+	if count > MaxActiveRulesV4 {
+		return fmt.Errorf("v4 count %d exceeds max %d", count, MaxActiveRulesV4)
+	}
+	var key uint32
+	return l.countV4.Update(key, count, ebpf.UpdateAny)
+}
+
+// PutRuleV6 / GetRuleV6 / ClearRuleV6 / SetRuleCountV6 are the IPv6
+// mirrors of the v4 helpers.
+func (l *RulesLoader) PutRuleV6(slot uint32, r RuleV6Record) error {
+	if slot >= MaxActiveRulesV6 {
+		return fmt.Errorf("v6 slot %d out of range [0, %d)", slot, MaxActiveRulesV6)
+	}
+	return l.tableV6.Update(slot, r, ebpf.UpdateAny)
+}
+
+func (l *RulesLoader) GetRuleV6(slot uint32) (RuleV6Record, error) {
+	var r RuleV6Record
+	if err := l.tableV6.Lookup(slot, &r); err != nil {
+		return RuleV6Record{}, err
+	}
+	return r, nil
+}
+
+func (l *RulesLoader) ClearRuleV6(slot uint32) error {
+	if slot >= MaxActiveRulesV6 {
+		return nil
+	}
+	return l.tableV6.Update(slot, RuleV6Record{}, ebpf.UpdateAny)
+}
+
+func (l *RulesLoader) SetRuleCountV6(count uint32) error {
+	if count > MaxActiveRulesV6 {
+		return fmt.Errorf("v6 count %d exceeds max %d", count, MaxActiveRulesV6)
+	}
+	var key uint32
+	return l.countV6.Update(key, count, ebpf.UpdateAny)
+}
+
+// RuleCountV4 / RuleCountV6 read the currently-published active count.
+// Used by tests and the reconciler.
+func (l *RulesLoader) RuleCountV4() (uint32, error) { return l.readCount(l.countV4) }
+func (l *RulesLoader) RuleCountV6() (uint32, error) { return l.readCount(l.countV6) }
 
 func dropENOENT(err error) error {
 	if err == nil || errors.Is(err, ebpf.ErrKeyNotExist) {
@@ -561,53 +632,7 @@ func dropENOENT(err error) error {
 	return err
 }
 
-// LookupSrcAddr returns the rule_id that a packet from addr would
-// hit via the src LPM map, honoring the longest-prefix-match the
-// kernel would perform. Returns (0, false, nil) when no prefix in
-// the trie covers the address. Used by tests and the reconciler's
-// drift-check path — never on the packet-processing hot path.
-func (l *RulesLoader) LookupSrcAddr(addr netip.Addr) (uint32, bool, error) {
-	return l.lookupAddr(addr, l.srcV4, l.srcV6)
-}
-
-// LookupDstAddr mirrors LookupSrcAddr but reads the dst LPM maps.
-func (l *RulesLoader) LookupDstAddr(addr netip.Addr) (uint32, bool, error) {
-	return l.lookupAddr(addr, l.dstV4, l.dstV6)
-}
-
-func (l *RulesLoader) lookupAddr(addr netip.Addr, v4, v6 *ebpf.Map) (uint32, bool, error) {
-	var rid uint32
-	if addr.Is4() {
-		k, err := addrToLPMv4(addr)
-		if err != nil {
-			return 0, false, err
-		}
-		if err := v4.Lookup(k, &rid); err != nil {
-			if errors.Is(err, ebpf.ErrKeyNotExist) {
-				return 0, false, nil
-			}
-			return 0, false, err
-		}
-		return rid, true, nil
-	}
-	k, err := addrToLPMv6(addr)
-	if err != nil {
-		return 0, false, err
-	}
-	if err := v6.Lookup(k, &rid); err != nil {
-		if errors.Is(err, ebpf.ErrKeyNotExist) {
-			return 0, false, nil
-		}
-		return 0, false, err
-	}
-	return rid, true, nil
-}
-
-// ResetRateV4 clears the token bucket for (ruleID, addr) so the next
-// packet starts from a fresh state. Used by the reconciler when a
-// rule's pps/burst changes and by operator tools that want to lift a
-// throttle without waiting for natural refill. Deleting a non-existent
-// bucket returns nil (BPF's ENOENT is folded to nil by dropENOENT).
+// ResetRateV4 clears the token bucket for (ruleID, addr).
 func (l *RulesLoader) ResetRateV4(ruleID uint32, addr netip.Addr) error {
 	k, err := newRateKeyV4(ruleID, addr)
 	if err != nil {
@@ -616,7 +641,6 @@ func (l *RulesLoader) ResetRateV4(ruleID uint32, addr netip.Addr) error {
 	return dropENOENT(l.rateV4.Delete(k))
 }
 
-// ResetRateV6 is the v6 counterpart of ResetRateV4.
 func (l *RulesLoader) ResetRateV6(ruleID uint32, addr netip.Addr) error {
 	k, err := newRateKeyV6(ruleID, addr)
 	if err != nil {
@@ -626,10 +650,7 @@ func (l *RulesLoader) ResetRateV6(ruleID uint32, addr netip.Addr) error {
 }
 
 // PeekRateV4 returns the token bucket for (ruleID, addr) summed across
-// all CPUs. PERCPU_HASH reads produce one copy per CPU; summing is the
-// right reduction for tokens (total available) but wrong for
-// LastSeenNs — we take the max (most recent) instead. Returns
-// (zero-value, false, nil) when no bucket exists.
+// CPUs.
 func (l *RulesLoader) PeekRateV4(ruleID uint32, addr netip.Addr) (RateTokens, bool, error) {
 	k, err := newRateKeyV4(ruleID, addr)
 	if err != nil {
@@ -638,7 +659,6 @@ func (l *RulesLoader) PeekRateV4(ruleID uint32, addr netip.Addr) (RateTokens, bo
 	return peekRate(l.rateV4, k)
 }
 
-// PeekRateV6 is the v6 counterpart of PeekRateV4.
 func (l *RulesLoader) PeekRateV6(ruleID uint32, addr netip.Addr) (RateTokens, bool, error) {
 	k, err := newRateKeyV6(ruleID, addr)
 	if err != nil {
@@ -649,10 +669,7 @@ func (l *RulesLoader) PeekRateV6(ruleID uint32, addr netip.Addr) (RateTokens, bo
 
 // PeekRuleHits returns the cumulative (packets, bytes) counter for a
 // rule, summed across CPUs. Returns (zero, false, nil) when the rule
-// has never fired (no bucket yet) or when the spec omits the
-// rule_hits map (tests). The map is PERCPU_HASH so the single read
-// translates into NumCPU() separate memory locations; cost is fine
-// for API / metric scrape cadences, not for the packet hot path.
+// has never fired or when the spec omits the rule_hits map (tests).
 func (l *RulesLoader) PeekRuleHits(ruleID uint32) (RuleHits, bool, error) {
 	if l == nil || l.ruleHits == nil {
 		return RuleHits{}, false, nil
@@ -672,11 +689,7 @@ func (l *RulesLoader) PeekRuleHits(ruleID uint32) (RuleHits, bool, error) {
 	return sum, true, nil
 }
 
-// ResetRuleHits clears the counter for a rule. Used by the reconciler
-// when a rule is removed and by operator tools that want to zero a
-// counter without waiting for a restart. Deleting a non-existent key
-// returns nil (BPF's ENOENT is folded via dropENOENT). No-op when the
-// spec omits the counter map.
+// ResetRuleHits clears the counter for a rule.
 func (l *RulesLoader) ResetRuleHits(ruleID uint32) error {
 	if l == nil || l.ruleHits == nil {
 		return nil

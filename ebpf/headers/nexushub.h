@@ -1,10 +1,16 @@
 /* SPDX-License-Identifier: GPL-2.0
  * Shared types between C (eBPF) and Go (userspace). Keep in lockstep
- * with ebpf/userspace/types.go — the bpf2go code-gen verifies the two
+ * with ebpf/userspace/rules.go — the bpf2go code-gen verifies the two
  * agree, but until that runs these are a manual contract.
  *
  * Layout is little-endian-sensitive. All packed fields, no padding
  * tricks: the Go side mirrors each struct with explicit _pad bytes.
+ *
+ * v2.1 — per-packet iteration. ADR 0005 replaces the LPM-by-source
+ * matching of v2.0 with a packed array of full rule records and a
+ * bpf_loop driver. struct rule_meta + the four LPM tries are gone;
+ * rule_table_v4 / rule_table_v6 now carry every active rule with its
+ * src/dst CIDR inlined, so two rules sharing a src can both enforce.
  */
 #pragma once
 
@@ -31,55 +37,64 @@ enum rule_direction {
     DIR_BOTH    = 2,
 };
 
-/* LPM_TRIE keys. prefixlen is measured in BITS, not bytes — kernel
- * walks the trie bit-by-bit up to this depth. addr is network byte
- * order (big-endian) because that's the packet layout. */
-struct lpm_v4_key {
-    __u32 prefixlen;
-    __u8  addr[4];
+/* rule_v4_record — one slot in the per-packet iteration array. The
+ * record carries everything the kernel needs to match a packet AND to
+ * dispatch the action, so we never have to chase a second map lookup.
+ *
+ * Address bytes are stored raw on-wire (network byte order, big-endian
+ * regardless of host) to match iphdr->saddr/daddr. prefix_len is in
+ * bits (0..32).
+ *
+ * Total size: 44 bytes. Naturally 4-byte-aligned; no compiler padding.
+ */
+struct rule_v4_record {
+    __u8  action;          /* offset 0  : ACTION_* */
+    __u8  protocol;        /* offset 1  : PROTO_*  */
+    __u8  direction;       /* offset 2  : DIR_*    */
+    __u8  is_active;       /* offset 3  : 0/1      */
+    __u8  has_src;         /* offset 4  : 1 → gate on src_addr/src_prefix_len */
+    __u8  has_dst;         /* offset 5  : 1 → gate on dst_addr/dst_prefix_len */
+    __u8  has_protocol;    /* offset 6  : 1 → protocol != PROTO_ANY */
+    __u8  src_prefix_len;  /* offset 7  : 0..32 (bits) */
+    __u8  dst_prefix_len;  /* offset 8  : 0..32 (bits) */
+    __u8  _pad[3];         /* offset 9..11 : align next u32 */
+    __u32 rate_pps;        /* offset 12 */
+    __u32 rate_burst;      /* offset 16 */
+    __u16 src_port_from;   /* offset 20 */
+    __u16 src_port_to;     /* offset 22 */
+    __u16 dst_port_from;   /* offset 24 */
+    __u16 dst_port_to;     /* offset 26 */
+    __u16 priority;        /* offset 28 */
+    __u16 _pad2;           /* offset 30 */
+    __u8  src_addr[4];     /* offset 32 : on-wire (network) byte order */
+    __u8  dst_addr[4];     /* offset 36 : on-wire (network) byte order */
+    __u32 rule_id;         /* offset 40 : stable id for rule_hits keying */
 };
 
-struct lpm_v6_key {
-    __u32 prefixlen;
-    __u8  addr[16];
-};
-
-/* rule_meta — one entry per active rule row. Sized to 28 bytes so the
- * hash table packs well and a lookup stays in one cacheline.
- *
- * Round 6: the trailing __u32 _pad2 was repurposed as three condition
- * flags + one pad byte. The flags let decide_* tell apart "rule has
- * no destination condition" from "rule has a destination condition
- * that didn't match". Without them, a rule defined as
- *   DENY src 10.9.0.2/32 dst 10.8.0.0/24
- * would block every destination from 10.9.0.2 because the kernel had
- * no way to know the dst CIDR was a required filter, not a missing
- * lookup. has_dst=1 forces the dst LPM check; has_src and has_protocol
- * are symmetric for forward-compat.
- *
- * Note for operators upgrading: the meta map size is unchanged at 28
- * bytes, but old userspace + new kernel (or vice versa) will load
- * stale flag values. The pinned bpffs maps survive a process restart;
- * if you see weird matching after upgrading the binary, run
- *   rm -rf /sys/fs/bpf/nexushub
- * and let the API re-create them on next start. */
-struct rule_meta {
+/* rule_v6_record — IPv6 mirror. Same layout up to the address fields,
+ * then 16-byte src/dst inline. Total size: 68 bytes. */
+struct rule_v6_record {
     __u8  action;
     __u8  protocol;
     __u8  direction;
     __u8  is_active;
+    __u8  has_src;
+    __u8  has_dst;
+    __u8  has_protocol;
+    __u8  src_prefix_len;  /* 0..128 */
+    __u8  dst_prefix_len;  /* 0..128 */
+    __u8  _pad[3];
+    __u32 rate_pps;
+    __u32 rate_burst;
     __u16 src_port_from;
     __u16 src_port_to;
     __u16 dst_port_from;
     __u16 dst_port_to;
     __u16 priority;
-    __u16 _pad;
-    __u32 rate_pps;
-    __u32 rate_burst;
-    __u8  has_src;       /* 1 if rule has a src CIDR; src LPM hit's rule_id must equal this rule's */
-    __u8  has_dst;       /* 1 if rule has a dst CIDR; dst LPM must hit this same rule_id */
-    __u8  has_protocol;  /* 1 if protocol != PROTO_ANY (informational; protocol_matches still gates) */
-    __u8  _pad2;
+    __u16 _pad2;
+    __u8  src_addr[16];
+    __u8  dst_addr[16];
+    __u32 rule_id;
 };
 
 /* rate_tokens — PERCPU_HASH value for rate_limit accounting.
@@ -136,10 +151,13 @@ struct log_event {
     __u8  dst_addr[16];
 };
 
-/* Upper bounds are compile-time constants; a deploy that outgrows them
- * rebuilds with new values. Unbounded maps are a DoS vector. */
-#define MAX_RULES        10000
-#define MAX_LPM_V4       10000
-#define MAX_LPM_V6       10000
-#define MAX_RATE_STATE   65536
-#define LOG_RINGBUF_SIZE (1 << 20)
+/* Upper bounds are compile-time constants. The v2.1 engine iterates
+ * every active rule per packet, so MAX_ACTIVE_RULES_* is a real cap
+ * the loader enforces (the syncer rejects an Apply that would push
+ * the table over 256). Operators with bigger fleets break the rule
+ * set down or wait for the v2.2 partitioned design. */
+#define MAX_ACTIVE_RULES_V4  256
+#define MAX_ACTIVE_RULES_V6  256
+#define MAX_RULES            (MAX_ACTIVE_RULES_V4 + MAX_ACTIVE_RULES_V6)
+#define MAX_RATE_STATE       65536
+#define LOG_RINGBUF_SIZE     (1 << 20)

@@ -1,11 +1,14 @@
 # ADR 0005 — eBPF rule engine v2: per-packet iteration
 
-- Status: proposed (round 10 plan; v2.1 ships the implementation)
+- Status: accepted (v2.1 shipped in round 11, 2026-05-12)
 - Date: 2026-05-12
 - Supersedes the lookup-by-source-LPM behaviour established in ADR 0004
 - Driven by bare-metal round-8/9/10 reports: deny rules visible as
   `LOADED` in the UI fail to enforce because two rules sharing a src
   CIDR collide on a single LPM trie slot
+- Round-11 closes this ADR. The shadow-by-X UI hint round 10 added is
+  gone; the engine genuinely supports multiple rules per src/dst CIDR
+  now, evaluated in priority order via `bpf_loop`.
 
 ## Context
 

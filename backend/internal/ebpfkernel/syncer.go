@@ -1,26 +1,26 @@
 // Package ebpfkernel bridges the backend's in-process rule world
 // (internal/ebpf.Rule, identified by uuid.UUID) onto the kernel-side
-// map runtime owned by ebpf/userspace.RulesLoader (identified by a
-// u32 rule_id).
+// map runtime owned by ebpf/userspace.RulesLoader.
 //
 // Placement: this is the only backend package allowed to import
-// ebpf/userspace and pull cilium/ebpf into the compile graph. The
-// sibling internal/ebpf package stays dependency-free so handlers,
-// tests, and stubs can depend on the Syncer interface without paying
-// the BPF-toolchain tax.
+// ebpf/userspace and pull cilium/ebpf into the compile graph.
 //
-// Identity: rule UUIDs come from PostgreSQL; kernel maps index by a
-// u32 rule_id. KernelSyncer holds an in-memory uuid → u32 table
-// seeded lazily on first Apply and rebuilt wholesale on Reconcile.
-// Restarting the process drops the table — that's fine because
-// Reconcile runs on boot and re-populates it from the DB's active
-// set before any handler can call Apply.
+// v2.1 — per-packet iteration. The kernel now stores active rules in
+// two packed BPF arrays (rule_table_v4 / rule_table_v6) and walks them
+// per packet via bpf_loop. KernelSyncer maintains the in-memory truth
+// of every active rule and, on every change, rewrites the two arrays
+// in priority-sorted order then publishes the new count. ADR 0005 has
+// the full design.
 //
-// Ordering: every public method takes a single mutex. Apply and
-// Delete are handler-synchronous (p99 < 1ms, pure map writes), so
-// coarse locking is both safe and simple. Reconcile is called from
-// the background sweep and may hold the lock for longer; the sweep
-// cadence is seconds, not per-request, so that's fine too.
+// Identity: rule UUIDs come from PostgreSQL; each gets a stable u32
+// kernel_id at first Apply, recorded in the slot's rule_id field and
+// used as the rule_hits key. The slot index itself is NOT stable —
+// it changes whenever priority order shifts.
+//
+// Ordering: every public method takes a single mutex. Apply, Delete,
+// and Reconcile are handler- or sweep-synchronous and rewrite at most
+// 256 v4 + 256 v6 records per call — well under a millisecond even on
+// the slow path.
 package ebpfkernel
 
 import (
@@ -29,6 +29,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/netip"
+	"sort"
 	"sync"
 
 	"github.com/google/uuid"
@@ -37,44 +38,64 @@ import (
 	"github.com/tomeksdev/NexusHub/ebpf/userspace"
 )
 
-// Compile-time assertion that KernelSyncer satisfies the Syncer
-// contract the handlers depend on.
+// Compile-time assertion that KernelSyncer satisfies the Syncer contract.
 var _ baseebpf.Syncer = (*KernelSyncer)(nil)
+
+// family flags the IP family a rule applies to. A rule with no CIDR
+// constraints (wildcard) is "both": it goes into both v4 and v6
+// tables so it matches every packet on the hook regardless of family.
+type family uint8
+
+const (
+	familyV4   family = 1
+	familyV6   family = 2
+	familyBoth family = familyV4 | familyV6
+)
+
+// activeRule is the syncer's in-memory copy of a rule. We carry the
+// kernel-side record bytes pre-built so rebuilds don't repeat the
+// translation work — the kernel_id is the only field that mutates
+// across an Apply (slot index changes; rule_id stays).
+type activeRule struct {
+	id        uuid.UUID
+	kernelID  uint32        // stable across Apply cycles
+	priority  uint16
+	fam       family
+	v4Record  userspace.RuleV4Record // valid when fam includes v4
+	v6Record  userspace.RuleV6Record // valid when fam includes v6
+}
 
 // KernelSyncer writes rule updates into the BPF map set owned by a
 // RulesLoader. The loader's lifecycle is external: construct it once
 // at startup, pass it here, let main.go Close() it at shutdown.
-// KernelSyncer.Close is a no-op on the loader for that reason — it
-// only clears local state.
 type KernelSyncer struct {
 	loader *userspace.RulesLoader
 	logger *slog.Logger
 
 	mu sync.Mutex
 
-	// ids maps PostgreSQL uuid → kernel u32 rule_id. revIDs is the
-	// inverse, used during Reconcile to find stale slots.
-	ids    map[uuid.UUID]uint32
-	revIDs map[uint32]uuid.UUID
+	// rules holds the full active set keyed by uuid. Slot index is
+	// derived at flush time from priority order — not stored.
+	rules map[uuid.UUID]*activeRule
 
-	// nextID is a monotonically-increasing sequence. Gaps left by
-	// Delete are intentionally not reused: rule_ids are a debug
-	// handle, and stable-over-lifetime ordering helps when reading
-	// Prometheus series or raw map dumps.
-	nextID uint32
+	// kernelIDs maps uuid → stable u32 used as the rule_hits key
+	// AND stored in the record's rule_id field. Allocated lazily on
+	// first Apply; never reused after Delete so per-rule counters
+	// stay meaningful across the rule's lifetime.
+	kernelIDs    map[uuid.UUID]uint32
+	revKernelIDs map[uint32]uuid.UUID
+	nextKernelID uint32
 
-	// srcPrefixes/dstPrefixes remember the last-programmed CIDR for
-	// each rule so Apply can evict an old LPM entry when the rule's
-	// CIDR changes, and Delete can clean up. Without this map the
-	// kernel would leak LPM rows on every CIDR rewrite.
-	srcPrefixes map[uuid.UUID]netip.Prefix
-	dstPrefixes map[uuid.UUID]netip.Prefix
+	// lastV4Count / lastV6Count remember how many slots were written
+	// on the previous flush so we can clear the now-unused tail when
+	// the active set shrinks. Slots past the new count are never read
+	// by bpf_loop, but clearing them avoids confusing operators who
+	// dump rule_table_v4 with bpftool.
+	lastV4Count uint32
+	lastV6Count uint32
 }
 
 // NewKernelSyncer wires a KernelSyncer around an existing loader.
-// The loader must outlive the syncer. A nil logger falls back to
-// slog.Default so callers that don't care about logging can pass
-// nil and move on.
 func NewKernelSyncer(loader *userspace.RulesLoader, logger *slog.Logger) (*KernelSyncer, error) {
 	if loader == nil {
 		return nil, errors.New("nil loader")
@@ -83,286 +104,368 @@ func NewKernelSyncer(loader *userspace.RulesLoader, logger *slog.Logger) (*Kerne
 		logger = slog.Default()
 	}
 	return &KernelSyncer{
-		loader:      loader,
-		logger:      logger,
-		ids:         make(map[uuid.UUID]uint32),
-		revIDs:      make(map[uint32]uuid.UUID),
-		nextID:      1,
-		srcPrefixes: make(map[uuid.UUID]netip.Prefix),
-		dstPrefixes: make(map[uuid.UUID]netip.Prefix),
+		loader:       loader,
+		logger:       logger,
+		rules:        make(map[uuid.UUID]*activeRule),
+		kernelIDs:    make(map[uuid.UUID]uint32),
+		revKernelIDs: make(map[uint32]uuid.UUID),
+		nextKernelID: 1,
 	}, nil
 }
 
-// Apply programs the rule into the kernel. It is safe to call for a
-// rule that was already applied — the write is an upsert, and
-// changed CIDRs trigger eviction of the prior LPM entry before the
-// new one lands.
-//
-// Meta write first, then LPM writes: order matters because the XDP
-// program consults rule_meta after a successful LPM hit. Installing
-// the LPM entry before the meta would give a brief window where a
-// packet could hit the prefix with no backing meta row; the
-// program's nil-check handles that gracefully (XDP_PASS), but the
-// order below keeps the window closed on the happy path too.
+// Apply programs the rule into the kernel. Idempotent: applying the
+// same rule twice converges to the same state. The kernel state
+// converges atomically per family — we rewrite each table top-to-
+// bottom then publish the count, so packets in flight either see
+// the old set or the new set, never a torn intermediate.
 func (s *KernelSyncer) Apply(ctx context.Context, r baseebpf.Rule) error {
-	meta, err := ruleToMeta(r)
-	if err != nil {
-		return fmt.Errorf("rule %s: %w", r.ID, err)
-	}
-
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	rid, existed := s.ids[r.ID]
-	if !existed {
-		rid = s.nextID
-		s.nextID++
+	kid := s.kernelIDFor(r.ID)
+	ar, err := buildActiveRule(r, kid)
+	if err != nil {
+		return fmt.Errorf("rule %s: %w", r.ID, err)
 	}
-
-	if err := s.loader.PutRuleMeta(rid, meta); err != nil {
-		return fmt.Errorf("put rule_meta for %s: %w", r.ID, err)
-	}
-
-	// Commit the id mapping only after the meta write succeeded so a
-	// retry after a map-full error re-allocates from the same slot.
-	if !existed {
-		s.ids[r.ID] = rid
-		s.revIDs[rid] = r.ID
-	}
-
-	if err := s.reprogramPrefix(ctx, r.ID, rid, r.SrcCIDR, s.srcPrefixes,
-		s.loader.PutSrcPrefix, s.loader.DeleteSrcPrefix, "src"); err != nil {
-		return err
-	}
-	if err := s.reprogramPrefix(ctx, r.ID, rid, r.DstCIDR, s.dstPrefixes,
-		s.loader.PutDstPrefix, s.loader.DeleteDstPrefix, "dst"); err != nil {
-		return err
-	}
-	return nil
+	s.rules[r.ID] = ar
+	return s.flushLocked(ctx)
 }
 
-// Delete removes every trace of the rule from the kernel. Calling
-// Delete for a rule that was never Applied is a no-op — mirrors the
-// "end state matches intent" invariant shared by the rest of the
-// reconcile path.
+// Delete removes the rule from kernel state.
 func (s *KernelSyncer) Delete(ctx context.Context, ruleID uuid.UUID) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.deleteLocked(ctx, ruleID)
 }
 
-// Reconcile converges kernel state to the given active set. Rules
-// we know about that aren't in active are removed; rules in active
-// are re-Applied so field drift (priority, ports, rate) is fixed.
-//
-// Errors on individual rules are logged and swallowed: the sweep
-// must not abort mid-way because one map write failed, or a single
-// bad rule would block every other rule's convergence. The caller
-// (reconciler loop) gets nil on partial success.
+// Reconcile converges kernel state to the given active set.
 func (s *KernelSyncer) Reconcile(ctx context.Context, active []baseebpf.Rule) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	wanted := make(map[uuid.UUID]struct{}, len(active))
 	for _, r := range active {
 		wanted[r.ID] = struct{}{}
 	}
-
-	s.mu.Lock()
-	stale := make([]uuid.UUID, 0)
-	for id := range s.ids {
+	for id := range s.rules {
 		if _, ok := wanted[id]; !ok {
-			stale = append(stale, id)
+			delete(s.rules, id)
 		}
 	}
-	for _, id := range stale {
-		if err := s.deleteLocked(ctx, id); err != nil {
-			s.logger.WarnContext(ctx, "reconcile: delete stale rule", "rule_id", id, "err", err)
-		}
-	}
-	s.mu.Unlock()
-
-	// Apply releases and re-acquires the mutex per rule; that's OK
-	// because no one else writes through the syncer concurrently
-	// (handlers and reconciler share the same serial loop feeding
-	// this type).
 	for _, r := range active {
-		if err := s.Apply(ctx, r); err != nil {
-			s.logger.WarnContext(ctx, "reconcile: apply rule", "rule_id", r.ID, "err", err)
+		kid := s.kernelIDFor(r.ID)
+		ar, err := buildActiveRule(r, kid)
+		if err != nil {
+			s.logger.WarnContext(ctx, "reconcile: build rule", "rule_id", r.ID, "err", err)
+			continue
 		}
+		s.rules[r.ID] = ar
 	}
-	return nil
+	return s.flushLocked(ctx)
 }
 
 // ResolveRuleID inverts the kernel-side u32 → application-side UUID
-// mapping. Used by the log consumer to translate the rule_id stamped
-// into a ringbuf event back into the UUID that connection_logs
-// stores. Returns (zero, false) when the kernel id isn't known —
-// typically a stale event arriving after Delete.
+// mapping. Used by the log consumer to translate a rule_id stamped
+// into a ringbuf event back into a UUID.
 func (s *KernelSyncer) ResolveRuleID(rid uint32) (uuid.UUID, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	id, ok := s.revIDs[rid]
+	id, ok := s.revKernelIDs[rid]
 	return id, ok
 }
 
-// Has reports whether the rule UUID has a current kernel mapping.
-// True means Apply previously succeeded for this rule and Delete
-// hasn't run since. The handler renders this alongside is_active
-// so operators can tell apart "DB-disabled" from "kernel didn't
-// load this".
+// Has reports whether the rule UUID is currently programmed.
 func (s *KernelSyncer) Has(id uuid.UUID) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	_, ok := s.ids[id]
+	_, ok := s.rules[id]
 	return ok
 }
 
 // Hits returns the kernel-side packets/bytes counter for the rule.
-// ok=false when the rule isn't programmed, or the rule_hits map has
-// no entry yet (counter is created lazily on first match). The
-// rules-list handler renders this so an operator can tell at a
-// glance whether a "LOADED" rule is actually seeing traffic.
 func (s *KernelSyncer) Hits(id uuid.UUID) (packets, bytes uint64, ok bool) {
 	s.mu.Lock()
-	rid, exists := s.ids[id]
+	kid, exists := s.kernelIDs[id]
 	s.mu.Unlock()
 	if !exists {
 		return 0, 0, false
 	}
-	hits, present, err := s.loader.PeekRuleHits(rid)
+	hits, present, err := s.loader.PeekRuleHits(kid)
 	if err != nil || !present {
 		return 0, 0, false
 	}
 	return hits.Packets, hits.Bytes, true
 }
 
-// Close releases in-memory state. The underlying loader is owned by
-// the caller and deliberately not closed here — a caller that built
-// the loader once and attached both the XDP and TC programs would
-// otherwise lose the kernel attach when one syncer instance exits.
+// Close clears in-memory state. Loader is caller-owned.
 func (s *KernelSyncer) Close() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.ids = nil
-	s.revIDs = nil
-	s.srcPrefixes = nil
-	s.dstPrefixes = nil
+	s.rules = nil
+	s.kernelIDs = nil
+	s.revKernelIDs = nil
 	return nil
 }
 
-// deleteLocked is the mutex-held core of Delete, reused by Reconcile
-// for its stale-slot sweep.
+// kernelIDFor returns a stable u32 for the rule UUID, allocating on
+// first use. nextKernelID monotonically increases; gaps from Delete
+// are deliberately not reused so per-rule counters retain their
+// historical identity.
+func (s *KernelSyncer) kernelIDFor(id uuid.UUID) uint32 {
+	if kid, ok := s.kernelIDs[id]; ok {
+		return kid
+	}
+	kid := s.nextKernelID
+	s.nextKernelID++
+	s.kernelIDs[id] = kid
+	s.revKernelIDs[kid] = id
+	return kid
+}
+
 func (s *KernelSyncer) deleteLocked(ctx context.Context, ruleID uuid.UUID) error {
-	rid, ok := s.ids[ruleID]
-	if !ok {
+	if _, ok := s.rules[ruleID]; !ok {
 		return nil
 	}
+	delete(s.rules, ruleID)
+	return s.flushLocked(ctx)
+}
 
-	if err := s.loader.DeleteRuleMeta(rid); err != nil {
-		return fmt.Errorf("delete rule_meta for %s: %w", ruleID, err)
+// flushLocked rebuilds rule_table_v4 + rule_table_v6 from the current
+// in-memory rule set, in descending-priority order (highest first).
+// Caller holds s.mu.
+//
+// Order of map writes matters for the in-flight-packet view:
+//  1. Write every populated slot
+//  2. Clear the tail (slots past the new count, up to lastCount)
+//  3. Publish the new count
+//
+// Packets that read count before step 3 still iterate slots 0..oldCount-1
+// where each slot is either the new value (already written) or a stale
+// rule (still valid until step 3 shrinks the count). Either case is
+// safe; we never expose a half-written slot.
+func (s *KernelSyncer) flushLocked(ctx context.Context) error {
+	v4, v6 := s.partitionAndSortLocked()
+
+	if len(v4) > userspace.MaxActiveRulesV4 {
+		return fmt.Errorf("active v4 rule count %d exceeds kernel max %d",
+			len(v4), userspace.MaxActiveRulesV4)
 	}
-	if prev, ok := s.srcPrefixes[ruleID]; ok {
-		if err := s.loader.DeleteSrcPrefix(prev); err != nil {
-			s.logger.WarnContext(ctx, "delete src prefix", "rule_id", ruleID, "cidr", prev, "err", err)
+	if len(v6) > userspace.MaxActiveRulesV6 {
+		return fmt.Errorf("active v6 rule count %d exceeds kernel max %d",
+			len(v6), userspace.MaxActiveRulesV6)
+	}
+
+	// v4: write populated, clear tail, publish count.
+	for i, ar := range v4 {
+		if err := s.loader.PutRuleV4(uint32(i), ar.v4Record); err != nil {
+			return fmt.Errorf("put v4 slot %d: %w", i, err)
 		}
-		delete(s.srcPrefixes, ruleID)
 	}
-	if prev, ok := s.dstPrefixes[ruleID]; ok {
-		if err := s.loader.DeleteDstPrefix(prev); err != nil {
-			s.logger.WarnContext(ctx, "delete dst prefix", "rule_id", ruleID, "cidr", prev, "err", err)
+	for i := uint32(len(v4)); i < s.lastV4Count; i++ {
+		if err := s.loader.ClearRuleV4(i); err != nil {
+			s.logger.WarnContext(ctx, "clear v4 tail", "slot", i, "err", err)
 		}
-		delete(s.dstPrefixes, ruleID)
 	}
-	delete(s.ids, ruleID)
-	delete(s.revIDs, rid)
+	if err := s.loader.SetRuleCountV4(uint32(len(v4))); err != nil {
+		return fmt.Errorf("set v4 count: %w", err)
+	}
+	s.lastV4Count = uint32(len(v4))
+
+	// v6: same shape.
+	for i, ar := range v6 {
+		if err := s.loader.PutRuleV6(uint32(i), ar.v6Record); err != nil {
+			return fmt.Errorf("put v6 slot %d: %w", i, err)
+		}
+	}
+	for i := uint32(len(v6)); i < s.lastV6Count; i++ {
+		if err := s.loader.ClearRuleV6(i); err != nil {
+			s.logger.WarnContext(ctx, "clear v6 tail", "slot", i, "err", err)
+		}
+	}
+	if err := s.loader.SetRuleCountV6(uint32(len(v6))); err != nil {
+		return fmt.Errorf("set v6 count: %w", err)
+	}
+	s.lastV6Count = uint32(len(v6))
+
 	return nil
 }
 
-// reprogramPrefix is the common body of src+dst prefix lifecycle:
-// evict any previously-programmed CIDR for this rule that no longer
-// matches (or is no longer present), then insert the new one if the
-// rule carries one. Called with the outer mutex held.
-func (s *KernelSyncer) reprogramPrefix(
-	ctx context.Context,
-	ruleID uuid.UUID,
-	rid uint32,
-	want *netip.Prefix,
-	cache map[uuid.UUID]netip.Prefix,
-	put func(netip.Prefix, uint32) error,
-	del func(netip.Prefix) error,
-	side string,
-) error {
-	prev, had := cache[ruleID]
-	switch {
-	case had && want == nil:
-		// Rule dropped its CIDR.
-		if err := del(prev); err != nil {
-			s.logger.WarnContext(ctx, "evict prefix", "side", side, "rule_id", ruleID, "cidr", prev, "err", err)
+// partitionAndSortLocked splits the rule set by IP family and sorts
+// each partition by descending priority (then UUID for stable tie-break).
+// Rules with familyBoth land in both partitions.
+func (s *KernelSyncer) partitionAndSortLocked() (v4, v6 []*activeRule) {
+	v4 = make([]*activeRule, 0, len(s.rules))
+	v6 = make([]*activeRule, 0, len(s.rules))
+	for _, ar := range s.rules {
+		if ar.fam&familyV4 != 0 {
+			v4 = append(v4, ar)
 		}
-		delete(cache, ruleID)
-	case had && want != nil && *want != prev:
-		// Rule changed its CIDR — evict old before insert so a brief
-		// gap is preferred over a transient double-hit against two
-		// rule_ids for the same packet.
-		if err := del(prev); err != nil {
-			s.logger.WarnContext(ctx, "evict stale prefix", "side", side, "rule_id", ruleID, "cidr", prev, "err", err)
+		if ar.fam&familyV6 != 0 {
+			v6 = append(v6, ar)
 		}
-		delete(cache, ruleID)
 	}
-	if want != nil {
-		if err := put(*want, rid); err != nil {
-			return fmt.Errorf("put %s prefix for %s: %w", side, ruleID, err)
-		}
-		cache[ruleID] = *want
-	}
-	return nil
+	sortByPriority(v4)
+	sortByPriority(v6)
+	return v4, v6
 }
 
-// ruleToMeta lowers the handler-facing Rule into the exact bytes the
-// BPF program reads. Enum strings come in straight from the JSON
-// validator, so any surprise here means a caller bypassed the
-// validator — fail loud.
-func ruleToMeta(r baseebpf.Rule) (userspace.RuleMeta, error) {
+func sortByPriority(rules []*activeRule) {
+	sort.Slice(rules, func(i, j int) bool {
+		if rules[i].priority != rules[j].priority {
+			return rules[i].priority > rules[j].priority
+		}
+		return rules[i].id.String() < rules[j].id.String()
+	})
+}
+
+// buildActiveRule lowers a baseebpf.Rule into the per-family records
+// the kernel reads. Family is inferred from the CIDRs:
+//   - both nil       → wildcard, both families
+//   - one v4 only    → v4 family
+//   - one v6 only    → v6 family
+//   - src/dst mixed  → error (can't program a v4-src + v6-dst rule)
+func buildActiveRule(r baseebpf.Rule, kernelID uint32) (*activeRule, error) {
 	action, err := actionByte(r.Action)
 	if err != nil {
-		return userspace.RuleMeta{}, err
+		return nil, err
 	}
 	proto, err := protocolByte(r.Protocol)
 	if err != nil {
-		return userspace.RuleMeta{}, err
+		return nil, err
 	}
 	dir, err := directionByte(r.Direction)
 	if err != nil {
-		return userspace.RuleMeta{}, err
+		return nil, err
 	}
-	meta := userspace.RuleMeta{
-		Action:      action,
-		Protocol:    proto,
-		Direction:   dir,
-		IsActive:    1,
-		SrcPortFrom: deref16(r.SrcPortFrom),
-		SrcPortTo:   deref16(r.SrcPortTo),
-		DstPortFrom: deref16(r.DstPortFrom),
-		DstPortTo:   deref16(r.DstPortTo),
-		Priority:    r.Priority,
-		RatePPS:     deref32(r.RatePPS),
-		RateBurst:   deref32(r.RateBurst),
+
+	fam, err := familyFor(r.SrcCIDR, r.DstCIDR)
+	if err != nil {
+		return nil, err
 	}
-	// Round-6 condition flags. The kernel uses these to gate the
-	// dst LPM lookup: a rule defined as "DENY src=X dst=Y" lands in
-	// both rule_src_v4 (X→rule_id) and rule_dst_v4 (Y→rule_id), and
-	// has_dst=1 forces the kernel to verify the dst LPM hit before
-	// applying the rule action. Without the flag the kernel would
-	// fall back to src-only matching and over-block (the bug fixed
-	// in this round).
+
+	ar := &activeRule{
+		id:       r.ID,
+		kernelID: kernelID,
+		priority: r.Priority,
+		fam:      fam,
+	}
+
+	hasSrc := uint8(0)
 	if r.SrcCIDR != nil {
-		meta.HasSrc = 1
+		hasSrc = 1
 	}
+	hasDst := uint8(0)
 	if r.DstCIDR != nil {
-		meta.HasDst = 1
+		hasDst = 1
 	}
-	if proto != 0 { // 0 = PROTO_ANY
-		meta.HasProtocol = 1
+	hasProto := uint8(0)
+	if proto != 0 {
+		hasProto = 1
 	}
-	return meta, nil
+
+	if fam&familyV4 != 0 {
+		ar.v4Record = userspace.RuleV4Record{
+			Action:       action,
+			Protocol:     proto,
+			Direction:    dir,
+			IsActive:     1,
+			HasSrc:       hasSrc,
+			HasDst:       hasDst,
+			HasProtocol:  hasProto,
+			SrcPrefixLen: prefixLenV4(r.SrcCIDR),
+			DstPrefixLen: prefixLenV4(r.DstCIDR),
+			RatePPS:      deref32(r.RatePPS),
+			RateBurst:    deref32(r.RateBurst),
+			SrcPortFrom:  deref16(r.SrcPortFrom),
+			SrcPortTo:    deref16(r.SrcPortTo),
+			DstPortFrom:  deref16(r.DstPortFrom),
+			DstPortTo:    deref16(r.DstPortTo),
+			Priority:     r.Priority,
+			SrcAddr:      prefixAddrV4(r.SrcCIDR),
+			DstAddr:      prefixAddrV4(r.DstCIDR),
+			RuleID:       kernelID,
+		}
+	}
+	if fam&familyV6 != 0 {
+		ar.v6Record = userspace.RuleV6Record{
+			Action:       action,
+			Protocol:     proto,
+			Direction:    dir,
+			IsActive:     1,
+			HasSrc:       hasSrc,
+			HasDst:       hasDst,
+			HasProtocol:  hasProto,
+			SrcPrefixLen: prefixLenV6(r.SrcCIDR),
+			DstPrefixLen: prefixLenV6(r.DstCIDR),
+			RatePPS:      deref32(r.RatePPS),
+			RateBurst:    deref32(r.RateBurst),
+			SrcPortFrom:  deref16(r.SrcPortFrom),
+			SrcPortTo:    deref16(r.SrcPortTo),
+			DstPortFrom:  deref16(r.DstPortFrom),
+			DstPortTo:    deref16(r.DstPortTo),
+			Priority:     r.Priority,
+			SrcAddr:      prefixAddrV6(r.SrcCIDR),
+			DstAddr:      prefixAddrV6(r.DstCIDR),
+			RuleID:       kernelID,
+		}
+	}
+	return ar, nil
+}
+
+// familyFor classifies the rule's IP family from its CIDRs. Returns
+// an error when src+dst families disagree (e.g. v4 src + v6 dst);
+// a rule with no CIDRs is a wildcard and lands in both families.
+func familyFor(src, dst *netip.Prefix) (family, error) {
+	srcFam := familyOf(src)
+	dstFam := familyOf(dst)
+	switch {
+	case srcFam == 0 && dstFam == 0:
+		return familyBoth, nil
+	case srcFam != 0 && dstFam != 0 && srcFam != dstFam:
+		return 0, fmt.Errorf("rule src and dst CIDR families differ (src=%s, dst=%s)", src, dst)
+	case srcFam != 0:
+		return srcFam, nil
+	default:
+		return dstFam, nil
+	}
+}
+
+func familyOf(p *netip.Prefix) family {
+	if p == nil {
+		return 0
+	}
+	if p.Addr().Is4() {
+		return familyV4
+	}
+	return familyV6
+}
+
+func prefixLenV4(p *netip.Prefix) uint8 {
+	if p == nil || !p.Addr().Is4() {
+		return 0
+	}
+	return uint8(p.Bits())
+}
+
+func prefixLenV6(p *netip.Prefix) uint8 {
+	if p == nil || p.Addr().Is4() {
+		return 0
+	}
+	return uint8(p.Bits())
+}
+
+func prefixAddrV4(p *netip.Prefix) [4]byte {
+	if p == nil || !p.Addr().Is4() {
+		return [4]byte{}
+	}
+	return p.Addr().As4()
+}
+
+func prefixAddrV6(p *netip.Prefix) [16]byte {
+	if p == nil || p.Addr().Is4() {
+		return [16]byte{}
+	}
+	return p.Addr().As16()
 }
 
 // Enum values match ebpf/headers/nexushub.h. Keep in lockstep.
