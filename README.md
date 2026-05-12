@@ -2,14 +2,57 @@
 
 > WireGuard VPN management dashboard with eBPF security rules
 
+[![Status: v2.0.0-preview](https://img.shields.io/badge/status-v2.0.0--preview-yellow)](#status)
+[![No CDN](https://img.shields.io/badge/CDN-free-success)](#no-cdn-policy)
+[![WireGuard](https://img.shields.io/badge/WireGuard-supported-88171A?logo=wireguard&logoColor=white)](https://www.wireguard.com/)
+[![eBPF](https://img.shields.io/badge/eBPF-v2.1%20engine-blueviolet)](docs/architecture/0005-rule-engine.md)
 [![Go](https://img.shields.io/badge/go-1.25-00ADD8?logo=go&logoColor=white)](https://go.dev)
 [![Node](https://img.shields.io/badge/node-22.x-339933?logo=node.js&logoColor=white)](https://nodejs.org)
+[![PostgreSQL](https://img.shields.io/badge/postgres-16+-4169E1?logo=postgresql&logoColor=white)](https://www.postgresql.org)
 [![License](https://img.shields.io/github/license/tomeksdev/NexusHub)](LICENSE)
 [![CI](https://github.com/tomeksdev/NexusHub/actions/workflows/ci.yml/badge.svg?branch=dev)](https://github.com/tomeksdev/NexusHub/actions/workflows/ci.yml)
+
+**Deployment status:**
+
+[![Bare metal](https://img.shields.io/badge/bare--metal-tested-success)](#status)
+[![Docker](https://img.shields.io/badge/docker-testing-yellow)](#status)
+[![Helm](https://img.shields.io/badge/helm-planned-lightgrey)](#status)
 
 NexusHub is a self-hosted control plane for WireGuard that pairs a modern Go backend and React dashboard with programmable **eBPF** data-plane rules — per-peer allow/deny lists, rate limits, metering, and connection counters enforced in the kernel.
 
 > **Heads up — v2.0.0 is a full rewrite.** The v1.0.0 bash installer + Python WebGUI is being replaced. Legacy files remain in git history for reference.
+
+---
+
+## Status
+
+NexusHub is in **`v2.0.0-preview`** — the core control plane is functional and tested on bare metal, but several features are still landing before the production `v2.0.0` cut.
+
+**Working today:**
+
+- Peer lifecycle (create, edit, rotate PSK, revoke, QR/`.conf` export)
+- Multi-location WireGuard interface management with IP-pool allocation
+- eBPF rule engine v2.1 — per-packet iteration over a packed array via `bpf_loop`, multiple rules per source CIDR enforced in priority order
+- Per-rule kernel hit counters surfaced in the dashboard
+- Role-based admin/user UI with audit logging on every mutation
+- Self-service `/me/peers/:id/config` for non-admin users
+- Server-side AllowedIPs vs client routed networks separated cleanly (round 14)
+
+**Still TBD before `v2.0.0`:**
+
+- Default-deny system rules for cross-location traffic (operator-defined rules work; auto-generated baseline doesn't yet)
+- Dashboard redesign + monitoring rollups
+- Docker compose end-to-end test pass
+- Helm chart
+- Public installer script (`scripts/install.sh`)
+
+**Tested kernels:** 6.8+ (bpf_loop, ringbuf). Older kernels load the program but lose enforcement.
+
+## No-CDN policy
+
+NexusHub does **not** depend on external CDN assets. The frontend bundles its own JS, CSS, fonts, and icons via Vite — `npm run build` produces a self-contained `dist/` that works in air-gapped deployments. No `cdn.jsdelivr.net`, no `fonts.googleapis.com`, no remote font loaders. The browser network tab on a fresh load should show only same-origin requests.
+
+If you contribute a UI change, keep this invariant: don't add `<script src="https://...">` or `<link href="https://...">` references; install the package and import locally.
 
 ---
 
