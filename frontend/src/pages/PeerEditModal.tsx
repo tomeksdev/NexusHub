@@ -4,6 +4,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { CidrList, type CidrListHandle } from "../components/CidrList";
 import { ConfigPreview } from "../components/ConfigPreview";
 import { Modal } from "../components/Modal";
+import { ThreeLayerCallout } from "../components/ThreeLayerCallout";
 import { ApiError, api, type PageEnvelope } from "../lib/api";
 
 // Shape we accept — mirrors the peerResponse shape returned by the
@@ -112,17 +113,17 @@ export function PeerEditModal({ peer, onClose, onSaved }: Props) {
       const origOwner = peer.owner_user_id ?? "";
       if (owner !== origOwner) body.owner_user_id = owner === "" ? null : owner;
 
-      // Compare arrays element-wise so order changes don't trigger
-      // a needless write. Use the flushed values so a draft typed
-      // right before Save still makes it into the diff.
-      const sameAllowed = arraysEqual(finalAllowed, peer.allowed_ips);
-      if (!sameAllowed) body.allowed_ips = finalAllowed;
-
-      const sameClient = arraysEqual(
-        finalClientAllowed,
-        peer.client_allowed_ips,
-      );
-      if (!sameClient) body.client_allowed_ips = finalClientAllowed;
+      // Always send the network arrays as a full snapshot. We used to
+      // diff against `peer.*` and omit the field on a match, but that
+      // skipped the write whenever the parent's `peer` prop was stale
+      // relative to the form's local state (eg. modal opened before a
+      // background refetch landed). Sending the snapshot every time
+      // means the backend always sees the operator's current intent
+      // — the kernel WG module is idempotent on reapply, so the cost
+      // is zero. Backend auto-includes the assigned /32 in AllowedIPs
+      // so an empty server-side list isn't a foot-gun either.
+      body.allowed_ips = finalAllowed;
+      body.client_allowed_ips = finalClientAllowed;
 
       const ep = endpoint.trim();
       const origEp = peer.endpoint ?? "";
@@ -226,9 +227,11 @@ export function PeerEditModal({ peer, onClose, onSaved }: Props) {
           </select>
         </Field>
 
+        <ThreeLayerCallout />
+
         <Field
           label="Server-side accepted source IPs"
-          hint="Affects wg show. The kernel WG module accepts decrypted packets from this peer only when their source falls inside one of these CIDRs. Must include the peer's assigned /32."
+          hint="Affects wg show. The kernel WG module accepts decrypted packets from this peer only when their source falls inside one of these CIDRs. The peer's assigned /32 is auto-included on save."
         >
           <CidrList
             ref={allowedRef}
@@ -335,12 +338,6 @@ export function PeerEditModal({ peer, onClose, onSaved }: Props) {
       </form>
     </Modal>
   );
-}
-
-function arraysEqual(a: string[], b: string[]) {
-  if (a.length !== b.length) return false;
-  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
-  return true;
 }
 
 function Field({

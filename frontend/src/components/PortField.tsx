@@ -59,10 +59,6 @@ export function PortField({ from, to, onChange, label, idPrefix }: Props) {
     return Number.isInteger(v) && v >= 1 && v <= 65535;
   }
 
-  function applyAny() {
-    setErr("");
-    onChange(undefined, undefined);
-  }
   function applySingle(v: string) {
     setSingle(v);
     if (v === "") {

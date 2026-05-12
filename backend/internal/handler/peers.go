@@ -247,31 +247,24 @@ func (h *PeerHandler) Create(c *gin.Context) {
 			"allowed_ips: "+err.Error())
 		return
 	}
-	if len(allowed) == 0 {
-		// Default to the assigned /32 (or /128) so the peer only routes
-		// itself; operators can broaden later.
-		bits := 32
-		if !assigned.Is4() {
-			bits = 128
+	// The assigned /32 (or /128) is load-bearing — the WG kernel module
+	// rejects the peer's own source IP without it, which would break
+	// every broader route. Always present in the saved list, whether
+	// the operator supplied it explicitly or not.
+	bits := 32
+	if !assigned.Is4() {
+		bits = 128
+	}
+	assignedPfx := netip.PrefixFrom(assigned, bits)
+	covered := false
+	for _, p := range allowed {
+		if p.Contains(assigned) {
+			covered = true
+			break
 		}
-		allowed = []netip.Prefix{netip.PrefixFrom(assigned, bits)}
-	} else {
-		// Reject configurations where the assigned address can't enter
-		// via any allowed prefix. The kernel would silently drop those
-		// peers' packets at the WG ingress check; surfacing it at
-		// create time saves the operator a debugging session.
-		covered := false
-		for _, p := range allowed {
-			if p.Contains(assigned) {
-				covered = true
-				break
-			}
-		}
-		if !covered {
-			writeError(c, http.StatusBadRequest, apierror.CodeInvalidRequest,
-				"assigned_ip is not contained in any allowed_ips prefix")
-			return
-		}
+	}
+	if !covered {
+		allowed = append([]netip.Prefix{assignedPfx}, allowed...)
 	}
 
 	dns := req.DNS
@@ -592,9 +585,14 @@ func (h *PeerHandler) Update(c *gin.Context) {
 				"allowed_ips: "+perr.Error())
 			return
 		}
-		// Cross-validate: assigned_ip must remain inside at least one
-		// of the new allowed_ips entries. If the operator narrowed
-		// the field too much, fail before touching the kernel.
+		// The assigned /32 (or /128) is load-bearing: without it the WG
+		// kernel module won't accept the peer's own source IP, which
+		// breaks every other route. Auto-add when missing so the operator
+		// can't lock themselves out by forgetting it. Mirrors the Create
+		// path's "empty → default to assigned /32" rule but applied here
+		// as "non-empty but missing → augment, not replace".
+		assignedBitsN := assignedBits(current.AssignedIP)
+		assignedPfx := netip.PrefixFrom(current.AssignedIP, assignedBitsN)
 		covered := false
 		for _, p := range ips {
 			if p.Contains(current.AssignedIP) {
@@ -602,10 +600,10 @@ func (h *PeerHandler) Update(c *gin.Context) {
 				break
 			}
 		}
-		if len(ips) > 0 && !covered {
-			writeError(c, http.StatusBadRequest, apierror.CodeInvalidRequest,
-				"assigned_ip is not contained in any new allowed_ips prefix")
-			return
+		if !covered {
+			// Prepend so the operator's added networks remain visible
+			// in the order they typed them when the row round-trips.
+			ips = append([]netip.Prefix{assignedPfx}, ips...)
 		}
 		params.AllowedIPs = &ips
 	}

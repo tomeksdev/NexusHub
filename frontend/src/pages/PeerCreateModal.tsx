@@ -10,6 +10,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { CidrList, type CidrListHandle } from "../components/CidrList";
 import { ConfigPreview } from "../components/ConfigPreview";
 import { Modal } from "../components/Modal";
+import { ThreeLayerCallout } from "../components/ThreeLayerCallout";
 import { ApiError, api, type PageEnvelope } from "../lib/api";
 
 interface Props {
@@ -296,9 +297,11 @@ export function PeerCreateModal({
           )}
         </Field>
 
+        <ThreeLayerCallout />
+
         <Field
           label="Server-side accepted source IPs"
-          hint="Affects wg show. Source IPs the server accepts from this peer; defaults to the assigned /32 if left empty."
+          hint="Affects wg show. Source IPs the server accepts from this peer; the assigned /32 is auto-included on save."
         >
           <CidrList
             ref={allowedRef}

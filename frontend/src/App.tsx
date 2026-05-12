@@ -6,11 +6,8 @@ import {
   Gauge,
   HelpCircle,
   KeyRound,
-  Layers,
   LogOut,
   MapPin,
-  Settings,
-  ShieldAlert,
   Smartphone,
   UserCircle,
   Users,
@@ -60,6 +57,10 @@ interface NavSection {
   items: NavEntry[];
 }
 
+// Configuration section (Global Config / Groups / Access Rules) is
+// hidden from the sidebar until those features actually ship. The
+// route cases below are kept so any existing deep-link from a stale
+// bookmark still resolves to the StubPage with the v2.1 promise.
 const ADMIN_NAV: NavSection[] = [
   {
     title: "Main",
@@ -68,14 +69,6 @@ const ADMIN_NAV: NavSection[] = [
       { id: "locations", label: "Locations", icon: MapPin },
       { id: "users", label: "Users", icon: Users },
       { id: "monitoring", label: "Monitoring", icon: BarChart3 },
-    ],
-  },
-  {
-    title: "Configuration",
-    items: [
-      { id: "global_config", label: "Global Config", icon: Settings },
-      { id: "groups", label: "Groups", icon: Layers },
-      { id: "access_rules", label: "Access Rules", icon: ShieldAlert },
     ],
   },
   {
