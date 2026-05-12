@@ -111,6 +111,39 @@ type InterfaceHandler struct {
 	// API startup. Nil ⇒ no runtime attach (e.g. dev environments
 	// without CAP_BPF).
 	EBPFAttacher RuntimeAttacher
+	// Rules, when set, is used to regenerate cross-location system
+	// deny rules after a Create / address-changed Update / Delete.
+	// Optional — older deployments (and tests that don't exercise
+	// the rule path) leave it nil and the lifecycle hook is a no-op.
+	Rules *repository.RuleRepo
+}
+
+// regenerateSystemRules rebuilds the auto-generated cross-location deny
+// rules from the full current interface set. Called from Create / Update
+// (when address changes) / Delete. Failures are logged but non-fatal —
+// system rules are a safety net, not a correctness requirement, and
+// rolling back the interface mutation because the rule regenerator
+// hiccuped would surprise the operator more than the rule mismatch.
+func (h *InterfaceHandler) regenerateSystemRules(ctx context.Context) {
+	if h == nil || h.Rules == nil {
+		return
+	}
+	ifaces, err := h.Interfaces.List(ctx)
+	if err != nil {
+		slog.WarnContext(ctx, "system rules: list interfaces", "err", err)
+		return
+	}
+	locs := make([]repository.SystemRuleLocation, 0, len(ifaces))
+	for i := range ifaces {
+		locs = append(locs, repository.SystemRuleLocation{
+			ID:   ifaces[i].ID,
+			Name: ifaces[i].Name,
+			CIDR: ifaces[i].Address.Masked(),
+		})
+	}
+	if err := h.Rules.RegenerateSystemDenies(ctx, locs); err != nil {
+		slog.WarnContext(ctx, "system rules: regenerate", "err", err)
+	}
 }
 
 // recordKernelWarning is the bridge between the existing slog.Warn
@@ -294,6 +327,9 @@ func (h *InterfaceHandler) Create(c *gin.Context) {
 			slog.WarnContext(c, "ebpf tc attach", "err", err, "iface", out.Name)
 		}
 	}
+	// New location → regenerate cross-location system deny rules so the
+	// new interface's CIDR shows up in every pair.
+	h.regenerateSystemRules(c.Request.Context())
 	c.JSON(http.StatusCreated, toInterfaceResponse(out))
 }
 
@@ -520,6 +556,13 @@ func (h *InterfaceHandler) Update(c *gin.Context) {
 		}
 	}
 
+	// Address changed → system rules reference the old CIDR; regenerate.
+	// We skip the call when only the listen port / endpoint / DNS moved
+	// since none of those affect the deny-rule CIDRs.
+	if req.Address != nil {
+		h.regenerateSystemRules(ctx)
+	}
+
 	c.JSON(http.StatusOK, toInterfaceResponse(out))
 }
 
@@ -575,5 +618,7 @@ func (h *InterfaceHandler) Delete(c *gin.Context) {
 			slog.WarnContext(ctx, "kernel delete link", "err", err, "iface", name)
 		}
 	}
+	// Location removed → drop the deny rules that reference its CIDR.
+	h.regenerateSystemRules(ctx)
 	c.Status(http.StatusNoContent)
 }

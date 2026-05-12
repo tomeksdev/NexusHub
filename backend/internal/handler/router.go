@@ -154,6 +154,7 @@ func NewRouter(deps Deps) *gin.Engine {
 			Client: deps.WG, Links: deps.WGLinks,
 			KernelWarnings: deps.KernelWarnings,
 			EBPFAttacher:   deps.EBPFAttacher,
+			Rules:          deps.Rules,
 		}
 		peerH := &PeerHandler{
 			Peers: deps.Peers, Interfaces: deps.Interfaces,

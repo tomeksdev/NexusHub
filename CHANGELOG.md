@@ -8,9 +8,22 @@ them are expected; the public API contract freezes at `v2.0.0`.
 
 ## [Unreleased]
 
+### Added
+
+- **System rules subsystem** — `ebpf_rules.owner` column (migration 012)
+  distinguishes admin-authored rules from auto-generated system rules.
+  Cross-location deny rules (one per ordered location pair) are
+  generated automatically when interfaces are created, address-edited,
+  or deleted, named `system:deny:<src>→<dst>`. Shipped with
+  `is_active=false` so existing installs aren't surprised — operator
+  toggles them on individually. Handler rejects DELETE on system rules
+  (409) and rejects any field change other than `is_active` (409).
+  Rules table shows a "system" badge + "toggle only" hint in place of
+  the Edit/Delete buttons; new filter pills above the table let the
+  operator narrow to All / Admin / System.
+
 ### Pending for `v2.0.0-preview.1`
 
-- Default-deny system rules for cross-location traffic
 - Dashboard redesign + monitoring rollups
 - Docker compose end-to-end pass
 - Helm chart

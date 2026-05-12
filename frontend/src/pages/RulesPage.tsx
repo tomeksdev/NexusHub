@@ -32,6 +32,11 @@ export interface Rule {
   // helps answer "rule is LOADED but is it seeing traffic?".
   rule_hits_packets?: number;
   rule_hits_bytes?: number;
+  // "admin" rules are operator-authored, fully editable, deletable.
+  // "system" rules are auto-generated NexusHub baseline (cross-location
+  // deny); operator can only toggle is_active. The list table shows a
+  // "System" badge next to those and hides the Delete button.
+  owner: "admin" | "system";
   created_at: string;
   updated_at: string;
 }
@@ -123,6 +128,30 @@ function KernelBadge({
   );
 }
 
+// FilterPill renders a small toggle for the All / Admin / System
+// owner filter. Active pill picks up the accent background; inactive
+// is a flat ghost button.
+function FilterPill({
+  label,
+  active,
+  onClick,
+}: {
+  label: string;
+  active: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={active ? "btn-primary" : "btn-ghost"}
+      style={{ padding: "0.25rem 0.75rem", fontSize: "0.75rem" }}
+    >
+      {label}
+    </button>
+  );
+}
+
 // summarisePorts renders a port range for the rules table. The
 // backend stores wildcard as 0..0; we present that as "Any" so the
 // table reads as plain firewall language. Single-port rules show
@@ -135,10 +164,13 @@ function summarisePorts(from?: number, to?: number): string {
   return `${from ?? to ?? "Any"}`;
 }
 
+type OwnerFilter = "all" | "admin" | "system";
+
 export function RulesPage() {
   const qc = useQueryClient();
   const [editing, setEditing] = useState<Rule | null>(null);
   const [creating, setCreating] = useState(false);
+  const [ownerFilter, setOwnerFilter] = useState<OwnerFilter>("all");
 
   const { data, isLoading, isError, error } = useQuery({
     queryKey: ["rules"],
@@ -180,7 +212,13 @@ export function RulesPage() {
       </div>
     );
 
-  const items = data?.items ?? [];
+  const allItems = data?.items ?? [];
+  const items = allItems.filter((r) => {
+    if (ownerFilter === "all") return true;
+    return r.owner === ownerFilter;
+  });
+  const systemCount = allItems.filter((r) => r.owner === "system").length;
+  const adminCount = allItems.length - systemCount;
 
   return (
     <div className="space-y-6">
@@ -188,7 +226,9 @@ export function RulesPage() {
         <div>
           <h1 className="page-title">eBPF rules</h1>
           <p className="text-faint text-xs mt-1">
-            Rules apply in descending priority order.
+            Rules apply in descending priority order. System rules are
+            auto-generated cross-location denies — toggle them on to
+            enforce, off to allow free routing between locations.
           </p>
         </div>
         <div className="topbar-actions">
@@ -201,6 +241,24 @@ export function RulesPage() {
             + New rule
           </button>
         </div>
+      </div>
+
+      <div className="flex items-center gap-2 text-sm">
+        <FilterPill
+          label={`All (${allItems.length})`}
+          active={ownerFilter === "all"}
+          onClick={() => setOwnerFilter("all")}
+        />
+        <FilterPill
+          label={`Admin (${adminCount})`}
+          active={ownerFilter === "admin"}
+          onClick={() => setOwnerFilter("admin")}
+        />
+        <FilterPill
+          label={`System (${systemCount})`}
+          active={ownerFilter === "system"}
+          onClick={() => setOwnerFilter("system")}
+        />
       </div>
 
       {items.length === 0 ? (
@@ -232,7 +290,17 @@ export function RulesPage() {
                 <tr key={r.id}>
                   <td className="text-muted">{r.priority}</td>
                   <td>
-                    <div className="font-medium">{r.name}</div>
+                    <div className="font-medium flex items-center gap-2">
+                      {r.name}
+                      {r.owner === "system" && (
+                        <span
+                          className="status-badge muted text-[10px]"
+                          title="Auto-generated NexusHub baseline. Toggle is_active to enforce; deletion is disabled."
+                        >
+                          system
+                        </span>
+                      )}
+                    </div>
                     {r.description && (
                       <div className="text-faint text-xs">{r.description}</div>
                     )}
@@ -289,20 +357,31 @@ export function RulesPage() {
                   </td>
                   <td className="text-right whitespace-nowrap">
                     <div className="inline-flex gap-2">
-                      <button
-                        type="button"
-                        onClick={() => setEditing(r)}
-                        className="btn-ghost"
-                      >
-                        Edit
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => onDelete(r)}
-                        className="btn-danger"
-                      >
-                        Delete
-                      </button>
+                      {r.owner === "system" ? (
+                        <span
+                          className="text-faint text-xs"
+                          title="System rules accept only is_active changes. Use the on/off toggle in the Active column."
+                        >
+                          toggle only
+                        </span>
+                      ) : (
+                        <>
+                          <button
+                            type="button"
+                            onClick={() => setEditing(r)}
+                            className="btn-ghost"
+                          >
+                            Edit
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => onDelete(r)}
+                            className="btn-danger"
+                          >
+                            Delete
+                          </button>
+                        </>
+                      )}
                     </div>
                   </td>
                 </tr>
