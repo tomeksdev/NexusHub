@@ -10,6 +10,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { CidrList, type CidrListHandle } from "../components/CidrList";
 import { ConfigPreview } from "../components/ConfigPreview";
 import { Modal } from "../components/Modal";
+import { RouteSection } from "../components/RouteSection";
 import { ThreeLayerCallout } from "../components/ThreeLayerCallout";
 import { ApiError, api, type PageEnvelope } from "../lib/api";
 
@@ -299,9 +300,10 @@ export function PeerCreateModal({
 
         <ThreeLayerCallout />
 
-        <Field
-          label="Server-side accepted source IPs"
-          hint="Affects wg show. Source IPs the server accepts from this peer; the assigned /32 is auto-included on save."
+        <RouteSection
+          title="Server-side accepted source IPs"
+          affects="Affects wg show only. The kernel WG module accepts decrypted packets from this peer only when their source falls inside one of these CIDRs."
+          tone="filter"
         >
           <CidrList
             ref={allowedRef}
@@ -309,20 +311,24 @@ export function PeerCreateModal({
             onChange={setAllowedIPs}
             placeholder="10.8.0.5/32"
             warnFullTunnel={false}
+            disallowFullTunnel
+            hint="The peer's assigned /32 is auto-included on save."
           />
-        </Field>
+        </RouteSection>
 
-        <Field
-          label="Client routed networks (in exported .conf)"
-          hint="Affects the peer's [Peer] AllowedIPs line. Networks the client routes THROUGH the tunnel. Empty ⇒ falls back to the location's CIDR (split-tunnel)."
+        <RouteSection
+          title="Client routed networks (in exported .conf)"
+          affects="Affects the exported .conf, QR code, copy, and download only. Empty ⇒ falls back to the location's CIDR (split-tunnel)."
+          tone="routing"
         >
           <CidrList
             ref={clientAllowedRef}
             value={clientAllowedIPs}
             onChange={setClientAllowedIPs}
-            placeholder="0.0.0.0/0"
+            placeholder="10.10.0.0/24"
+            hint="0.0.0.0/0 is allowed here for legitimate full-tunnel client routing."
           />
-        </Field>
+        </RouteSection>
 
         <Field label="Persistent keepalive (seconds)">
           <input

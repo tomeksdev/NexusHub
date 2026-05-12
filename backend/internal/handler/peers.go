@@ -247,6 +247,10 @@ func (h *PeerHandler) Create(c *gin.Context) {
 			"allowed_ips: "+err.Error())
 		return
 	}
+	if err := rejectFullTunnelServerSide(allowed); err != nil {
+		writeError(c, http.StatusBadRequest, apierror.CodeInvalidRequest, err.Error())
+		return
+	}
 	// The assigned /32 (or /128) is load-bearing — the WG kernel module
 	// rejects the peer's own source IP without it, which would break
 	// every broader route. Always present in the saved list, whether
@@ -585,6 +589,10 @@ func (h *PeerHandler) Update(c *gin.Context) {
 				"allowed_ips: "+perr.Error())
 			return
 		}
+		if err := rejectFullTunnelServerSide(ips); err != nil {
+			writeError(c, http.StatusBadRequest, apierror.CodeInvalidRequest, err.Error())
+			return
+		}
 		// The assigned /32 (or /128) is load-bearing: without it the WG
 		// kernel module won't accept the peer's own source IP, which
 		// breaks every other route. Auto-add when missing so the operator
@@ -908,6 +916,25 @@ func parsePrefixes(in []string) []netip.Prefix {
 		}
 	}
 	return out
+}
+
+// rejectFullTunnelServerSide blocks 0.0.0.0/0 and ::/0 in the server-side
+// AllowedIPs list. Operationally these are footguns: the WG kernel module
+// would accept any source IP from the peer, defeating the per-peer source
+// validation that the rest of the security model relies on. The client-
+// side `client_allowed_ips` (what gets exported into the peer's .conf)
+// can still carry 0.0.0.0/0 — full-tunnel routing is a legitimate client
+// configuration, just not a legitimate server-side filter.
+func rejectFullTunnelServerSide(in []netip.Prefix) error {
+	for _, p := range in {
+		if p.Bits() == 0 {
+			return fmt.Errorf(
+				"allowed_ips: %s is not allowed server-side (use client_allowed_ips for full-tunnel client routing)",
+				p,
+			)
+		}
+	}
+	return nil
 }
 
 // parsePrefixesStrict refuses any unparseable entry. parsePrefixes was

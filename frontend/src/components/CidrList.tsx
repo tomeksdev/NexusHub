@@ -34,13 +34,23 @@ interface Props {
   // present. Doesn't block the value; just nudges the operator that
   // a full-tunnel route was a deliberate choice.
   warnFullTunnel?: boolean;
+  // Hard-rejects 0.0.0.0/0 and ::/0 at the input gate, mirroring the
+  // backend's server-side rule. Used by the server-side AllowedIPs
+  // field where a full-tunnel filter defeats per-peer source validation.
+  // The client-side field leaves this false so full-tunnel routing
+  // remains a legitimate client choice (with the warnFullTunnel nudge).
+  disallowFullTunnel?: boolean;
 }
 
 const FULL_TUNNEL_V4 = "0.0.0.0/0";
 const FULL_TUNNEL_V6 = "::/0";
 
+function isFullTunnel(v: string) {
+  return v === FULL_TUNNEL_V4 || v === FULL_TUNNEL_V6;
+}
+
 export const CidrList = forwardRef<CidrListHandle, Props>(function CidrList(
-  { value, onChange, placeholder, hint, warnFullTunnel = true },
+  { value, onChange, placeholder, hint, warnFullTunnel = true, disallowFullTunnel = false },
   ref,
 ) {
   const [draft, setDraft] = useState("");
@@ -51,6 +61,10 @@ export const CidrList = forwardRef<CidrListHandle, Props>(function CidrList(
     if (!v) return;
     if (!CIDR_RE.test(v)) {
       setErr("Enter a CIDR like 10.0.0.0/24 or ::/0.");
+      return;
+    }
+    if (disallowFullTunnel && isFullTunnel(v)) {
+      setErr("0.0.0.0/0 and ::/0 aren't allowed here — they defeat per-peer source validation. Use the client routed networks field for full-tunnel routing.");
       return;
     }
     if (value.includes(v)) {
@@ -77,6 +91,10 @@ export const CidrList = forwardRef<CidrListHandle, Props>(function CidrList(
           setErr("Enter a CIDR like 10.0.0.0/24 or ::/0.");
           return value;
         }
+        if (disallowFullTunnel && isFullTunnel(v)) {
+          setErr("0.0.0.0/0 and ::/0 aren't allowed here — they defeat per-peer source validation. Use the client routed networks field for full-tunnel routing.");
+          return value;
+        }
         if (value.includes(v)) {
           setDraft("");
           return value;
@@ -88,7 +106,7 @@ export const CidrList = forwardRef<CidrListHandle, Props>(function CidrList(
         return next;
       },
     }),
-    [draft, value, onChange],
+    [draft, value, onChange, disallowFullTunnel],
   );
 
   function remove(i: number) {

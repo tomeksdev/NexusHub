@@ -4,6 +4,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { CidrList, type CidrListHandle } from "../components/CidrList";
 import { ConfigPreview } from "../components/ConfigPreview";
 import { Modal } from "../components/Modal";
+import { RouteSection } from "../components/RouteSection";
 import { ThreeLayerCallout } from "../components/ThreeLayerCallout";
 import { ApiError, api, type PageEnvelope } from "../lib/api";
 
@@ -229,9 +230,10 @@ export function PeerEditModal({ peer, onClose, onSaved }: Props) {
 
         <ThreeLayerCallout />
 
-        <Field
-          label="Server-side accepted source IPs"
-          hint="Affects wg show. The kernel WG module accepts decrypted packets from this peer only when their source falls inside one of these CIDRs. The peer's assigned /32 is auto-included on save."
+        <RouteSection
+          title="Server-side accepted source IPs"
+          affects="Affects wg show only. The kernel WG module accepts decrypted packets from this peer only when their source falls inside one of these CIDRs."
+          tone="filter"
         >
           <CidrList
             ref={allowedRef}
@@ -239,39 +241,24 @@ export function PeerEditModal({ peer, onClose, onSaved }: Props) {
             onChange={setAllowedIPs}
             placeholder="10.0.0.5/32"
             warnFullTunnel={false}
+            disallowFullTunnel
+            hint="The peer's assigned /32 is auto-included on save."
           />
-        </Field>
+        </RouteSection>
 
-        <Field
-          label="Client routed networks (in exported .conf)"
-          hint="Affects the [Peer] AllowedIPs line in the .conf the peer installs. These are the networks the client will route THROUGH the tunnel. Server-side changes above do NOT update this list automatically — use the helper below if you want them in sync."
+        <RouteSection
+          title="Client routed networks (in exported .conf)"
+          affects="Affects the exported .conf, QR code, copy, and download only. Server-side filter above is independent — changing this list never touches wg show."
+          tone="routing"
         >
           <CidrList
             ref={clientAllowedRef}
             value={clientAllowedIPs}
             onChange={setClientAllowedIPs}
             placeholder="10.10.0.0/24"
+            hint="0.0.0.0/0 is allowed here for legitimate full-tunnel client routing."
           />
-          <button
-            type="button"
-            onClick={() => {
-              // Pull the current server-side value (flush in case
-              // the operator typed something but didn't commit) and
-              // mirror it into the client side. Then we deduplicate
-              // against whatever's already in client so a re-click
-              // doesn't keep appending.
-              const fromServer =
-                allowedRef.current?.flush() ?? allowedIPs;
-              const merged = Array.from(
-                new Set([...clientAllowedIPs, ...fromServer]),
-              );
-              setClientAllowedIPs(merged);
-            }}
-            className="btn-ghost mt-2"
-          >
-            + Copy server-side routes here
-          </button>
-        </Field>
+        </RouteSection>
 
         <Field
           label="Endpoint override"
