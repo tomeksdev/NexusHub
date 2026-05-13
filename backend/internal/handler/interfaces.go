@@ -17,6 +17,7 @@ import (
 	"github.com/tomeksdev/NexusHub/backend/internal/apierror"
 	"github.com/tomeksdev/NexusHub/backend/internal/crypto"
 	"github.com/tomeksdev/NexusHub/backend/internal/diag"
+	"github.com/tomeksdev/NexusHub/backend/internal/ebpf"
 	"github.com/tomeksdev/NexusHub/backend/internal/httppage"
 	"github.com/tomeksdev/NexusHub/backend/internal/repository"
 	"github.com/tomeksdev/NexusHub/backend/internal/wg"
@@ -116,14 +117,23 @@ type InterfaceHandler struct {
 	// Optional — older deployments (and tests that don't exercise
 	// the rule path) leave it nil and the lifecycle hook is a no-op.
 	Rules *repository.RuleRepo
+	// Sync receives the post-regenerate kernel reconcile sweep so the
+	// eBPF data plane converges atomically with the DB write. Without
+	// it the kernel state lags until the next background reconcile
+	// cycle. Optional — nil is acceptable for tests that don't
+	// exercise the kernel path.
+	Sync ebpf.Syncer
 }
 
 // regenerateSystemRules rebuilds the auto-generated cross-location deny
-// rules from the full current interface set. Called from Create / Update
-// (when address changes) / Delete. Failures are logged but non-fatal —
-// system rules are a safety net, not a correctness requirement, and
-// rolling back the interface mutation because the rule regenerator
-// hiccuped would surprise the operator more than the rule mismatch.
+// rules from the full current interface set, then reconciles the kernel
+// state so the eBPF data plane reflects the new rule set immediately
+// (without waiting for the background reconcile cycle). Called from
+// Create / Update (when address changes) / Delete. Failures are logged
+// but non-fatal — system rules are a safety net, not a correctness
+// requirement, and rolling back the interface mutation because the
+// rule regenerator hiccuped would surprise the operator more than the
+// rule mismatch.
 func (h *InterfaceHandler) regenerateSystemRules(ctx context.Context) {
 	if h == nil || h.Rules == nil {
 		return
@@ -143,6 +153,29 @@ func (h *InterfaceHandler) regenerateSystemRules(ctx context.Context) {
 	}
 	if err := h.Rules.RegenerateSystemDenies(ctx, locs); err != nil {
 		slog.WarnContext(ctx, "system rules: regenerate", "err", err)
+		return
+	}
+
+	// Reconcile the kernel against the new active-rule set so the new
+	// system rules land in eBPF maps immediately and stale UUIDs from
+	// the previous generation get pulled. We pass the full active set
+	// (system + admin) because Syncer.Reconcile expects the complete
+	// desired state, not a delta — anything in the kernel but not in
+	// this list gets dropped.
+	if h.Sync == nil {
+		return
+	}
+	active, err := h.Rules.ActiveSnapshot(ctx)
+	if err != nil {
+		slog.WarnContext(ctx, "system rules: active snapshot", "err", err)
+		return
+	}
+	rules := make([]ebpf.Rule, 0, len(active))
+	for i := range active {
+		rules = append(rules, ToSyncRule(&active[i]))
+	}
+	if err := h.Sync.Reconcile(ctx, rules); err != nil {
+		slog.WarnContext(ctx, "system rules: kernel reconcile", "err", err)
 	}
 }
 

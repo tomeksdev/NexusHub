@@ -48,6 +48,21 @@ them are expected; the public API contract freezes at `v2.0.0`.
   new symmetric direction=both semantics. Existing system rules from
   round 16 are wiped + regenerated automatically on the next interface
   lifecycle event.
+- **System rules now default to is_active=true** for new pairs. The
+  cross-location default-deny baseline is active from the moment the
+  second location lands; operators no longer need to click "Enable all"
+  for the safe default. The /system-rules/enable-all + /disable-all
+  sweep endpoints remain available as recovery / explicit-action paths.
+- **Operator overrides survive regeneration**: RegenerateSystemDenies
+  snapshots existing (name → is_active) before wiping. A pair the
+  operator toggled off stays off through subsequent interface lifecycle
+  events; only newly-appearing pairs come up active.
+- **Kernel reconciles atomically with regenerate**: after
+  RegenerateSystemDenies succeeds, InterfaceHandler calls
+  Syncer.Reconcile with the full active-rule snapshot so eBPF maps
+  converge in the same request that created/modified the location.
+  No more waiting for the background reconcile cycle before the UI
+  shows LOADED.
 
 ### Pending for `v2.0.0-preview.1`
 

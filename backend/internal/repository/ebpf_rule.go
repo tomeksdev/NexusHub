@@ -480,15 +480,19 @@ const SystemRulePriority = 10
 // RegenerateSystemDenies rebuilds the full set of owner='system' rules
 // from the current list of locations. Single transaction:
 //
-//  1. Delete every existing system rule.
-//  2. Insert one DENY per UNORDERED pair of distinct locations with
+//  1. Snapshot the current (name → is_active) so per-pair operator
+//     toggles survive the wipe + reinsert.
+//  2. Delete every existing system rule.
+//  3. Insert one DENY per UNORDERED pair of distinct locations with
 //     direction='both'. The eBPF evaluator (round 17) handles
 //     direction=both as a symmetric src/dst match — a single rule
-//     covers A→B and B→A. Halves the system-rule count vs the round-16
-//     ordered-pairs design.
+//     covers A→B and B→A.
 //
-// Inserted with is_active=false. Operators flip them on individually
-// or via the /system-rules/enable-all sweep endpoint.
+// New pairs default to is_active=true so the cross-location default-deny
+// baseline is on from the moment the second location lands; pairs that
+// existed before keep their previous is_active value so an operator
+// who turned a specific pair off doesn't have it flipped back on by an
+// unrelated lifecycle event.
 //
 // Name format is "system:deny:<a.Name>↔<b.Name>" with the lexically
 // smaller name first so the pair is canonical and we never accidentally
@@ -502,6 +506,28 @@ func (r *RuleRepo) RegenerateSystemDenies(ctx context.Context, locations []Syste
 		return fmt.Errorf("begin system-rule tx: %w", err)
 	}
 	defer tx.Rollback(ctx)
+
+	// Snapshot existing system rules' is_active state by name so we can
+	// preserve per-pair operator overrides through the wipe.
+	prevActive := map[string]bool{}
+	rows, err := tx.Query(ctx,
+		`SELECT name, is_active FROM ebpf_rules WHERE owner = 'system'`)
+	if err != nil {
+		return fmt.Errorf("snapshot system rules: %w", err)
+	}
+	for rows.Next() {
+		var name string
+		var active bool
+		if err := rows.Scan(&name, &active); err != nil {
+			rows.Close()
+			return fmt.Errorf("scan system rule: %w", err)
+		}
+		prevActive[name] = active
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iter system rules: %w", err)
+	}
 
 	if _, err := tx.Exec(ctx,
 		`DELETE FROM ebpf_rules WHERE owner = 'system'`); err != nil {
@@ -517,7 +543,7 @@ func (r *RuleRepo) RegenerateSystemDenies(ctx context.Context, locations []Syste
 		        'both'::ebpf_rule_direction,
 		        'any'::ebpf_rule_protocol,
 		        $3::cidr, $4::cidr,
-		        $5, false, 'system')
+		        $5, $6, 'system')
 		ON CONFLICT (name) DO NOTHING`
 
 	for i := range locations {
@@ -529,11 +555,17 @@ func (r *RuleRepo) RegenerateSystemDenies(ctx context.Context, locations []Syste
 				a, b = b, a
 			}
 			name := fmt.Sprintf("system:deny:%s↔%s", a.Name, b.Name)
-			desc := fmt.Sprintf("Auto-generated default-deny between %s and %s (both directions). Toggle is_active to enforce.", a.Name, b.Name)
+			desc := fmt.Sprintf("Auto-generated default-deny between %s and %s (both directions). Toggle is_active to suspend.", a.Name, b.Name)
+			// Default-on for new pairs; preserve the prior state for
+			// pairs that survived the wipe.
+			active := true
+			if prev, ok := prevActive[name]; ok {
+				active = prev
+			}
 			if _, err := tx.Exec(ctx, ins,
 				name, desc,
 				a.CIDR.String(), b.CIDR.String(),
-				SystemRulePriority,
+				SystemRulePriority, active,
 			); err != nil {
 				return fmt.Errorf("insert system rule %s: %w", name, err)
 			}
