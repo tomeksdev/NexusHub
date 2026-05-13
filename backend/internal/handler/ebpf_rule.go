@@ -442,6 +442,60 @@ func (h *RuleHandler) Delete(c *gin.Context) {
 	c.Status(http.StatusNoContent)
 }
 
+// EnableAllSystemRules flips is_active=true on every owner='system'
+// row in one go and re-applies them into the kernel. Lets the operator
+// turn on the cross-location default-deny baseline with a single click
+// instead of toggling each pair individually. Idempotent: calling twice
+// is the same as calling once (no-op on the second call, no error).
+func (h *RuleHandler) EnableAllSystemRules(c *gin.Context) {
+	h.sweepSystemRules(c, true)
+}
+
+// DisableAllSystemRules is the mirror: flips every system rule to
+// is_active=false and removes them from the kernel.
+func (h *RuleHandler) DisableAllSystemRules(c *gin.Context) {
+	h.sweepSystemRules(c, false)
+}
+
+// sweepSystemRules is the shared body of Enable/DisableAllSystemRules.
+// Returns 200 with a small JSON envelope naming the number of rows
+// flipped so the frontend can render "Enabled N rules" in the toast.
+func (h *RuleHandler) sweepSystemRules(c *gin.Context, active bool) {
+	ctx := c.Request.Context()
+	flipped, err := h.Rules.SetSystemRulesActive(ctx, active)
+	if err != nil {
+		slog.ErrorContext(ctx, "sweep system rules", "err", err, "active", active)
+		writeError(c, http.StatusInternalServerError, apierror.CodeInternal, "internal error")
+		return
+	}
+
+	// Re-apply each flipped rule into the kernel so wg show reflects
+	// the change immediately. We read each row fresh so we get the
+	// canonical Rule shape the syncer expects; bulk-reapplying via
+	// ActiveSnapshot would also work but does more work per call.
+	for _, id := range flipped {
+		rule, gerr := h.Rules.GetByID(ctx, id)
+		if gerr != nil {
+			slog.WarnContext(ctx, "sweep: get flipped rule", "rule_id", id, "err", gerr)
+			continue
+		}
+		if active {
+			if err := h.Sync.Apply(ctx, toSyncRule(rule)); err != nil {
+				slog.WarnContext(ctx, "sweep apply", "rule_id", id, "err", err)
+			}
+		} else {
+			if err := h.Sync.Delete(ctx, id); err != nil {
+				slog.WarnContext(ctx, "sweep delete", "rule_id", id, "err", err)
+			}
+		}
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"flipped": len(flipped),
+		"active":  active,
+	})
+}
+
 // ListBindings returns every binding (peer or interface) for a rule.
 func (h *RuleHandler) ListBindings(c *gin.Context) {
 	id, err := uuid.Parse(c.Param("id"))

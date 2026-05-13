@@ -264,6 +264,10 @@ func NewRouter(deps Deps) *gin.Engine {
 		admin.GET("/rules/:id/bindings", ruleH.ListBindings)
 		admin.POST("/rules/:id/bindings", ruleH.CreateBinding)
 		admin.DELETE("/rules/:id/bindings/:binding_id", ruleH.DeleteBinding)
+		// Sweep endpoints — flip every owner='system' row at once.
+		// Used by the Rules-page "Enable all system rules" button.
+		admin.POST("/system-rules/enable-all", ruleH.EnableAllSystemRules)
+		admin.POST("/system-rules/disable-all", ruleH.DisableAllSystemRules)
 	}
 
 	return r

@@ -12,15 +12,42 @@ them are expected; the public API contract freezes at `v2.0.0`.
 
 - **System rules subsystem** — `ebpf_rules.owner` column (migration 012)
   distinguishes admin-authored rules from auto-generated system rules.
-  Cross-location deny rules (one per ordered location pair) are
-  generated automatically when interfaces are created, address-edited,
-  or deleted, named `system:deny:<src>→<dst>`. Shipped with
-  `is_active=false` so existing installs aren't surprised — operator
-  toggles them on individually. Handler rejects DELETE on system rules
+  Cross-location deny rules are generated automatically when interfaces
+  are created, address-edited, or deleted, named
+  `system:deny:<a>↔<b>`. Shipped with `is_active=false` so existing
+  installs aren't surprised — operator toggles them on individually or
+  via the new sweep endpoints. Handler rejects DELETE on system rules
   (409) and rejects any field change other than `is_active` (409).
   Rules table shows a "system" badge + "toggle only" hint in place of
   the Edit/Delete buttons; new filter pills above the table let the
   operator narrow to All / Admin / System.
+- **System-rules sweep endpoints** — `POST /api/v1/system-rules/enable-all`
+  and `/disable-all` flip is_active across every owner='system' row in
+  one transaction and re-apply the changes into the kernel. Rules-page
+  surfaces "Enable all system rules" + "Disable all" buttons when any
+  system rules exist, each with a confirmation dialog naming the
+  consequence.
+
+### Fixed
+
+- **`direction=both` now matches symmetrically** when the rule
+  constrains both src AND dst CIDRs. Previously a single rule with
+  `src=10.8.0.0/24 dst=10.9.0.0/24 direction=both` only matched packets
+  flowing 10.8→10.9 — the reverse direction had src=10.9.x which didn't
+  match the rule's src constraint and fell through to the next rule.
+  The eBPF evaluator now accepts either (src,dst) or (dst,src) when
+  direction=both AND has_src AND has_dst. Other rule shapes
+  (single direction, partial CIDR) keep the original asymmetric
+  semantics.
+
+### Changed
+
+- **System-rule generator emits unordered pairs** with
+  `direction='both'` instead of ordered pairs with `direction='ingress'`.
+  Halves the system rule count (N×(N-1) → N×(N-1)/2) and rides on the
+  new symmetric direction=both semantics. Existing system rules from
+  round 16 are wiped + regenerated automatically on the next interface
+  lifecycle event.
 
 ### Pending for `v2.0.0-preview.1`
 

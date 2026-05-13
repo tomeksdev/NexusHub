@@ -198,9 +198,42 @@ export function RulesPage() {
     onSuccess: () => qc.invalidateQueries({ queryKey: ["rules"] }),
   });
 
+  // Sweep mutations — flip the entire owner='system' set at once. The
+  // backend returns {flipped, active} so we know how many rows actually
+  // changed and can show a useful confirmation.
+  const sweepMut = useMutation<
+    { flipped: number; active: boolean },
+    Error,
+    "enable-all" | "disable-all"
+  >({
+    mutationFn: (kind) =>
+      api(`/api/v1/system-rules/${kind}`, { method: "POST" }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["rules"] }),
+  });
+
   const onDelete = (r: Rule) => {
     if (!confirm(`Delete rule "${r.name}"? This cannot be undone.`)) return;
     deleteMut.mutate(r.id);
+  };
+
+  const onEnableAllSystem = () => {
+    if (
+      !confirm(
+        "Enable every system rule? This blocks cross-location traffic immediately. Existing peer connections in those directions will drop.",
+      )
+    )
+      return;
+    sweepMut.mutate("enable-all");
+  };
+
+  const onDisableAllSystem = () => {
+    if (
+      !confirm(
+        "Disable every system rule? Cross-location traffic will flow freely until you re-enable.",
+      )
+    )
+      return;
+    sweepMut.mutate("disable-all");
   };
 
   if (isLoading)
@@ -243,7 +276,7 @@ export function RulesPage() {
         </div>
       </div>
 
-      <div className="flex items-center gap-2 text-sm">
+      <div className="flex items-center gap-2 text-sm flex-wrap">
         <FilterPill
           label={`All (${allItems.length})`}
           active={ownerFilter === "all"}
@@ -259,6 +292,30 @@ export function RulesPage() {
           active={ownerFilter === "system"}
           onClick={() => setOwnerFilter("system")}
         />
+        {systemCount > 0 && (
+          <div className="ml-auto inline-flex gap-2">
+            <button
+              type="button"
+              onClick={onEnableAllSystem}
+              disabled={sweepMut.isPending}
+              className="btn-ghost"
+              style={{ padding: "0.25rem 0.75rem", fontSize: "0.75rem" }}
+              title="Flip is_active=true on every system rule"
+            >
+              Enable all system rules
+            </button>
+            <button
+              type="button"
+              onClick={onDisableAllSystem}
+              disabled={sweepMut.isPending}
+              className="btn-ghost"
+              style={{ padding: "0.25rem 0.75rem", fontSize: "0.75rem" }}
+              title="Flip is_active=false on every system rule"
+            >
+              Disable all
+            </button>
+          </div>
+        )}
       </div>
 
       {items.length === 0 ? (

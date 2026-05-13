@@ -425,10 +425,26 @@ evaluate_rule_v4(__u32 idx, void *_ctx)
         !protocol_matches(r->protocol, ctx->protocol))
         return 0;
 
-    if (r->has_src && !v4_in_cidr(ctx->src_addr, r->src_addr, r->src_prefix_len))
-        return 0;
-    if (r->has_dst && !v4_in_cidr(ctx->dst_addr, r->dst_addr, r->dst_prefix_len))
-        return 0;
+    /* CIDR match. When direction=both AND the rule constrains both src
+     * AND dst, the operator means "this pair in either order" — a
+     * single rule covers A→B and B→A. The kernel only sees packet.src
+     * and packet.dst, so we explicitly test both orientations. For any
+     * other rule shape (single direction, or partial CIDR constraint)
+     * we keep the original asymmetric semantics: src goes against
+     * packet.src, dst against packet.dst. */
+    if (r->direction == DIR_BOTH && r->has_src && r->has_dst) {
+        int forward = v4_in_cidr(ctx->src_addr, r->src_addr, r->src_prefix_len) &&
+                      v4_in_cidr(ctx->dst_addr, r->dst_addr, r->dst_prefix_len);
+        int reverse = v4_in_cidr(ctx->src_addr, r->dst_addr, r->dst_prefix_len) &&
+                      v4_in_cidr(ctx->dst_addr, r->src_addr, r->src_prefix_len);
+        if (!forward && !reverse)
+            return 0;
+    } else {
+        if (r->has_src && !v4_in_cidr(ctx->src_addr, r->src_addr, r->src_prefix_len))
+            return 0;
+        if (r->has_dst && !v4_in_cidr(ctx->dst_addr, r->dst_addr, r->dst_prefix_len))
+            return 0;
+    }
 
     if (!port_matches(ctx->sport_net, r->src_port_from, r->src_port_to))
         return 0;
@@ -480,10 +496,20 @@ evaluate_rule_v6(__u32 idx, void *_ctx)
         !protocol_matches(r->protocol, ctx->protocol))
         return 0;
 
-    if (r->has_src && !v6_in_cidr(ctx->src_addr, r->src_addr, r->src_prefix_len))
-        return 0;
-    if (r->has_dst && !v6_in_cidr(ctx->dst_addr, r->dst_addr, r->dst_prefix_len))
-        return 0;
+    /* See evaluate_rule_v4 for the symmetric-match rationale. */
+    if (r->direction == DIR_BOTH && r->has_src && r->has_dst) {
+        int forward = v6_in_cidr(ctx->src_addr, r->src_addr, r->src_prefix_len) &&
+                      v6_in_cidr(ctx->dst_addr, r->dst_addr, r->dst_prefix_len);
+        int reverse = v6_in_cidr(ctx->src_addr, r->dst_addr, r->dst_prefix_len) &&
+                      v6_in_cidr(ctx->dst_addr, r->src_addr, r->src_prefix_len);
+        if (!forward && !reverse)
+            return 0;
+    } else {
+        if (r->has_src && !v6_in_cidr(ctx->src_addr, r->src_addr, r->src_prefix_len))
+            return 0;
+        if (r->has_dst && !v6_in_cidr(ctx->dst_addr, r->dst_addr, r->dst_prefix_len))
+            return 0;
+    }
 
     if (!port_matches(ctx->sport_net, r->src_port_from, r->src_port_to))
         return 0;

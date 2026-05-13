@@ -478,17 +478,21 @@ type SystemRuleLocation struct {
 const SystemRulePriority = 10
 
 // RegenerateSystemDenies rebuilds the full set of owner='system' rules
-// from the current list of locations. It runs in a single transaction:
+// from the current list of locations. Single transaction:
 //
 //  1. Delete every existing system rule.
-//  2. Insert one DENY rule for every ordered pair (src, dst) of distinct
-//     locations, with is_active=false. Operators flip is_active=true on
-//     the pairs they want enforced.
+//  2. Insert one DENY per UNORDERED pair of distinct locations with
+//     direction='both'. The eBPF evaluator (round 17) handles
+//     direction=both as a symmetric src/dst match — a single rule
+//     covers A→B and B→A. Halves the system-rule count vs the round-16
+//     ordered-pairs design.
 //
-// Name format is "system:deny:<src.Name>→<dst.Name>" so the operator
-// can tell at a glance which pair a rule covers. ON CONFLICT (name)
-// DO NOTHING means a stray admin-authored rule with the same name
-// survives — that's a corner case but losing operator data is worse.
+// Inserted with is_active=false. Operators flip them on individually
+// or via the /system-rules/enable-all sweep endpoint.
+//
+// Name format is "system:deny:<a.Name>↔<b.Name>" with the lexically
+// smaller name first so the pair is canonical and we never accidentally
+// emit two rules for the same pair.
 //
 // Called from the interface handler after Create / Update (address) /
 // Delete so the baseline always matches the current location set.
@@ -510,22 +514,25 @@ func (r *RuleRepo) RegenerateSystemDenies(ctx context.Context, locations []Syste
 		    src_cidr, dst_cidr,
 		    priority, is_active, owner)
 		VALUES ($1, $2, 'deny'::ebpf_rule_action,
-		        'ingress'::ebpf_rule_direction,
+		        'both'::ebpf_rule_direction,
 		        'any'::ebpf_rule_protocol,
 		        $3::cidr, $4::cidr,
 		        $5, false, 'system')
 		ON CONFLICT (name) DO NOTHING`
 
-	for _, src := range locations {
-		for _, dst := range locations {
-			if src.ID == dst.ID {
-				continue
+	for i := range locations {
+		for j := i + 1; j < len(locations); j++ {
+			a, b := locations[i], locations[j]
+			// Canonicalise: lexically smaller name first so the rule
+			// identity is stable across location reordering.
+			if a.Name > b.Name {
+				a, b = b, a
 			}
-			name := fmt.Sprintf("system:deny:%s→%s", src.Name, dst.Name)
-			desc := fmt.Sprintf("Auto-generated default-deny for %s → %s. Toggle is_active to enforce.", src.Name, dst.Name)
+			name := fmt.Sprintf("system:deny:%s↔%s", a.Name, b.Name)
+			desc := fmt.Sprintf("Auto-generated default-deny between %s and %s (both directions). Toggle is_active to enforce.", a.Name, b.Name)
 			if _, err := tx.Exec(ctx, ins,
 				name, desc,
-				src.CIDR.String(), dst.CIDR.String(),
+				a.CIDR.String(), b.CIDR.String(),
 				SystemRulePriority,
 			); err != nil {
 				return fmt.Errorf("insert system rule %s: %w", name, err)
@@ -533,4 +540,32 @@ func (r *RuleRepo) RegenerateSystemDenies(ctx context.Context, locations []Syste
 		}
 	}
 	return tx.Commit(ctx)
+}
+
+// SetSystemRulesActive flips is_active on every owner='system' row in
+// one statement and returns the count of rows touched. Used by the
+// /system-rules/enable-all and /system-rules/disable-all admin
+// endpoints so the operator can toggle the whole baseline at once
+// after fresh install instead of clicking through each pair. Returns
+// the IDs of rows whose is_active actually changed so the caller can
+// re-apply just those into the kernel.
+func (r *RuleRepo) SetSystemRulesActive(ctx context.Context, active bool) ([]uuid.UUID, error) {
+	rows, err := r.pool.Query(ctx, `
+		UPDATE ebpf_rules
+		SET is_active = $1
+		WHERE owner = 'system' AND is_active <> $1
+		RETURNING id`, active)
+	if err != nil {
+		return nil, fmt.Errorf("sweep system rules: %w", err)
+	}
+	defer rows.Close()
+	var ids []uuid.UUID
+	for rows.Next() {
+		var id uuid.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("scan swept id: %w", err)
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
 }
