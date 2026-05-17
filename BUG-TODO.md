@@ -37,7 +37,7 @@ What ships now:
 
 ## Reference files (local only, gitignored)
 
-- `Claude - Project Plan.md`
+- `project-plan.md`
 - `example.html`
 - `hexagon_logo.png`
 

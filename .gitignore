@@ -41,8 +41,9 @@ docker/.env
 coverage/
 *.coverprofile
 
-# Local design / planning references — kept on disk to inform work
-# but never pushed to GitHub.
-/Claude - Project Plan.md
+# Local design / planning scratch — kept on disk to inform work but
+# never pushed to GitHub. (TODO.md and BUG-TODO.md are deliberately
+# tracked; they don't appear here.)
+/project-plan.md
 /example.html
 /hexagon_logo.png
