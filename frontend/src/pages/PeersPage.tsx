@@ -61,9 +61,9 @@ export function PeersPage() {
       // The /peers list endpoint requires interface_id. For now we
       // fetch the first location and display peers for it; a real
       // multi-location UI would render a dropdown.
-      const ifaces = await api<
-        PageEnvelope<{ id: string; name: string }>
-      >("/api/v1/interfaces?limit=1");
+      const ifaces = await api<PageEnvelope<{ id: string; name: string }>>(
+        "/api/v1/interfaces?limit=1",
+      );
       if (ifaces.items.length === 0)
         return { items: [], total: 0, ifaceID: null, ifaceName: null };
       const iface = ifaces.items[0];
@@ -111,9 +111,7 @@ export function PeersPage() {
   // fix for "I saved the peer but the .conf still shows the old
   // value" because react's element-identity preserved state
   // across the close+reopen cycle.
-  const [peerVersions, setPeerVersions] = useState<Record<string, number>>(
-    {},
-  );
+  const [peerVersions, setPeerVersions] = useState<Record<string, number>>({});
   function bumpVersion(id: string) {
     setPeerVersions((prev) => ({ ...prev, [id]: (prev[id] ?? 0) + 1 }));
   }
@@ -142,11 +140,7 @@ export function PeersPage() {
           // (Go's nil slice marshals to JSON null, not []). Normalize
           // both that and any null entries that slip through.
           const arr =
-            payload == null
-              ? []
-              : Array.isArray(payload)
-                ? payload
-                : [payload];
+            payload == null ? [] : Array.isArray(payload) ? payload : [payload];
           const list = arr.filter(
             (p): p is SsePayload =>
               p != null && typeof p.public_key === "string",
@@ -183,8 +177,7 @@ export function PeersPage() {
     return () => ctrl.abort();
   }, []);
 
-  if (isLoading)
-    return <div className="p-6 text-muted">Loading peers…</div>;
+  if (isLoading) return <div className="p-6 text-muted">Loading peers…</div>;
   if (isError)
     return (
       <div className="p-6 text-danger">
@@ -306,11 +299,11 @@ export function PeersPage() {
                     </td>
                     <td className="text-muted">
                       {p.owner_user_id ? (
-                        userByID.get(p.owner_user_id)?.email ?? (
+                        (userByID.get(p.owner_user_id)?.email ?? (
                           <span className="text-faint font-mono text-xs">
                             {p.owner_user_id.slice(0, 8)}
                           </span>
-                        )
+                        ))
                       ) : (
                         <span className="text-faint">—</span>
                       )}
@@ -454,10 +447,7 @@ function NetworksCell({ items }: { items: string[] }) {
   const head = items.slice(0, 2);
   const rest = items.length - head.length;
   return (
-    <span
-      title={items.join(", ")}
-      className="font-mono text-xs"
-    >
+    <span title={items.join(", ")} className="font-mono text-xs">
       {head.join(", ")}
       {rest > 0 && <span className="text-faint">{` +${rest}`}</span>}
     </span>

@@ -113,9 +113,7 @@ export function PortField({ from, to, onChange, label, idPrefix }: Props) {
 
   return (
     <div className="space-y-2">
-      {label && (
-        <span className="field-label-text inline-block">{label}</span>
-      )}
+      {label && <span className="field-label-text inline-block">{label}</span>}
       <div className="flex items-center gap-2">
         <select
           id={modeId}

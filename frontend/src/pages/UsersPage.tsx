@@ -38,10 +38,9 @@ export function UsersPage({ onOpen }: Props = {}) {
 
   const deleteMut = useMutation({
     mutationFn: ({ id, force }: { id: string; force: boolean }) =>
-      api(
-        `/api/v1/users/${id}${force ? "?force=true" : ""}`,
-        { method: "DELETE" },
-      ),
+      api(`/api/v1/users/${id}${force ? "?force=true" : ""}`, {
+        method: "DELETE",
+      }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["users"] }),
   });
 
@@ -143,14 +142,21 @@ export function UsersPage({ onOpen }: Props = {}) {
                       )}
                     </td>
                     <td className="text-muted">
-                      {u.totp_enabled ? "TOTP" : <span className="text-faint">off</span>}
+                      {u.totp_enabled ? (
+                        "TOTP"
+                      ) : (
+                        <span className="text-faint">off</span>
+                      )}
                     </td>
                     <td className="text-muted">
                       {u.last_login_at
                         ? new Date(u.last_login_at).toLocaleString()
                         : "—"}
                     </td>
-                    <td className="text-right" onClick={(e) => e.stopPropagation()}>
+                    <td
+                      className="text-right"
+                      onClick={(e) => e.stopPropagation()}
+                    >
                       <div className="inline-flex gap-2">
                         <button
                           type="button"
@@ -196,8 +202,7 @@ export function UsersPage({ onOpen }: Props = {}) {
 
 function roleBadge(role: string): string {
   const base = "inline-flex px-2 py-0.5 rounded-full text-xs font-semibold ";
-  if (role === "super_admin")
-    return base + "bg-[#FF4C4C]/20 text-[#FF4C4C]";
+  if (role === "super_admin") return base + "bg-[#FF4C4C]/20 text-[#FF4C4C]";
   if (role === "admin") return base + "bg-indigo-500/20 text-indigo-300";
   return base + "bg-white/10 text-muted";
 }

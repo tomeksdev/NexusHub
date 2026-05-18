@@ -50,7 +50,14 @@ function isFullTunnel(v: string) {
 }
 
 export const CidrList = forwardRef<CidrListHandle, Props>(function CidrList(
-  { value, onChange, placeholder, hint, warnFullTunnel = true, disallowFullTunnel = false },
+  {
+    value,
+    onChange,
+    placeholder,
+    hint,
+    warnFullTunnel = true,
+    disallowFullTunnel = false,
+  },
   ref,
 ) {
   const [draft, setDraft] = useState("");
@@ -64,7 +71,9 @@ export const CidrList = forwardRef<CidrListHandle, Props>(function CidrList(
       return;
     }
     if (disallowFullTunnel && isFullTunnel(v)) {
-      setErr("0.0.0.0/0 and ::/0 aren't allowed here — they defeat per-peer source validation. Use the client routed networks field for full-tunnel routing.");
+      setErr(
+        "0.0.0.0/0 and ::/0 aren't allowed here — they defeat per-peer source validation. Use the client routed networks field for full-tunnel routing.",
+      );
       return;
     }
     if (value.includes(v)) {
@@ -92,7 +101,9 @@ export const CidrList = forwardRef<CidrListHandle, Props>(function CidrList(
           return value;
         }
         if (disallowFullTunnel && isFullTunnel(v)) {
-          setErr("0.0.0.0/0 and ::/0 aren't allowed here — they defeat per-peer source validation. Use the client routed networks field for full-tunnel routing.");
+          setErr(
+            "0.0.0.0/0 and ::/0 aren't allowed here — they defeat per-peer source validation. Use the client routed networks field for full-tunnel routing.",
+          );
           return value;
         }
         if (value.includes(v)) {
@@ -168,8 +179,8 @@ export const CidrList = forwardRef<CidrListHandle, Props>(function CidrList(
       {hint && !err && <span className="field-hint">{hint}</span>}
       {hasFullTunnel && (
         <span className="field-hint text-warning">
-          Heads up — 0.0.0.0/0 routes <em>all</em> traffic through the
-          tunnel. Make sure that's intended.
+          Heads up — 0.0.0.0/0 routes <em>all</em> traffic through the tunnel.
+          Make sure that's intended.
         </span>
       )}
     </div>

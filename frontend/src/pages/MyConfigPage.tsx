@@ -57,8 +57,7 @@ export function MyConfigPage() {
   // when the request 403s.
   const ifacesQ = useQuery({
     queryKey: ["interfaces-mine-readonly"],
-    queryFn: () =>
-      api<PageEnvelope<IfaceLite>>("/api/v1/interfaces?limit=100"),
+    queryFn: () => api<PageEnvelope<IfaceLite>>("/api/v1/interfaces?limit=100"),
     retry: false,
     staleTime: 60_000,
   });
@@ -131,13 +130,11 @@ export function MyConfigPage() {
                   </dd>
                   <dt className="text-muted">Allowed networks</dt>
                   <dd className="font-mono text-xs">
-                    {p.client_allowed_ips.length > 0
-                      ? p.client_allowed_ips.join(", ")
-                      : (
-                        <span className="text-faint">
-                          (location default)
-                        </span>
-                      )}
+                    {p.client_allowed_ips.length > 0 ? (
+                      p.client_allowed_ips.join(", ")
+                    ) : (
+                      <span className="text-faint">(location default)</span>
+                    )}
                   </dd>
                   <dt className="text-muted">Last handshake</dt>
                   <dd className="text-muted">
@@ -152,9 +149,7 @@ export function MyConfigPage() {
                 <div className="mt-4 flex gap-2">
                   <button
                     type="button"
-                    onClick={() =>
-                      setConfigPeer({ id: p.id, name: p.name })
-                    }
+                    onClick={() => setConfigPeer({ id: p.id, name: p.name })}
                     className="btn-primary"
                   >
                     Show config + QR

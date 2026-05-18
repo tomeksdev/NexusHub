@@ -25,9 +25,9 @@ export function ThreeLayerCallout() {
           authorization.
         </li>
         <li>
-          <span className="text-muted">Server-side accepted IPs</span> —
-          the WG kernel module rejects packets from this peer whose source
-          isn't in this list. Validation only; never authorization.
+          <span className="text-muted">Server-side accepted IPs</span> — the WG
+          kernel module rejects packets from this peer whose source isn't in
+          this list. Validation only; never authorization.
         </li>
         <li>
           <span className="text-muted">Access rules (eBPF)</span> — the actual

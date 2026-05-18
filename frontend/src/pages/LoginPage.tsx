@@ -59,10 +59,7 @@ export function LoginPage() {
 
   return (
     <div className="min-h-screen flex items-center justify-center px-4">
-      <form
-        onSubmit={onSubmit}
-        className="panel w-full max-w-sm space-y-4"
-      >
+      <form onSubmit={onSubmit} className="panel w-full max-w-sm space-y-4">
         <div>
           <div className="flex items-center gap-2.5">
             <Logo size={36} />

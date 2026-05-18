@@ -94,13 +94,7 @@ function formatBytes(n: number): string {
 //   - OFF    : DB-disabled → kernel intentionally empty
 //   - ERROR  : DB-active but kernel doesn't have the rule (sync
 //              failed silently or the API is running with NoopSyncer)
-function KernelBadge({
-  active,
-  loaded,
-}: {
-  active: boolean;
-  loaded: boolean;
-}) {
+function KernelBadge({ active, loaded }: { active: boolean; loaded: boolean }) {
   if (!active) {
     return (
       <span className="status-badge muted" title="Rule disabled in DB.">
@@ -111,7 +105,10 @@ function KernelBadge({
   }
   if (loaded) {
     return (
-      <span className="status-badge ok" title="Rule is programmed in the kernel maps.">
+      <span
+        className="status-badge ok"
+        title="Rule is programmed in the kernel maps."
+      >
         <span className="dot" />
         loaded
       </span>
@@ -236,8 +233,7 @@ export function RulesPage() {
     sweepMut.mutate("disable-all");
   };
 
-  if (isLoading)
-    return <div className="p-6 text-muted">Loading rules…</div>;
+  if (isLoading) return <div className="p-6 text-muted">Loading rules…</div>;
   if (isError)
     return (
       <div className="p-6 text-danger">
@@ -260,8 +256,8 @@ export function RulesPage() {
           <h1 className="page-title">eBPF rules</h1>
           <p className="text-faint text-xs mt-1">
             Rules apply in descending priority order. System rules are
-            auto-generated cross-location denies — toggle them on to
-            enforce, off to allow free routing between locations.
+            auto-generated cross-location denies — toggle them on to enforce,
+            off to allow free routing between locations.
           </p>
         </div>
         <div className="topbar-actions">

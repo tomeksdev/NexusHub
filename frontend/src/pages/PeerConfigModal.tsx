@@ -168,11 +168,7 @@ export function PeerConfigModal({
                 Download .conf
               </button>
               {onEdit && (
-                <button
-                  type="button"
-                  onClick={onEdit}
-                  className="btn-ghost"
-                >
+                <button type="button" onClick={onEdit} className="btn-ghost">
                   Edit peer
                 </button>
               )}

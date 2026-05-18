@@ -133,10 +133,7 @@ export function DashboardPage() {
                       <span className="text-success font-semibold">
                         {l.peers_online}
                       </span>
-                      <span className="text-faint">
-                        {" "}
-                        / {l.peers_total}
-                      </span>
+                      <span className="text-faint"> / {l.peers_total}</span>
                     </td>
                   </tr>
                 ))}

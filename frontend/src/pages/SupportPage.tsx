@@ -45,8 +45,7 @@ export function SupportPage() {
   // the 403 quietly).
   const warningsQ = useQuery({
     queryKey: ["kernel-warnings"],
-    queryFn: () =>
-      api<KernelWarningsResp>("/api/v1/diag/kernel-warnings"),
+    queryFn: () => api<KernelWarningsResp>("/api/v1/diag/kernel-warnings"),
     retry: false,
     refetchInterval: 30_000,
   });
@@ -111,9 +110,9 @@ export function SupportPage() {
           </div>
           {ebpf.programs.length === 0 ? (
             <p className="text-muted text-sm">
-              No eBPF programs attached. Locations created at runtime
-              should auto-attach; if you see this with active rules,
-              the kernel side is silent and rules can't enforce.
+              No eBPF programs attached. Locations created at runtime should
+              auto-attach; if you see this with active rules, the kernel side is
+              silent and rules can't enforce.
             </p>
           ) : (
             <table className="w-full text-sm">

@@ -166,7 +166,10 @@ export function MetricsPage() {
                       <stop offset="100%" stopColor="#FF4C4C" stopOpacity={0} />
                     </linearGradient>
                   </defs>
-                  <CartesianGrid stroke="rgba(255,255,255,0.08)" strokeDasharray="3 3" />
+                  <CartesianGrid
+                    stroke="rgba(255,255,255,0.08)"
+                    strokeDasharray="3 3"
+                  />
                   <XAxis
                     dataKey="t"
                     tickFormatter={(t) => new Date(t).toLocaleTimeString()}
@@ -226,8 +229,7 @@ function Stat({
   hint?: string;
   tone?: "primary" | "success" | "warning" | "danger";
 }) {
-  const cls =
-    tone === "primary" ? "stat-card" : `stat-card ${tone}`;
+  const cls = tone === "primary" ? "stat-card" : `stat-card ${tone}`;
   return (
     <div className={cls}>
       <span className="stat-label">{label}</span>

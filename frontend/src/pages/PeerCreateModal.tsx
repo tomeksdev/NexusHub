@@ -245,9 +245,7 @@ export function PeerCreateModal({
             >
               {!selectedIface && <option value="">— pick a location —</option>}
               {ifaces.map((i) => {
-                const ep = i.endpoint
-                  ? i.endpoint
-                  : `:${i.listen_port}`;
+                const ep = i.endpoint ? i.endpoint : `:${i.listen_port}`;
                 return (
                   <option key={i.id} value={i.id}>
                     {i.name} — {ep}
@@ -291,9 +289,7 @@ export function PeerCreateModal({
           <input
             value={assignedIP}
             onChange={(e) => setAssignedIP(e.target.value)}
-            placeholder={
-              nextIPQ.isLoading ? "loading suggestion…" : "10.8.0.5"
-            }
+            placeholder={nextIPQ.isLoading ? "loading suggestion…" : "10.8.0.5"}
             className="field-input"
             disabled={!selectedIface}
           />
@@ -383,9 +379,7 @@ export function PeerCreateModal({
           assignedIP={assignedIP}
           interfaceCIDR={selected?.address}
           clientAllowedIPs={clientAllowedIPs}
-          endpointOverride={
-            showAdvanced ? endpointOverride : ""
-          }
+          endpointOverride={showAdvanced ? endpointOverride : ""}
           locationEndpoint={selected?.endpoint ?? null}
         />
 

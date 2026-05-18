@@ -139,7 +139,9 @@ export function AuditPage() {
                   <td className="font-mono text-xs text-muted">
                     {e.target_type}
                     {e.target_id ? (
-                      <span className="text-faint">:{shortID(e.target_id)}</span>
+                      <span className="text-faint">
+                        :{shortID(e.target_id)}
+                      </span>
                     ) : null}
                   </td>
                   <td className="text-muted font-mono text-xs">

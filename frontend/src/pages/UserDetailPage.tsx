@@ -58,9 +58,7 @@ export function UserDetailPage({ userID, onBack }: Props) {
   // Per-peer version counter — bumped on edit save and used as the
   // React key on PeerConfigModal so the operator never sees a
   // stale .conf after editing. Mirrors the PeersPage pattern.
-  const [peerVersions, setPeerVersions] = useState<Record<string, number>>(
-    {},
-  );
+  const [peerVersions, setPeerVersions] = useState<Record<string, number>>({});
   function bumpVersion(id: string) {
     setPeerVersions((prev) => ({ ...prev, [id]: (prev[id] ?? 0) + 1 }));
   }
@@ -98,8 +96,7 @@ export function UserDetailPage({ userID, onBack }: Props) {
   // location each peer belongs to without one fetch per peer.
   const ifacesQ = useQuery({
     queryKey: ["interfaces"],
-    queryFn: () =>
-      api<PageEnvelope<Iface>>("/api/v1/interfaces?limit=100"),
+    queryFn: () => api<PageEnvelope<Iface>>("/api/v1/interfaces?limit=100"),
     staleTime: 60_000,
   });
   const ifaceByID = new Map<string, Iface>();
@@ -238,9 +235,7 @@ export function UserDetailPage({ userID, onBack }: Props) {
                           </span>
                         )}
                       </td>
-                      <td className="font-mono text-muted">
-                        {p.assigned_ip}
-                      </td>
+                      <td className="font-mono text-muted">{p.assigned_ip}</td>
                       <td className="text-muted">
                         <NetworksCell items={p.client_allowed_ips ?? []} />
                       </td>
@@ -251,8 +246,7 @@ export function UserDetailPage({ userID, onBack }: Props) {
                           : "—"}
                       </td>
                       <td className="text-muted font-mono text-xs">
-                        {formatBytes(p.rx_bytes)} /{" "}
-                        {formatBytes(p.tx_bytes)}
+                        {formatBytes(p.rx_bytes)} / {formatBytes(p.tx_bytes)}
                       </td>
                       <td className="text-right">
                         <div className="inline-flex gap-2">

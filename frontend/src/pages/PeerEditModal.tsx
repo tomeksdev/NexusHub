@@ -177,9 +177,7 @@ export function PeerEditModal({ peer, onClose, onSaved }: Props) {
           <dl className="grid grid-cols-[8rem_1fr] gap-y-1">
             <dt className="text-muted">Location</dt>
             <dd className="font-mono">
-              {ownIface?.name ?? (
-                <span className="text-faint">unknown</span>
-              )}
+              {ownIface?.name ?? <span className="text-faint">unknown</span>}
             </dd>
             <dt className="text-muted">Inherited endpoint</dt>
             <dd className="font-mono">
@@ -305,9 +303,7 @@ export function PeerEditModal({ peer, onClose, onSaved }: Props) {
         />
 
         {mut.isError && (
-          <p className="text-danger text-sm">
-            {(mut.error as Error).message}
-          </p>
+          <p className="text-danger text-sm">{(mut.error as Error).message}</p>
         )}
 
         <div className="flex justify-end gap-2 pt-2">

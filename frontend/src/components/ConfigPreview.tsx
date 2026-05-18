@@ -33,9 +33,7 @@ function maskedFromCIDR(cidr?: string): string {
 
 function inferAddressBits(ip: string): string {
   // IPv6 if there are more than one colon; otherwise IPv4.
-  return ip.includes(":") && (ip.match(/:/g) ?? []).length > 1
-    ? "/128"
-    : "/32";
+  return ip.includes(":") && (ip.match(/:/g) ?? []).length > 1 ? "/128" : "/32";
 }
 
 export function ConfigPreview({
