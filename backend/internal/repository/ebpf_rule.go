@@ -505,7 +505,12 @@ func (r *RuleRepo) RegenerateSystemDenies(ctx context.Context, locations []Syste
 	if err != nil {
 		return fmt.Errorf("begin system-rule tx: %w", err)
 	}
-	defer tx.Rollback(ctx)
+	// Rollback returns ErrTxClosed once Commit lands, which is harmless;
+	// discarding it explicitly silences the linter without losing real
+	// failures (an actual rollback error would have already poisoned
+	// the connection — Begin's contract guarantees we wouldn't reach
+	// Commit by then).
+	defer func() { _ = tx.Rollback(ctx) }()
 
 	// Snapshot existing system rules' is_active state by name so we can
 	// preserve per-pair operator overrides through the wipe.

@@ -99,9 +99,13 @@ export function PeerCreateModal({
 
   // First-render auto-pick: if no interfaceID was passed AND there's
   // exactly one location, select it. With multiple, leave the picker
-  // empty so the operator makes an explicit choice.
+  // empty so the operator makes an explicit choice. Effect-driven
+  // setState is intentional here — the source of truth is an async
+  // query that lands after first render, and we genuinely want to
+  // mutate component state once the data arrives.
   useEffect(() => {
     if (!selectedIface && ifaces.length === 1) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setSelectedIface(ifaces[0].id);
     }
   }, [ifaces, selectedIface]);
@@ -118,8 +122,14 @@ export function PeerCreateModal({
     staleTime: 0,
     retry: false,
   });
+  // Same effect-driven setState pattern as the auto-pick above —
+  // the next-free IP arrives via async query, and we prefill the
+  // input so the operator can edit or accept. Linting wants this
+  // shaped as derived state, but the input is editable after the
+  // first prefill so derived-state doesn't fit.
   useEffect(() => {
     if (nextIPQ.data?.assigned_ip) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setAssignedIP(nextIPQ.data.assigned_ip);
     }
   }, [nextIPQ.data?.assigned_ip]);

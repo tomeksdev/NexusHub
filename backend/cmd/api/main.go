@@ -40,10 +40,42 @@ func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 	slog.SetDefault(logger)
 
+	// `-health` is the Docker HEALTHCHECK entry point. Exists so the
+	// runtime image can stay on a distroless base (no curl/wget) — the
+	// binary calls its own /health endpoint via Go's net/http and exits
+	// 0 on success, non-zero otherwise. Uses PORT from env so the
+	// healthcheck stays consistent with the listener.
+	for _, a := range os.Args[1:] {
+		if a == "-health" || a == "--health" {
+			os.Exit(healthcheck())
+		}
+	}
+
 	if err := run(); err != nil {
 		slog.Error("api exited with error", "err", err)
 		os.Exit(1)
 	}
+}
+
+// healthcheck does a single GET to http://127.0.0.1:$PORT/api/v1/health
+// with a 3-second timeout. Returns 0 on 2xx, 1 on anything else.
+// Deliberately doesn't read config.Load() — config errors during
+// startup shouldn't make the healthcheck pass.
+func healthcheck() int {
+	port := os.Getenv("PORT")
+	if port == "" {
+		port = "8080"
+	}
+	c := &http.Client{Timeout: 3 * time.Second}
+	resp, err := c.Get("http://127.0.0.1:" + port + "/api/v1/health")
+	if err != nil {
+		return 1
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		return 0
+	}
+	return 1
 }
 
 func run() error {

@@ -170,7 +170,7 @@ func (h *PeerHandler) Create(c *gin.Context) {
 	}
 
 	// Validate persistent_keepalive bound at the boundary so the DB
-	// CHECK constraint isn't the first line of defence.
+	// CHECK constraint isn't the first line of defense.
 	if req.PersistentKeepalive != nil &&
 		(*req.PersistentKeepalive < 0 || *req.PersistentKeepalive > 65535) {
 		writeError(c, http.StatusBadRequest, apierror.CodeInvalidRequest,
@@ -490,16 +490,16 @@ func (h *PeerHandler) Delete(c *gin.Context) {
 // columns lets callers explicitly clear them (JSON null) vs. leave
 // alone (field absent).
 type updatePeerRequest struct {
-	Name                *string    `json:"name"`
-	Description         **string   `json:"description,omitempty"`
-	OwnerUserID         **string   `json:"owner_user_id,omitempty"`
-	AllowedIPs          *[]string  `json:"allowed_ips"`
-	ClientAllowedIPs    *[]string  `json:"client_allowed_ips"`
-	Endpoint            **string   `json:"endpoint,omitempty"`
-	DNS                 *[]string  `json:"dns"`
-	PersistentKeepalive **int      `json:"persistent_keepalive,omitempty"`
+	Name                *string     `json:"name"`
+	Description         **string    `json:"description,omitempty"`
+	OwnerUserID         **string    `json:"owner_user_id,omitempty"`
+	AllowedIPs          *[]string   `json:"allowed_ips"`
+	ClientAllowedIPs    *[]string   `json:"client_allowed_ips"`
+	Endpoint            **string    `json:"endpoint,omitempty"`
+	DNS                 *[]string   `json:"dns"`
+	PersistentKeepalive **int       `json:"persistent_keepalive,omitempty"`
 	ExpiresAt           **time.Time `json:"expires_at,omitempty"`
-	Status              *string    `json:"status"`
+	Status              *string     `json:"status"`
 }
 
 // Update applies a partial change to a peer row and pushes the diff
@@ -903,19 +903,6 @@ func renderWgQuickConfig(
 		fmt.Fprintf(&sb, "PersistentKeepalive = %d\n", *p.PersistentKeepalive)
 	}
 	return sb.String()
-}
-
-func parsePrefixes(in []string) []netip.Prefix {
-	out := make([]netip.Prefix, 0, len(in))
-	for _, s := range in {
-		if s == "" {
-			continue
-		}
-		if p, err := netip.ParsePrefix(s); err == nil {
-			out = append(out, p)
-		}
-	}
-	return out
 }
 
 // rejectFullTunnelServerSide blocks 0.0.0.0/0 and ::/0 in the server-side

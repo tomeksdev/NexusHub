@@ -61,25 +61,25 @@ const (
 // layout as iphdr->saddr/daddr — so the kernel can compare them
 // directly without endian swaps.
 type RuleV4Record struct {
-	Action        uint8  // ACTION_{ALLOW,DENY,RATE_LIMIT,LOG}
-	Protocol      uint8  // PROTO_{ANY,TCP,UDP,ICMP}
-	Direction     uint8  // DIR_{INGRESS,EGRESS,BOTH}
-	IsActive      uint8  // 0/1
-	HasSrc        uint8  // 1 → gate on SrcAddr/SrcPrefixLen
-	HasDst        uint8  // 1 → gate on DstAddr/DstPrefixLen
-	HasProtocol   uint8  // 1 → Protocol != PROTO_ANY
-	SrcPrefixLen  uint8  // 0..32 (bits)
-	DstPrefixLen  uint8  // 0..32 (bits)
-	RatePPS       uint32 // rate_limit configuration
-	RateBurst     uint32
-	SrcPortFrom   uint16
-	SrcPortTo     uint16
-	DstPortFrom   uint16
-	DstPortTo     uint16
-	Priority      uint16
-	SrcAddr       [4]byte // network byte order
-	DstAddr       [4]byte // network byte order
-	RuleID        uint32  // stable id used as rule_hits key
+	Action       uint8  // ACTION_{ALLOW,DENY,RATE_LIMIT,LOG}
+	Protocol     uint8  // PROTO_{ANY,TCP,UDP,ICMP}
+	Direction    uint8  // DIR_{INGRESS,EGRESS,BOTH}
+	IsActive     uint8  // 0/1
+	HasSrc       uint8  // 1 → gate on SrcAddr/SrcPrefixLen
+	HasDst       uint8  // 1 → gate on DstAddr/DstPrefixLen
+	HasProtocol  uint8  // 1 → Protocol != PROTO_ANY
+	SrcPrefixLen uint8  // 0..32 (bits)
+	DstPrefixLen uint8  // 0..32 (bits)
+	RatePPS      uint32 // rate_limit configuration
+	RateBurst    uint32
+	SrcPortFrom  uint16
+	SrcPortTo    uint16
+	DstPortFrom  uint16
+	DstPortTo    uint16
+	Priority     uint16
+	SrcAddr      [4]byte // network byte order
+	DstAddr      [4]byte // network byte order
+	RuleID       uint32  // stable id used as rule_hits key
 }
 
 // ruleV4RecordSize is the on-wire length of struct rule_v4_record
@@ -156,25 +156,25 @@ func (r *RuleV4Record) UnmarshalBinary(b []byte) error {
 // RuleV6Record mirrors struct rule_v6_record. IPv6 mirror of
 // RuleV4Record; prefix_len fields range 0..128.
 type RuleV6Record struct {
-	Action        uint8
-	Protocol      uint8
-	Direction     uint8
-	IsActive      uint8
-	HasSrc        uint8
-	HasDst        uint8
-	HasProtocol   uint8
-	SrcPrefixLen  uint8 // 0..128
-	DstPrefixLen  uint8 // 0..128
-	RatePPS       uint32
-	RateBurst     uint32
-	SrcPortFrom   uint16
-	SrcPortTo     uint16
-	DstPortFrom   uint16
-	DstPortTo     uint16
-	Priority      uint16
-	SrcAddr       [16]byte // network byte order
-	DstAddr       [16]byte // network byte order
-	RuleID        uint32
+	Action       uint8
+	Protocol     uint8
+	Direction    uint8
+	IsActive     uint8
+	HasSrc       uint8
+	HasDst       uint8
+	HasProtocol  uint8
+	SrcPrefixLen uint8 // 0..128
+	DstPrefixLen uint8 // 0..128
+	RatePPS      uint32
+	RateBurst    uint32
+	SrcPortFrom  uint16
+	SrcPortTo    uint16
+	DstPortFrom  uint16
+	DstPortTo    uint16
+	Priority     uint16
+	SrcAddr      [16]byte // network byte order
+	DstAddr      [16]byte // network byte order
+	RuleID       uint32
 }
 
 // ruleV6RecordSize: 12 (header bytes) + 8 (rate) + 8 (ports) + 4 (priority+pad) + 32 (addrs) + 4 (rule_id) = 68.
@@ -401,7 +401,7 @@ func NewRulesLoaderWithOptions(spec *ebpf.CollectionSpec, opts LoaderOptions) (*
 	ruleHitsMap := coll.Maps[mapRuleHits]
 	logEvents := coll.Maps[mapLogEvents]
 	return &RulesLoader{
-		coll: coll,
+		coll:    coll,
 		tableV4: tableV4, countV4: countV4,
 		tableV6: tableV6, countV6: countV6,
 		rateV4:    rateV4,

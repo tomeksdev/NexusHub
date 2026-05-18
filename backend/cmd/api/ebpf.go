@@ -263,7 +263,7 @@ func (s *ebpfStack) attachTCLocked(l *userspace.RulesLoader, ifaceName string) e
 
 // AttachTC is the runtime entry point. Called from
 // InterfaceHandler.Create after the rtnetlink link is up. Returns
-// nil if the loader isn't initialised (host without CAP_BPF) so
+// nil if the loader isn't initialized (host without CAP_BPF) so
 // the caller never has to nil-check us — the kernel just stays
 // quiet on this Location until the next process restart.
 func (s *ebpfStack) AttachTC(name string) error {

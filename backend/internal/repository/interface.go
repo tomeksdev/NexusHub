@@ -43,7 +43,6 @@ type Interface struct {
 	UpdatedAt  time.Time
 }
 
-
 // CreateInterfaceParams is the write-side input. Address takes a prefix so
 // callers must commit to the netmask up front; we don't synthesize one.
 type CreateInterfaceParams struct {

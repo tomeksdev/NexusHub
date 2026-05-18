@@ -57,12 +57,12 @@ const (
 // translation work — the kernel_id is the only field that mutates
 // across an Apply (slot index changes; rule_id stays).
 type activeRule struct {
-	id        uuid.UUID
-	kernelID  uint32        // stable across Apply cycles
-	priority  uint16
-	fam       family
-	v4Record  userspace.RuleV4Record // valid when fam includes v4
-	v6Record  userspace.RuleV6Record // valid when fam includes v6
+	id       uuid.UUID
+	kernelID uint32 // stable across Apply cycles
+	priority uint16
+	fam      family
+	v4Record userspace.RuleV4Record // valid when fam includes v4
+	v6Record userspace.RuleV6Record // valid when fam includes v6
 }
 
 // KernelSyncer writes rule updates into the BPF map set owned by a

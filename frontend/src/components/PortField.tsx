@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 
 // PortField wraps the from/to integer pair the backend stores into
 // three operator-friendly modes: Any (wildcard), Single (one port),
@@ -43,17 +43,11 @@ export function PortField({ from, to, onChange, label, idPrefix }: Props) {
   );
   const [err, setErr] = useState("");
 
-  // Synchronise children to incoming props on remount (e.g. when an
-  // existing rule's row is edited). After mount, internal state is
-  // the source of truth — parent shouldn't yank it.
-  useEffect(() => {
-    setMode(inferMode(from, to));
-    setSingle(from != null && from === to ? String(from) : "");
-    setRangeFrom(from != null && from !== to ? String(from) : "");
-    setRangeTo(to != null && from !== to ? String(to) : "");
-    setErr("");
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  // The four useState initializers above already capture the
+  // mount-time from/to values; after mount, internal state is the
+  // source of truth and the parent shouldn't yank it. (An earlier
+  // version did the same prop-sync via useEffect with [] deps —
+  // redundant once the initializers were there.)
 
   function isPort(v: number) {
     return Number.isInteger(v) && v >= 1 && v <= 65535;
@@ -172,13 +166,4 @@ export function PortField({ from, to, onChange, label, idPrefix }: Props) {
       {err && <span className="field-hint text-danger">{err}</span>}
     </div>
   );
-}
-
-// formatPortRange is the read-side dual of PortField — used by the
-// rules table to render stored from/to pairs as Any / N / A–B.
-export function formatPortRange(from?: number, to?: number): string {
-  if (from == null || to == null) return "Any";
-  if (from === 0 && to === 0) return "Any";
-  if (from === to) return String(from);
-  return `${from}–${to}`;
 }

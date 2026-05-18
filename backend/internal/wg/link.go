@@ -76,7 +76,7 @@ func (NetlinkManager) EnsureAddress(name string, addr netip.Prefix) error {
 		return fmt.Errorf("list addrs on %q: %w", name, err)
 	}
 	for _, a := range addrs {
-		if a.IPNet != nil && a.IPNet.IP.Equal(want.IP) && bytesEqual(a.IPNet.Mask, want.Mask) {
+		if a.IPNet != nil && a.IP.Equal(want.IP) && bytesEqual(a.Mask, want.Mask) {
 			return nil
 		}
 	}

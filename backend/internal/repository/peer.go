@@ -27,13 +27,13 @@ func NewPeerRepo(pool *pgxpool.Pool) *PeerRepo {
 // generated client-side and never reach the server). When present it is
 // the encrypted blob; callers must Open before exporting.
 type Peer struct {
-	ID                  uuid.UUID
-	InterfaceID         uuid.UUID
-	OwnerUserID         *uuid.UUID
-	Name                string
-	Description         *string
-	PublicKey  string
-	PrivateKey []byte // encrypted; may be nil
+	ID          uuid.UUID
+	InterfaceID uuid.UUID
+	OwnerUserID *uuid.UUID
+	Name        string
+	Description *string
+	PublicKey   string
+	PrivateKey  []byte // encrypted; may be nil
 	// AllowedIPs is the SERVER-side filter — source IPs accepted from
 	// this peer / destinations routed to this peer. Asymmetric with the
 	// client view; see ClientAllowedIPs.
@@ -285,7 +285,11 @@ func (r *PeerRepo) UpsertLiveStats(ctx context.Context, stats []PeerLiveStats) e
 		batch.Queue(q, s.PublicKey, s.RxBytes, s.TxBytes, s.LastHandshake)
 	}
 	br := r.pool.SendBatch(ctx, batch)
-	defer br.Close()
+	// Close returns the first error encountered across the queued
+	// commands plus any Close-time failure. We swallow it because the
+	// loop below already surfaces each per-row error; double-reporting
+	// the same wire failure adds noise without helping debugging.
+	defer func() { _ = br.Close() }()
 	for range stats {
 		if _, err := br.Exec(); err != nil {
 			return fmt.Errorf("upsert live stats: %w", err)

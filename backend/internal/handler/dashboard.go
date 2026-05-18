@@ -25,22 +25,22 @@ type DashboardHandler struct {
 }
 
 type dashboardResponse struct {
-	Counts       dashboardCounts   `json:"counts"`
-	TopPeers     []dashboardPeer   `json:"top_peers"`
-	Locations    []dashboardLoc    `json:"locations"`
-	GeneratedAt  time.Time         `json:"generated_at"`
+	Counts      dashboardCounts `json:"counts"`
+	TopPeers    []dashboardPeer `json:"top_peers"`
+	Locations   []dashboardLoc  `json:"locations"`
+	GeneratedAt time.Time       `json:"generated_at"`
 }
 
 type dashboardCounts struct {
-	Locations    int `json:"locations"`
-	Users        int `json:"users"`
-	Peers        int `json:"peers"`
-	PeersOnline  int `json:"peers_online"`
+	Locations   int `json:"locations"`
+	Users       int `json:"users"`
+	Peers       int `json:"peers"`
+	PeersOnline int `json:"peers_online"`
 }
 
 type dashboardPeer struct {
-	PublicKey     string    `json:"public_key"`
-	Interface     string    `json:"interface"`
+	PublicKey string `json:"public_key"`
+	Interface string `json:"interface"`
 	// OwnerUsername is the operator-friendly identifier the dashboard
 	// renders by default. OwnerEmail stays in the payload so the UI
 	// can surface it on hover for support workflows. Both empty when

@@ -176,7 +176,7 @@ func TestRulesLoaderPutGetClearV6(t *testing.T) {
 	want := RuleV6Record{
 		Action: 1, Protocol: 1, IsActive: 1,
 		HasSrc: 1, SrcPrefixLen: 64,
-		HasDst: 0,
+		HasDst:   0,
 		Priority: 99,
 		RuleID:   55,
 	}
@@ -268,20 +268,20 @@ func TestRuleV4RecordOnWireLayout(t *testing.T) {
 		got byte
 		w   byte
 	}{
-		{0, b[0], 0x01},                       // action
-		{1, b[1], 0x02},                       // protocol
-		{2, b[2], 0x03},                       // direction
-		{3, b[3], 0x04},                       // is_active
-		{4, b[4], 0x05},                       // has_src
-		{5, b[5], 0x06},                       // has_dst
-		{6, b[6], 0x07},                       // has_protocol
-		{7, b[7], 24},                         // src_prefix_len
-		{8, b[8], 16},                         // dst_prefix_len
-		{12, b[12], 0xDD}, {15, b[15], 0xAA},  // rate_pps LE
-		{16, b[16], 0x44}, {19, b[19], 0x11},  // rate_burst LE
-		{32, b[32], 0xC0}, {35, b[35], 0x01},  // src_addr on-wire
-		{36, b[36], 0x0A}, {39, b[39], 0x02},  // dst_addr on-wire
-		{40, b[40], 0xEF}, {43, b[43], 0xDE},  // rule_id LE
+		{0, b[0], 0x01},                      // action
+		{1, b[1], 0x02},                      // protocol
+		{2, b[2], 0x03},                      // direction
+		{3, b[3], 0x04},                      // is_active
+		{4, b[4], 0x05},                      // has_src
+		{5, b[5], 0x06},                      // has_dst
+		{6, b[6], 0x07},                      // has_protocol
+		{7, b[7], 24},                        // src_prefix_len
+		{8, b[8], 16},                        // dst_prefix_len
+		{12, b[12], 0xDD}, {15, b[15], 0xAA}, // rate_pps LE
+		{16, b[16], 0x44}, {19, b[19], 0x11}, // rate_burst LE
+		{32, b[32], 0xC0}, {35, b[35], 0x01}, // src_addr on-wire
+		{36, b[36], 0x0A}, {39, b[39], 0x02}, // dst_addr on-wire
+		{40, b[40], 0xEF}, {43, b[43], 0xDE}, // rule_id LE
 	}
 	for _, c := range checks {
 		if c.got != c.w {

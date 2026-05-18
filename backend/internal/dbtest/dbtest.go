@@ -4,6 +4,16 @@
 // Tests share one container across the package for speed; each test that
 // needs isolation calls Fresh(t) to get its own database within that
 // container.
+//
+// `//go:build integration` gates the whole file so testcontainers-go (and
+// its docker/docker indirect dep) only enter the build graph when the
+// integration tag is set. Production binaries — `nexushub-api`,
+// `nexushub-migrate`, `nexushub-seed` — never link against it, which is
+// what Dependabot's docker/docker CVE alerts actually care about.
+//
+//go:build integration
+// +build integration
+
 package dbtest
 
 import (

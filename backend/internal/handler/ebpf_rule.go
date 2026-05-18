@@ -40,22 +40,22 @@ type RuleHandler struct {
 }
 
 type ruleResponse struct {
-	ID          uuid.UUID  `json:"id"`
-	Name        string     `json:"name"`
-	Description *string    `json:"description,omitempty"`
-	Action      string     `json:"action"`
-	Direction   string     `json:"direction"`
-	Protocol    string     `json:"protocol"`
-	SrcCIDR     *string    `json:"src_cidr,omitempty"`
-	DstCIDR     *string    `json:"dst_cidr,omitempty"`
-	SrcPortFrom *int       `json:"src_port_from,omitempty"`
-	SrcPortTo   *int       `json:"src_port_to,omitempty"`
-	DstPortFrom *int       `json:"dst_port_from,omitempty"`
-	DstPortTo   *int       `json:"dst_port_to,omitempty"`
-	RatePPS     *int       `json:"rate_pps,omitempty"`
-	RateBurst   *int       `json:"rate_burst,omitempty"`
-	Priority int  `json:"priority"`
-	IsActive bool `json:"is_active"`
+	ID          uuid.UUID `json:"id"`
+	Name        string    `json:"name"`
+	Description *string   `json:"description,omitempty"`
+	Action      string    `json:"action"`
+	Direction   string    `json:"direction"`
+	Protocol    string    `json:"protocol"`
+	SrcCIDR     *string   `json:"src_cidr,omitempty"`
+	DstCIDR     *string   `json:"dst_cidr,omitempty"`
+	SrcPortFrom *int      `json:"src_port_from,omitempty"`
+	SrcPortTo   *int      `json:"src_port_to,omitempty"`
+	DstPortFrom *int      `json:"dst_port_from,omitempty"`
+	DstPortTo   *int      `json:"dst_port_to,omitempty"`
+	RatePPS     *int      `json:"rate_pps,omitempty"`
+	RateBurst   *int      `json:"rate_burst,omitempty"`
+	Priority    int       `json:"priority"`
+	IsActive    bool      `json:"is_active"`
 	// KernelLoaded reports whether this rule has a current
 	// programming in the kernel rule_meta map. False with
 	// IsActive=true is the actionable error state — the operator

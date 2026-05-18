@@ -230,7 +230,7 @@ func TestApplyTwoRulesSameSrcBothEnforce(t *testing.T) {
 	// The regression test for round 10's reported bug: two active
 	// rules with the same src_cidr both end up in the kernel (one
 	// per slot, priority-sorted), so the operator-facing promise of
-	// "every active rule applies" is honoured. v2.0 LPM would have
+	// "every active rule applies" is honored. v2.0 LPM would have
 	// dropped one.
 	loader := newTestLoader(t)
 	s, _ := NewKernelSyncer(loader, nil)
