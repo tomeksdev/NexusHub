@@ -28,7 +28,7 @@ jobs:
     name: GoReleaser
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           # Full history is required by goreleaser to compute
           # snapshot version + commit metadata in archives.
@@ -41,7 +41,7 @@ jobs:
           cache-dependency-path: cli/go.sum
 
       - name: Run GoReleaser
-        uses: goreleaser/goreleaser-action@v6
+        uses: goreleaser/goreleaser-action@v7
         with:
           distribution: goreleaser
           version: '~> v2'
