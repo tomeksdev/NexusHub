@@ -6,18 +6,30 @@ import { useNowEveryMinute } from "../lib/hooks";
 import { sseStream } from "../lib/sse";
 import { PeerConfigModal } from "./PeerConfigModal";
 import { PeerCreateModal } from "./PeerCreateModal";
+import { PeerEditModal } from "./PeerEditModal";
 
 interface Peer {
   id: string;
   interface_id: string;
+  owner_user_id?: string | null;
   name: string;
+  description?: string | null;
   public_key: string;
   assigned_ip: string;
+  allowed_ips: string[];
+  client_allowed_ips: string[];
+  endpoint?: string | null;
+  persistent_keepalive?: number | null;
   status: string;
   last_handshake?: string | null;
   rx_bytes: number;
   tx_bytes: number;
   created_at: string;
+}
+
+interface UserLite {
+  id: string;
+  email: string;
 }
 
 // Live state keyed by public key. We merge this over the DB-sourced peer
@@ -28,18 +40,30 @@ interface LivePeer {
   tx_bytes: number;
 }
 
+interface SsePayload {
+  interface: string;
+  public_key: string;
+  last_handshake: string;
+  rx_bytes: number;
+  tx_bytes: number;
+}
+
+// SPARKLINE_LEN caps the per-peer history we keep in memory. At one
+// SSE tick per change-detection (~5 s) this gives a ~2.5-minute view.
+const SPARKLINE_LEN = 30;
+
 export function PeersPage() {
   const qc = useQueryClient();
   const nowMs = useNowEveryMinute();
   const { data, isLoading, isError, error } = useQuery({
     queryKey: ["peers"],
     queryFn: async () => {
-      // The /peers list endpoint requires interface_id. For the scaffold
-      // we fetch interfaces first and display peers for the first one;
-      // a real multi-interface UI would render a dropdown here.
-      const ifaces = await api<
-        PageEnvelope<{ id: string; interface_id?: string; name: string }>
-      >("/api/v1/interfaces?limit=1");
+      // The /peers list endpoint requires interface_id. For now we
+      // fetch the first location and display peers for it; a real
+      // multi-location UI would render a dropdown.
+      const ifaces = await api<PageEnvelope<{ id: string; name: string }>>(
+        "/api/v1/interfaces?limit=1",
+      );
       if (ifaces.items.length === 0)
         return { items: [], total: 0, ifaceID: null, ifaceName: null };
       const iface = ifaces.items[0];
@@ -55,12 +79,42 @@ export function PeersPage() {
     },
   });
 
+  // Tiny lookup table so we can render owner email per peer instead
+  // of just a UUID. Pulled with the same key UsersPage uses so a
+  // user-list mutation invalidates this too.
+  const usersQ = useQuery({
+    queryKey: ["users-picker"],
+    queryFn: () =>
+      api<PageEnvelope<UserLite>>("/api/v1/users?limit=200&sort=email"),
+    staleTime: 60_000,
+    retry: false,
+  });
+  const userByID = new Map<string, UserLite>();
+  for (const u of usersQ.data?.items ?? []) userByID.set(u.id, u);
+
   const [live, setLive] = useState<Record<string, LivePeer>>({});
+  // Per-peer rolling history of total RX. We render the diffs between
+  // adjacent points as a sparkline; the absolute values would be a
+  // monotonically-increasing line nobody can read. Storing in component
+  // state means tab-switching loses the history — that's fine for an
+  // at-a-glance indicator.
+  const [history, setHistory] = useState<Record<string, number[]>>({});
   const [configPeer, setConfigPeer] = useState<{
     id: string;
     name: string;
   } | null>(null);
+  const [editPeer, setEditPeer] = useState<Peer | null>(null);
   const [showCreate, setShowCreate] = useState(false);
+  // Per-peer version counter, bumped on every successful edit.
+  // Passed as React key to PeerConfigModal so reopening Config
+  // after an edit force-remounts the component — the round-10
+  // fix for "I saved the peer but the .conf still shows the old
+  // value" because react's element-identity preserved state
+  // across the close+reopen cycle.
+  const [peerVersions, setPeerVersions] = useState<Record<string, number>>({});
+  function bumpVersion(id: string) {
+    setPeerVersions((prev) => ({ ...prev, [id]: (prev[id] ?? 0) + 1 }));
+  }
 
   const deleteMut = useMutation({
     mutationFn: (id: string) =>
@@ -74,8 +128,6 @@ export function PeersPage() {
     deleteMut.mutate(p.id);
   }
 
-  // Open the SSE stream once. The stream multiplexes every interface's
-  // peers, so we don't need to re-open it when the user switches views.
   useEffect(() => {
     const ctrl = new AbortController();
     sseStream("/api/v1/peers/events", {
@@ -83,22 +135,17 @@ export function PeersPage() {
       onEvent: (event, raw) => {
         if (event === "ping") return;
         try {
-          const payload = JSON.parse(raw) as
-            | {
-                interface: string;
-                public_key: string;
-                last_handshake: string;
-                rx_bytes: number;
-                tx_bytes: number;
-              }
-            | Array<{
-                interface: string;
-                public_key: string;
-                last_handshake: string;
-                rx_bytes: number;
-                tx_bytes: number;
-              }>;
-          const list = Array.isArray(payload) ? payload : [payload];
+          const payload = JSON.parse(raw) as SsePayload | SsePayload[] | null;
+          // The backend may send `data: null` for an empty snapshot
+          // (Go's nil slice marshals to JSON null, not []). Normalize
+          // both that and any null entries that slip through.
+          const arr =
+            payload == null ? [] : Array.isArray(payload) ? payload : [payload];
+          const list = arr.filter(
+            (p): p is SsePayload =>
+              p != null && typeof p.public_key === "string",
+          );
+          if (list.length === 0) return;
           setLive((prev) => {
             const next = { ...prev };
             for (const p of list) {
@@ -110,6 +157,18 @@ export function PeersPage() {
             }
             return next;
           });
+          setHistory((prev) => {
+            const next = { ...prev };
+            for (const p of list) {
+              const series = next[p.public_key] ?? [];
+              const total = p.rx_bytes + p.tx_bytes;
+              const updated = [...series, total];
+              if (updated.length > SPARKLINE_LEN)
+                updated.splice(0, updated.length - SPARKLINE_LEN);
+              next[p.public_key] = updated;
+            }
+            return next;
+          });
         } catch {
           // Malformed frame — ignore rather than tear down the stream.
         }
@@ -118,102 +177,178 @@ export function PeersPage() {
     return () => ctrl.abort();
   }, []);
 
-  if (isLoading)
-    return <div className="p-6 text-slate-400">Loading peers…</div>;
+  if (isLoading) return <div className="p-6 text-muted">Loading peers…</div>;
   if (isError)
     return (
-      <div className="p-6 text-rose-400">
+      <div className="p-6 text-danger">
         Failed to load: {(error as Error).message}
       </div>
     );
 
+  const items = data?.items ?? [];
+  const onlineCount = items.filter((p) => {
+    const l = live[p.public_key];
+    const handshake = l?.last_handshake ?? p.last_handshake;
+    if (!handshake || isZeroTime(handshake)) return false;
+    return nowMs - new Date(handshake).getTime() < 3 * 60_000;
+  }).length;
+  const totalRx = items.reduce(
+    (sum, p) => sum + (live[p.public_key]?.rx_bytes ?? p.rx_bytes),
+    0,
+  );
+  const totalTx = items.reduce(
+    (sum, p) => sum + (live[p.public_key]?.tx_bytes ?? p.tx_bytes),
+    0,
+  );
+
   return (
-    <div className="p-6 space-y-4">
-      <header className="flex items-baseline justify-between">
-        <h1 className="text-xl font-semibold">Peers</h1>
-        <div className="flex items-center gap-3">
+    <div className="space-y-6">
+      <div className="topbar">
+        <h1 className="page-title">Peers</h1>
+        <div className="topbar-actions">
           {data?.ifaceName && (
-            <span className="text-sm text-slate-400">
-              interface: {data.ifaceName}
+            <span className="text-muted text-sm">
+              location:{" "}
+              <span className="text-faint font-mono">{data.ifaceName}</span>
             </span>
           )}
           {data?.ifaceID && (
             <button
+              type="button"
               onClick={() => setShowCreate(true)}
-              className="px-3 py-1.5 rounded-md bg-sky-600 hover:bg-sky-500 text-sm font-medium"
+              className="btn-primary"
             >
               + New peer
             </button>
           )}
         </div>
-      </header>
-      {data?.items.length === 0 ? (
-        <p className="text-slate-400 text-sm">No peers yet.</p>
+      </div>
+
+      <div className="stats-row">
+        <div className="stat-card">
+          <span className="stat-label">Peers</span>
+          <span className="stat-value">{items.length}</span>
+        </div>
+        <div className="stat-card success">
+          <span className="stat-label">Online (3 min)</span>
+          <span className="stat-value">{onlineCount}</span>
+        </div>
+        <div className="stat-card warning">
+          <span className="stat-label">Total RX</span>
+          <span className="stat-value">{formatBytes(totalRx)}</span>
+        </div>
+        <div className="stat-card danger">
+          <span className="stat-label">Total TX</span>
+          <span className="stat-value">{formatBytes(totalTx)}</span>
+        </div>
+      </div>
+
+      {items.length === 0 ? (
+        <div className="panel">
+          <p className="text-muted">No peers yet.</p>
+        </div>
       ) : (
-        <div className="overflow-x-auto rounded-lg border border-slate-800">
-          <table className="min-w-full text-sm">
-            <thead className="bg-slate-900 text-slate-400 text-left">
+        <div className="data-table">
+          <table>
+            <thead>
               <tr>
-                <th className="px-4 py-2 font-medium">Name</th>
-                <th className="px-4 py-2 font-medium">Assigned IP</th>
-                <th className="px-4 py-2 font-medium">Status</th>
-                <th className="px-4 py-2 font-medium">Last handshake</th>
-                <th className="px-4 py-2 font-medium">RX / TX</th>
-                <th className="px-4 py-2 font-medium"></th>
+                <th>Name</th>
+                <th>Owner</th>
+                <th>Assigned IP</th>
+                <th title="Client routed networks — the [Peer] AllowedIPs the peer's exported .conf installs. NOT the server-side wg show value.">
+                  Client routes
+                </th>
+                <th>Status</th>
+                <th>Last handshake</th>
+                <th>RX / TX</th>
+                <th>Live</th>
+                <th aria-label="Actions" />
               </tr>
             </thead>
-            <tbody className="divide-y divide-slate-800">
-              {data?.items.map((p) => {
+            <tbody>
+              {items.map((p) => {
                 const l = live[p.public_key];
                 const handshake = l?.last_handshake ?? p.last_handshake;
                 const rx = l?.rx_bytes ?? p.rx_bytes;
                 const tx = l?.tx_bytes ?? p.tx_bytes;
-                const recentMs = handshake
-                  ? nowMs - new Date(handshake).getTime()
-                  : Number.POSITIVE_INFINITY;
-                const isLive = recentMs < 3 * 60_000;
+                const recentMs =
+                  handshake && !isZeroTime(handshake)
+                    ? nowMs - new Date(handshake).getTime()
+                    : Number.POSITIVE_INFINITY;
+                // Tighten the dot to 60 s — wg's keepalive default is
+                // 25 s, so a peer with no handshake in the last minute
+                // is genuinely silent. The 3-min window stays as the
+                // top-level "online" KPI.
+                const isLive = recentMs < 60_000;
                 return (
-                  <tr key={p.id} className="hover:bg-slate-900/50">
-                    <td className="px-4 py-2 font-medium">
+                  <tr key={p.id}>
+                    <td className="font-medium">
                       <span className="inline-flex items-center gap-2">
                         <span
-                          className={
-                            "inline-block w-1.5 h-1.5 rounded-full " +
-                            (isLive ? "bg-emerald-400" : "bg-slate-600")
-                          }
                           aria-hidden
+                          className="inline-block w-2 h-2 rounded-full"
+                          style={{
+                            background: isLive
+                              ? "var(--color-success)"
+                              : "var(--color-faint)",
+                            animation: isLive ? "pulse 2s infinite" : undefined,
+                          }}
                         />
                         {p.name}
                       </span>
                     </td>
-                    <td className="px-4 py-2 font-mono text-slate-300">
-                      {p.assigned_ip}
+                    <td className="text-muted">
+                      {p.owner_user_id ? (
+                        (userByID.get(p.owner_user_id)?.email ?? (
+                          <span className="text-faint font-mono text-xs">
+                            {p.owner_user_id.slice(0, 8)}
+                          </span>
+                        ))
+                      ) : (
+                        <span className="text-faint">—</span>
+                      )}
                     </td>
-                    <td className="px-4 py-2">
+                    <td className="font-mono text-muted">{p.assigned_ip}</td>
+                    <td className="text-muted">
+                      <NetworksCell items={p.client_allowed_ips ?? []} />
+                    </td>
+                    <td>
                       <span className={statusClass(p.status)}>{p.status}</span>
                     </td>
-                    <td className="px-4 py-2 text-slate-400">
+                    <td className="text-muted">
                       {handshake && !isZeroTime(handshake)
                         ? new Date(handshake).toLocaleString()
                         : "—"}
                     </td>
-                    <td className="px-4 py-2 text-slate-400 font-mono text-xs">
+                    <td className="text-muted font-mono text-xs">
                       {formatBytes(rx)} / {formatBytes(tx)}
                     </td>
-                    <td className="px-4 py-2 text-right">
-                      <div className="inline-flex gap-1">
+                    <td>
+                      <Sparkline totals={history[p.public_key] ?? []} />
+                    </td>
+                    <td className="text-right">
+                      <div className="inline-flex gap-2">
                         <button
+                          type="button"
                           onClick={() =>
                             setConfigPeer({ id: p.id, name: p.name })
                           }
-                          className="px-2.5 py-1 rounded-md bg-slate-800 hover:bg-slate-700 text-xs"
+                          className="btn-ghost"
                         >
                           Config
                         </button>
                         <button
+                          type="button"
+                          onClick={() => setEditPeer(p)}
+                          className="btn-ghost"
+                        >
+                          Edit
+                        </button>
+                        <button
+                          type="button"
                           onClick={() => onDelete(p)}
                           disabled={deleteMut.isPending}
-                          className="px-2.5 py-1 rounded-md text-rose-300 hover:bg-rose-900/30 disabled:opacity-50 text-xs"
+                          className="btn-danger"
                         >
                           Delete
                         </button>
@@ -228,9 +363,43 @@ export function PeersPage() {
       )}
       {configPeer && (
         <PeerConfigModal
+          // Keyed on peer id + version so a Save in the edit modal
+          // forces a fresh /config fetch the next time the operator
+          // opens Config — even if the same modal instance was
+          // about to be reused.
+          key={`${configPeer.id}:${peerVersions[configPeer.id] ?? 0}`}
           peerId={configPeer.id}
           peerName={configPeer.name}
+          onEdit={() => {
+            const full = items.find((p) => p.id === configPeer.id);
+            if (full) {
+              setConfigPeer(null);
+              setEditPeer(full);
+            }
+          }}
           onClose={() => setConfigPeer(null)}
+        />
+      )}
+      {editPeer && (
+        <PeerEditModal
+          peer={{
+            id: editPeer.id,
+            interface_id: editPeer.interface_id,
+            owner_user_id: editPeer.owner_user_id,
+            name: editPeer.name,
+            description: editPeer.description ?? null,
+            allowed_ips: editPeer.allowed_ips ?? [],
+            client_allowed_ips: editPeer.client_allowed_ips ?? [],
+            assigned_ip: editPeer.assigned_ip,
+            endpoint: editPeer.endpoint ?? null,
+            persistent_keepalive: editPeer.persistent_keepalive ?? null,
+            status: editPeer.status,
+          }}
+          onClose={() => setEditPeer(null)}
+          onSaved={() => {
+            bumpVersion(editPeer.id);
+            setEditPeer(null);
+          }}
         />
       )}
       {showCreate && data?.ifaceID && (
@@ -238,8 +407,6 @@ export function PeersPage() {
           interfaceID={data.ifaceID}
           onClose={() => setShowCreate(false)}
           onCreated={(peer) => {
-            // Straight into the config modal — that's where the user gets
-            // the QR/.conf they just came here to generate.
             setShowCreate(false);
             setConfigPeer({ id: peer.id, name: peer.name });
           }}
@@ -252,19 +419,77 @@ export function PeersPage() {
 function statusClass(s: string): string {
   switch (s) {
     case "active":
-      return "inline-flex px-2 py-0.5 rounded-full bg-emerald-900/40 text-emerald-400 text-xs";
+    case "enabled":
+      return "status-badge ok";
     case "expired":
-      return "inline-flex px-2 py-0.5 rounded-full bg-amber-900/40 text-amber-400 text-xs";
+      return "status-badge warning";
+    case "revoked":
+    case "disabled":
+      return "status-badge critical";
     default:
-      return "inline-flex px-2 py-0.5 rounded-full bg-slate-800 text-slate-400 text-xs";
+      return "status-badge muted";
   }
 }
 
-// The backend emits Go's zero time (0001-01-01T00:00:00Z) for peers that
-// never completed a handshake. Render those as '—' instead of "1/1/1" or
-// similar browser-locale nonsense.
 function isZeroTime(s: string): boolean {
   return s.startsWith("0001-");
+}
+
+// NetworksCell renders the peer's client_allowed_ips compactly: up
+// to two CIDRs inline, then "+N" for the tail with the full list in
+// a hover tooltip. Empty array means the peer inherits the
+// location's CIDR — show "(default)" so it's obvious the field is
+// configured intentionally, not missing.
+function NetworksCell({ items }: { items: string[] }) {
+  if (items.length === 0) {
+    return <span className="text-faint">(default)</span>;
+  }
+  const head = items.slice(0, 2);
+  const rest = items.length - head.length;
+  return (
+    <span title={items.join(", ")} className="font-mono text-xs">
+      {head.join(", ")}
+      {rest > 0 && <span className="text-faint">{` +${rest}`}</span>}
+    </span>
+  );
+}
+
+// Sparkline renders deltas between adjacent points so a long-running
+// peer doesn't show a flat line at peak height — what operators care
+// about is "is this peer moving traffic right now". Returns null for
+// histories too short to plot to keep the table from filling with
+// empty boxes.
+function Sparkline({ totals }: { totals: number[] }) {
+  if (totals.length < 3) return <span className="text-faint text-xs">—</span>;
+  const deltas: number[] = [];
+  for (let i = 1; i < totals.length; i++) {
+    deltas.push(Math.max(0, totals[i] - totals[i - 1]));
+  }
+  const max = Math.max(...deltas, 1);
+  const w = 80;
+  const h = 18;
+  const step = w / Math.max(deltas.length - 1, 1);
+  const points = deltas
+    .map((d, i) => `${i * step},${h - (d / max) * h}`)
+    .join(" ");
+  return (
+    <svg
+      viewBox={`0 0 ${w} ${h}`}
+      width={w}
+      height={h}
+      role="img"
+      aria-label="recent traffic"
+    >
+      <polyline
+        fill="none"
+        stroke="var(--color-accent)"
+        strokeWidth="1.5"
+        strokeLinejoin="round"
+        strokeLinecap="round"
+        points={points}
+      />
+    </svg>
+  );
 }
 
 function formatBytes(n: number): string {

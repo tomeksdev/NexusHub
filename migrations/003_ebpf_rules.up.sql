@@ -3,8 +3,7 @@
 --
 -- A rule is a declarative policy (allow/deny IP/port/proto, rate limit,
 -- bandwidth cap). The userspace loader reads rows from ebpf_rules and
--- updates BPF maps in place — no program reload needed. See CLAUDE.md
--- "BPF map-based rule updates".
+-- updates BPF maps in place — no program reload needed.
 
 BEGIN;
 

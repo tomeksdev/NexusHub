@@ -1,8 +1,10 @@
-import { useQuery } from "@tanstack/react-query";
-import { useTranslation } from "react-i18next";
+import { useState } from "react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { api, type PageEnvelope } from "../lib/api";
 import { useNowEveryMinute } from "../lib/hooks";
+import { UserCreateModal } from "./UserCreateModal";
+import { UserEditModal, type EditableUser } from "./UserEditModal";
 
 interface User {
   id: string;
@@ -17,98 +19,161 @@ interface User {
   created_at: string;
 }
 
-export function UsersPage() {
-  const { t } = useTranslation();
+interface Props {
+  // Called when the operator clicks a user row. Drives the App
+  // shell's drill-down into UserDetailPage.
+  onOpen?: (userID: string) => void;
+}
+
+export function UsersPage({ onOpen }: Props = {}) {
+  const qc = useQueryClient();
   const nowMs = useNowEveryMinute();
+  const [showCreate, setShowCreate] = useState(false);
+  const [editTarget, setEditTarget] = useState<EditableUser | null>(null);
+
   const { data, isLoading, isError, error } = useQuery({
     queryKey: ["users"],
     queryFn: () => api<PageEnvelope<User>>("/api/v1/users?limit=100"),
   });
 
-  if (isLoading)
-    return <div className="p-6 text-slate-400">{t("common.loading")}</div>;
+  const deleteMut = useMutation({
+    mutationFn: ({ id, force }: { id: string; force: boolean }) =>
+      api(`/api/v1/users/${id}${force ? "?force=true" : ""}`, {
+        method: "DELETE",
+      }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["users"] }),
+  });
+
+  if (isLoading) return <div className="p-6 text-muted">Loading…</div>;
   if (isError)
     return (
-      <div className="p-6 text-rose-400">
-        {t("common.loadFailed", { message: (error as Error).message })}
+      <div className="p-6 text-danger">
+        Failed to load: {(error as Error).message}
       </div>
     );
 
   const items = data?.items ?? [];
 
+  function onDelete(u: User) {
+    // Two confirms: first soft-disable, then optional hard delete via
+    // a follow-up — easier to communicate than a single flag the
+    // operator might miss.
+    if (u.is_active) {
+      if (!confirm(`Disable user "${u.email}"? They won't be able to log in.`))
+        return;
+      deleteMut.mutate({ id: u.id, force: false });
+      return;
+    }
+    if (
+      confirm(
+        `User "${u.email}" is already disabled. Permanently delete? This unlinks their peers (peers stay; their owner is cleared).`,
+      )
+    ) {
+      deleteMut.mutate({ id: u.id, force: true });
+    }
+  }
+
   return (
-    <div className="p-6 space-y-4">
-      <header className="flex items-baseline justify-between">
-        <h1 className="text-xl font-semibold">{t("users.title")}</h1>
-        <span className="text-sm text-slate-500">
-          {t("common.total", { count: data?.total ?? 0 })}
-        </span>
-      </header>
+    <div className="space-y-6">
+      <div className="topbar">
+        <h1 className="page-title">Users</h1>
+        <div className="topbar-actions">
+          <span className="text-muted text-sm">{data?.total ?? 0} total</span>
+          <button
+            type="button"
+            onClick={() => setShowCreate(true)}
+            className="btn-primary"
+          >
+            + New user
+          </button>
+        </div>
+      </div>
+
       {items.length === 0 ? (
-        <p className="text-slate-400 text-sm">{t("users.empty")}</p>
+        <div className="panel">
+          <p className="text-muted">No users yet.</p>
+        </div>
       ) : (
-        <div className="overflow-x-auto rounded-lg border border-slate-800">
-          <table className="min-w-full text-sm">
-            <thead className="bg-slate-900 text-slate-400 text-left">
+        <div className="data-table">
+          <table>
+            <thead>
               <tr>
-                <th className="px-4 py-2 font-medium">
-                  {t("users.col.email")}
-                </th>
-                <th className="px-4 py-2 font-medium">
-                  {t("users.col.username")}
-                </th>
-                <th className="px-4 py-2 font-medium">{t("users.col.role")}</th>
-                <th className="px-4 py-2 font-medium">
-                  {t("users.col.status")}
-                </th>
-                <th className="px-4 py-2 font-medium">
-                  {t("users.col.twoFA")}
-                </th>
-                <th className="px-4 py-2 font-medium">
-                  {t("users.col.lastLogin")}
-                </th>
+                <th>Email</th>
+                <th>Username</th>
+                <th>Role</th>
+                <th>Status</th>
+                <th>2FA</th>
+                <th>Last login</th>
+                <th aria-label="Actions" />
               </tr>
             </thead>
-            <tbody className="divide-y divide-slate-800">
+            <tbody>
               {items.map((u) => {
                 const locked =
                   !!u.locked_until &&
                   new Date(u.locked_until).getTime() > nowMs;
                 return (
-                  <tr key={u.id} className="hover:bg-slate-900/50">
-                    <td className="px-4 py-2 font-medium">{u.email}</td>
-                    <td className="px-4 py-2 text-slate-300">{u.username}</td>
-                    <td className="px-4 py-2">
+                  <tr
+                    key={u.id}
+                    onClick={onOpen ? () => onOpen(u.id) : undefined}
+                    style={onOpen ? { cursor: "pointer" } : undefined}
+                  >
+                    <td className="font-medium">{u.email}</td>
+                    <td className="text-muted">{u.username}</td>
+                    <td>
                       <span className={roleBadge(u.role)}>{u.role}</span>
                     </td>
-                    <td className="px-4 py-2">
+                    <td>
                       {!u.is_active ? (
-                        <span className="inline-flex px-2 py-0.5 rounded-full bg-slate-800 text-slate-400 text-xs">
-                          {t("users.status.disabled")}
+                        <span className="status-badge muted">
+                          <span className="dot" />
+                          DISABLED
                         </span>
                       ) : locked ? (
-                        <span className="inline-flex px-2 py-0.5 rounded-full bg-rose-900/40 text-rose-400 text-xs">
-                          {t("users.status.locked")}
+                        <span className="status-badge critical">
+                          <span className="dot" />
+                          LOCKED
                         </span>
                       ) : (
-                        <span className="inline-flex px-2 py-0.5 rounded-full bg-emerald-900/40 text-emerald-400 text-xs">
-                          {t("users.status.active")}
+                        <span className="status-badge ok">
+                          <span className="dot" />
+                          ACTIVE
                         </span>
                       )}
                     </td>
-                    <td className="px-4 py-2 text-slate-300">
+                    <td className="text-muted">
                       {u.totp_enabled ? (
                         "TOTP"
                       ) : (
-                        <span className="text-slate-500">
-                          {t("users.twoFA.off")}
-                        </span>
+                        <span className="text-faint">off</span>
                       )}
                     </td>
-                    <td className="px-4 py-2 text-slate-400">
+                    <td className="text-muted">
                       {u.last_login_at
                         ? new Date(u.last_login_at).toLocaleString()
                         : "—"}
+                    </td>
+                    <td
+                      className="text-right"
+                      onClick={(e) => e.stopPropagation()}
+                    >
+                      <div className="inline-flex gap-2">
+                        <button
+                          type="button"
+                          onClick={() => setEditTarget(u)}
+                          className="btn-ghost"
+                        >
+                          Edit
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => onDelete(u)}
+                          disabled={deleteMut.isPending}
+                          className="btn-danger"
+                        >
+                          {u.is_active ? "Disable" : "Delete"}
+                        </button>
+                      </div>
                     </td>
                   </tr>
                 );
@@ -117,13 +182,27 @@ export function UsersPage() {
           </table>
         </div>
       )}
+
+      {showCreate && (
+        <UserCreateModal
+          onClose={() => setShowCreate(false)}
+          onCreated={() => setShowCreate(false)}
+        />
+      )}
+      {editTarget && (
+        <UserEditModal
+          user={editTarget}
+          onClose={() => setEditTarget(null)}
+          onSaved={() => setEditTarget(null)}
+        />
+      )}
     </div>
   );
 }
 
 function roleBadge(role: string): string {
-  const base = "inline-flex px-2 py-0.5 rounded-full text-xs ";
-  if (role === "super_admin") return base + "bg-purple-900/40 text-purple-300";
-  if (role === "admin") return base + "bg-sky-900/40 text-sky-300";
-  return base + "bg-slate-800 text-slate-300";
+  const base = "inline-flex px-2 py-0.5 rounded-full text-xs font-semibold ";
+  if (role === "super_admin") return base + "bg-[#FF4C4C]/20 text-[#FF4C4C]";
+  if (role === "admin") return base + "bg-indigo-500/20 text-indigo-300";
+  return base + "bg-white/10 text-muted";
 }

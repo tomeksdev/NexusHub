@@ -42,12 +42,26 @@ func main() {
 		os.Exit(2)
 	}
 
-	// First positional is the subcommand; everything after it is flags/args.
-	cmd := os.Args[1]
-	if err := fs.Parse(os.Args[2:]); err != nil {
+	// Pre-walk argv so `-path` works regardless of position. Go's
+	// stdlib flag package stops parsing at the first non-flag arg,
+	// which means `migrate force 8 -path /opt/...` would silently
+	// drop the path flag and fall back to defaultMigrationsPath().
+	// That bit operators in production with an opaque "open .: no
+	// such file or directory" error.
+	pathOverride, rest := extractStringFlag(os.Args[1:], "-path", "--path")
+	if err := fs.Parse(rest); err != nil {
 		os.Exit(2)
 	}
-	args := fs.Args()
+	if pathOverride != "" {
+		*migrationsPath = pathOverride
+	}
+	posArgs := fs.Args()
+	if len(posArgs) < 1 {
+		fs.Usage()
+		os.Exit(2)
+	}
+	cmd := posArgs[0]
+	args := posArgs[1:]
 
 	databaseURL := os.Getenv("DATABASE_URL")
 	if databaseURL == "" && cmd != "create" {
@@ -141,6 +155,49 @@ func run(m *migrate.Migrate, cmd string, args []string) error {
 	}
 }
 
+// extractStringFlag pulls a string flag out of argv regardless of where
+// it appears, accepting `-name X`, `--name X`, `-name=X`, `--name=X`.
+// Returns the value (empty string if absent) and the remaining argv
+// with the flag tokens removed. Last occurrence wins so callers can
+// override an env-default by appending the flag at the end.
+func extractStringFlag(argv []string, names ...string) (string, []string) {
+	prefixes := make([]string, 0, len(names)*2)
+	for _, n := range names {
+		prefixes = append(prefixes, n+"=")
+	}
+	value := ""
+	rest := make([]string, 0, len(argv))
+	for i := 0; i < len(argv); i++ {
+		a := argv[i]
+		matched := false
+		for _, n := range names {
+			if a == n {
+				if i+1 < len(argv) {
+					value = argv[i+1]
+					i++
+				}
+				matched = true
+				break
+			}
+		}
+		if matched {
+			continue
+		}
+		for _, p := range prefixes {
+			if strings.HasPrefix(a, p) {
+				value = strings.TrimPrefix(a, p)
+				matched = true
+				break
+			}
+		}
+		if matched {
+			continue
+		}
+		rest = append(rest, a)
+	}
+	return value, rest
+}
+
 func handleNoChange(err error) error {
 	if errors.Is(err, migrate.ErrNoChange) {
 		slog.Info("no change")
@@ -198,8 +255,11 @@ func sanitize(s string) string {
 
 func usage(fs *flag.FlagSet) func() {
 	return func() {
-		fmt.Fprintln(os.Stderr, "usage: migrate <command> [flags] [args]")
+		fmt.Fprintln(os.Stderr, "usage: migrate [flags] <command> [args] [flags]")
 		fmt.Fprintln(os.Stderr, "commands: up, down [N], goto V, version, force V, drop, create NAME")
+		fmt.Fprintln(os.Stderr, "flags work in any position, e.g.:")
+		fmt.Fprintln(os.Stderr, "  migrate -path /opt/NexusHub/migrations force 8")
+		fmt.Fprintln(os.Stderr, "  migrate force 8 -path /opt/NexusHub/migrations")
 		fs.PrintDefaults()
 	}
 }

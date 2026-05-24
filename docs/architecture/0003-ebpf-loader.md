@@ -9,8 +9,8 @@
 Phase 5 introduces eBPF programs for per-peer security rules: an XDP
 blocklist on `eth0` (pre-tunnel) and a TC classifier on `wg0`
 (post-decryption), with map-based runtime updates so policy changes
-never reload the program. CLAUDE.md lists the loader decision as
-"`cilium/ebpf` (Go) vs. libbpf + CO-RE". We need:
+never reload the program. The project plan called out the loader
+decision as "`cilium/ebpf` (Go) vs. libbpf + CO-RE". We need:
 
 - A single binary that loads, attaches, and manages maps — no runtime
   C toolchain on the operator's host.

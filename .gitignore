@@ -40,3 +40,13 @@ docker/.env
 # Coverage
 coverage/
 *.coverprofile
+
+# Local design / planning scratch — kept on disk to inform work but
+# never pushed to GitHub. TODO.md and BUG-TODO.md are deliberately
+# local-only: per-round punch lists belong on the maintainer's
+# machine, CHANGELOG.md is the public release narrative.
+/project-plan.md
+/example.html
+/hexagon_logo.png
+/TODO.md
+/BUG-TODO.md

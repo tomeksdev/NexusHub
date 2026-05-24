@@ -14,11 +14,11 @@ before code lands:
 2. **How DB rows become map entries** — so runtime updates are one
    map-write, never a program reload.
 
-CLAUDE.md already commits to the first half: *"XDP does NOT work on
-WireGuard interfaces (wg0 is L3, no link-layer headers). Use XDP on
-eth0 (pre-tunnel) + TC on wg0 (post-decryption). This is
-non-negotiable."* This ADR formalises the map layout that spans
-both hooks.
+The project's architectural rules already commit to the first half:
+*"XDP does NOT work on WireGuard interfaces (wg0 is L3, no link-layer
+headers). Use XDP on eth0 (pre-tunnel) + TC on wg0 (post-decryption).
+This is non-negotiable."* This ADR formalises the map layout that
+spans both hooks.
 
 ## Decision
 

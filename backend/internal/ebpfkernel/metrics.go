@@ -20,14 +20,16 @@ type StatsProvider interface {
 // mapLabel names each managed BPF map for the "map" label. The values
 // match the ebpf/src/rules.c identifiers so operator dashboards line
 // up with `bpftool map show` output.
+//
+// v2.1 — the LPM tries and rule_meta map are gone; rule_table_v4/v6
+// are the new per-family rule arrays and rule_count_v4/v6 are
+// informational so we don't emit them as gauges.
 const (
-	labelRuleMeta    = "rule_meta"
-	labelRuleSrcV4   = "rule_src_v4"
-	labelRuleSrcV6   = "rule_src_v6"
-	labelRuleDstV4   = "rule_dst_v4"
-	labelRuleDstV6   = "rule_dst_v6"
+	labelRuleTableV4 = "rule_table_v4"
+	labelRuleTableV6 = "rule_table_v6"
 	labelRateStateV4 = "rate_state_v4"
 	labelRateStateV6 = "rate_state_v6"
+	labelRuleHits    = "rule_hits"
 )
 
 var (
@@ -49,26 +51,13 @@ var (
 )
 
 // MetricsCollector reports per-map cardinality and capacity from the
-// eBPF rule loader. Each Prometheus scrape triggers one Stats() call;
-// an empty deploy is ~seven no-op iterations over empty maps.
-//
-// Errors during Stats() are logged and counted on
-// nexushub_ebpf_stats_errors_total rather than failing the scrape, so
-// /metrics keeps returning a useful response even if the kernel-side
-// map handles are momentarily unavailable.
+// eBPF rule loader.
 type MetricsCollector struct {
 	provider StatsProvider
 	logger   *slog.Logger
-
-	// errors accumulates scrape failures. It's a plain atomic-free
-	// uint64 because the scrape goroutine is the sole writer; the
-	// Prometheus exposition pipeline reads it from the same goroutine.
-	errors uint64
+	errors   uint64
 }
 
-// NewMetricsCollector wires the collector around a stats provider.
-// The loader implements StatsProvider directly; tests substitute a
-// fake. A nil logger falls back to slog.Default.
 func NewMetricsCollector(provider StatsProvider, logger *slog.Logger) *MetricsCollector {
 	if logger == nil {
 		logger = slog.Default()
@@ -76,20 +65,12 @@ func NewMetricsCollector(provider StatsProvider, logger *slog.Logger) *MetricsCo
 	return &MetricsCollector{provider: provider, logger: logger}
 }
 
-// Describe emits the full descriptor set. Prometheus needs this up
-// front so it can reject collectors that would emit duplicate metric
-// names at registration time.
 func (c *MetricsCollector) Describe(ch chan<- *prometheus.Desc) {
 	ch <- mapEntriesDesc
 	ch <- mapCapacityDesc
 	ch <- statsErrorsDesc
 }
 
-// Collect samples Stats() once and emits two series (entries, cap)
-// per map plus the cumulative error counter. On a Stats error the
-// error counter increments and we skip the per-map series entirely
-// rather than emitting zero values that would be indistinguishable
-// from an empty deploy.
 func (c *MetricsCollector) Collect(ch chan<- prometheus.Metric) {
 	if c.provider == nil {
 		ch <- prometheus.MustNewConstMetric(statsErrorsDesc, prometheus.CounterValue, float64(c.errors))
@@ -107,13 +88,11 @@ func (c *MetricsCollector) Collect(ch chan<- prometheus.Metric) {
 		label string
 		s     userspace.MapStats
 	}{
-		{labelRuleMeta, stats.RuleMeta},
-		{labelRuleSrcV4, stats.RuleSrcV4},
-		{labelRuleSrcV6, stats.RuleSrcV6},
-		{labelRuleDstV4, stats.RuleDstV4},
-		{labelRuleDstV6, stats.RuleDstV6},
+		{labelRuleTableV4, stats.RuleTableV4},
+		{labelRuleTableV6, stats.RuleTableV6},
 		{labelRateStateV4, stats.RateStateV4},
 		{labelRateStateV6, stats.RateStateV6},
+		{labelRuleHits, stats.RuleHits},
 	} {
 		ch <- prometheus.MustNewConstMetric(
 			mapEntriesDesc, prometheus.GaugeValue,

@@ -6,8 +6,9 @@
 
 ## Context
 
-Phase 3 starts wiring real HTTP endpoints (auth, peers, rules). CLAUDE.md
-lists the choice as "Gin or Echo — decide & document". We need:
+Phase 3 starts wiring real HTTP endpoints (auth, peers, rules). The
+project plan called this out as "Gin or Echo — decide & document". We
+need:
 
 - Route groups with per-group middleware (auth vs. public, role gating).
 - JSON request binding + validation that plays well with `go-playground/validator`.
@@ -49,7 +50,7 @@ pool.
 - Middleware lives under `backend/internal/middleware/` (`RequireAuth`,
   `RequireRole`, request-id, structured logging, recover, rate limit).
 - Error envelope format stays as `{"error": "...", "code": "..."}` per
-  CLAUDE.md; helpers in `handler/errors.go` centralize this.
+  the project API contract; helpers in `handler/errors.go` centralize this.
 - `gin.Default()` is **not** used — it pulls in Gin's own logger. We build
   the engine manually and install a `slog`-backed access logger.
 - Tests hit handlers through `httptest.NewRecorder` + `engine.ServeHTTP` so

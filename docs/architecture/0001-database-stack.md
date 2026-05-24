@@ -11,7 +11,7 @@ configuration, eBPF rule metadata, audit logs, and high-volume connection
 logs. The backend is Go 1.25+. We want:
 
 - Type-safe SQL (compile-time errors, not runtime reflection surprises).
-- A driver that is fast enough to meet the <100 ms query budget in CLAUDE.md.
+- A driver fast enough to meet the project's <100 ms query budget.
 - Schema evolution with forward and backward migrations.
 - Support for PostgreSQL features we rely on: `JSONB`, `BYTEA`, native
   partitioning (`PARTITION BY RANGE`), `CHECK` constraints, arrays, `inet`.

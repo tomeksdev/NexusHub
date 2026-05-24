@@ -5,7 +5,7 @@ package apierror
 
 import "github.com/gin-gonic/gin"
 
-// Body is the JSON error envelope per CLAUDE.md: {"error": "...", "code": "..."}.
+// Body is the project's JSON error envelope: {"error": "...", "code": "..."}.
 type Body struct {
 	Error string `json:"error"`
 	Code  string `json:"code"`

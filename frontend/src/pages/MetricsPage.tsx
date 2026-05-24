@@ -104,25 +104,25 @@ export function MetricsPage() {
   }, []);
 
   return (
-    <div className="p-6 space-y-5">
-      <header className="flex items-baseline justify-between">
-        <h1 className="text-xl font-semibold">Metrics</h1>
+    <div className="space-y-6">
+      <div className="topbar">
+        <h1 className="page-title">Monitoring</h1>
         {snap && (
-          <span className="text-xs text-slate-500 font-mono">
+          <span className="text-faint text-xs font-mono">
             {snap.buildVersion} · {snap.buildCommit.slice(0, 8)}
           </span>
         )}
-      </header>
+      </div>
 
       {error && (
-        <p className="text-rose-400 text-sm">Failed to scrape: {error}</p>
+        <p className="text-danger text-sm">Failed to scrape: {error}</p>
       )}
 
       {!snap ? (
-        <p className="text-slate-400 text-sm">Loading…</p>
+        <p className="text-muted text-sm">Loading…</p>
       ) : (
         <>
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+          <div className="stats-row">
             <Stat
               label="Requests / s"
               value={points.at(-1)?.reqRate.toFixed(2) ?? "—"}
@@ -130,50 +130,57 @@ export function MetricsPage() {
             <Stat
               label="5xx / s"
               value={points.at(-1)?.errRate.toFixed(2) ?? "—"}
-              danger={(points.at(-1)?.errRate ?? 0) > 0}
+              tone={(points.at(-1)?.errRate ?? 0) > 0 ? "danger" : "primary"}
             />
             <Stat
               label="DB pool"
               value={`${snap.poolAcquired}/${snap.poolMax}`}
               hint={`${snap.poolIdle} idle`}
+              tone="warning"
             />
             <Stat
               label="Go memory"
               value={formatBytes(snap.goMemBytes)}
               hint={`${snap.goGoroutines} goroutines`}
+              tone="success"
             />
           </div>
 
-          <section className="rounded-lg border border-slate-800 bg-slate-900/40 p-4">
-            <h2 className="text-sm font-medium text-slate-300 mb-3">
-              Request rate (last{" "}
-              {Math.round((WINDOW * SCRAPE_INTERVAL_MS) / 60000)} min)
-            </h2>
+          <section className="panel">
+            <div className="panel-header">
+              <span className="panel-title">
+                Request rate (last{" "}
+                {Math.round((WINDOW * SCRAPE_INTERVAL_MS) / 60000)} min)
+              </span>
+            </div>
             <div className="h-60">
               <ResponsiveContainer width="100%" height="100%">
                 <AreaChart data={points}>
                   <defs>
                     <linearGradient id="reqFill" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="0%" stopColor="#38bdf8" stopOpacity={0.6} />
-                      <stop offset="100%" stopColor="#38bdf8" stopOpacity={0} />
+                      <stop offset="0%" stopColor="#667eea" stopOpacity={0.6} />
+                      <stop offset="100%" stopColor="#667eea" stopOpacity={0} />
                     </linearGradient>
                     <linearGradient id="errFill" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="0%" stopColor="#f43f5e" stopOpacity={0.6} />
-                      <stop offset="100%" stopColor="#f43f5e" stopOpacity={0} />
+                      <stop offset="0%" stopColor="#FF4C4C" stopOpacity={0.6} />
+                      <stop offset="100%" stopColor="#FF4C4C" stopOpacity={0} />
                     </linearGradient>
                   </defs>
-                  <CartesianGrid stroke="#1e293b" strokeDasharray="3 3" />
+                  <CartesianGrid
+                    stroke="rgba(255,255,255,0.08)"
+                    strokeDasharray="3 3"
+                  />
                   <XAxis
                     dataKey="t"
                     tickFormatter={(t) => new Date(t).toLocaleTimeString()}
-                    stroke="#64748b"
+                    stroke="#a0a0a0"
                     fontSize={11}
                   />
-                  <YAxis stroke="#64748b" fontSize={11} />
+                  <YAxis stroke="#a0a0a0" fontSize={11} />
                   <Tooltip
                     contentStyle={{
-                      background: "#0f172a",
-                      border: "1px solid #1e293b",
+                      background: "#1a1a1a",
+                      border: "1px solid rgba(255,255,255,0.16)",
                       borderRadius: 6,
                       fontSize: 12,
                     }}
@@ -189,7 +196,7 @@ export function MetricsPage() {
                     type="monotone"
                     dataKey="reqRate"
                     name="req/s"
-                    stroke="#38bdf8"
+                    stroke="#667eea"
                     fill="url(#reqFill)"
                     strokeWidth={2}
                   />
@@ -197,7 +204,7 @@ export function MetricsPage() {
                     type="monotone"
                     dataKey="errRate"
                     name="5xx/s"
-                    stroke="#f43f5e"
+                    stroke="#FF4C4C"
                     fill="url(#errFill)"
                     strokeWidth={2}
                   />
@@ -215,25 +222,19 @@ function Stat({
   label,
   value,
   hint,
-  danger,
+  tone = "primary",
 }: {
   label: string;
   value: string;
   hint?: string;
-  danger?: boolean;
+  tone?: "primary" | "success" | "warning" | "danger";
 }) {
+  const cls = tone === "primary" ? "stat-card" : `stat-card ${tone}`;
   return (
-    <div className="rounded-lg border border-slate-800 bg-slate-900/40 p-4">
-      <p className="text-xs text-slate-500">{label}</p>
-      <p
-        className={
-          "text-2xl font-semibold mt-1 " +
-          (danger ? "text-rose-400" : "text-slate-100")
-        }
-      >
-        {value}
-      </p>
-      {hint && <p className="text-xs text-slate-500 mt-1">{hint}</p>}
+    <div className={cls}>
+      <span className="stat-label">{label}</span>
+      <span className="stat-value">{value}</span>
+      {hint && <span className="stat-sub">{hint}</span>}
     </div>
   );
 }

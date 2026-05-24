@@ -6,9 +6,9 @@
 -- startup and via a periodic job); we seed a handful of partitions here so a
 -- fresh install can insert immediately.
 --
--- NOTE (CLAUDE.md): foreign keys from this table are logical-only (not
--- enforced) for performance. Deleting a peer or interface does not cascade
--- into connection_logs; a separate retention/archival job handles cleanup.
+-- NOTE: foreign keys from this table are logical-only (not enforced) for
+-- performance. Deleting a peer or interface does not cascade into
+-- connection_logs; a separate retention/archival job handles cleanup.
 
 BEGIN;
 

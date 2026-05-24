@@ -28,23 +28,38 @@ COPY frontend/ ./
 RUN npm run build
 
 # Stage 3: Runtime
-FROM debian:bookworm-slim
-# curl is needed by HEALTHCHECK below. It's pre-existing in debian's
-# package base but not in -slim; without it the check exits 127 and
-# the container is reported unhealthy indefinitely.
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates curl wireguard-tools iproute2 iptables \
-    && rm -rf /var/lib/apt/lists/*
-RUN groupadd -r nexushub && useradd -r -g nexushub -s /sbin/nologin nexushub
+#
+# distroless/static-debian12:nonroot ships with: ca-certificates, /etc/passwd
+# entries for the `nonroot` user (uid 65532), tzdata, and nothing else.
+# No shell, no package manager, no curl/wget/wg/ip/iptables. The Go
+# binaries are CGO_ENABLED=0 in stage 1 so they don't need libc.
+#
+# Cuts the bookworm-slim CVE surface (libssh2, libcurl, gnutls, krb5,
+# etc. — ~220 CVE alerts on the previous base) down to whatever the
+# distroless team ships (today: zero in `static`).
+#
+# We don't shell out to wireguard-tools / iproute2 / iptables from
+# the API process — wgctrl-go uses netlink, the eBPF loader uses
+# bpf() syscalls, and rtnetlink covers link/address management.
+# Anything that genuinely needs those CLIs would run on the host
+# outside this image (systemd unit, k8s init container).
+FROM gcr.io/distroless/static-debian12:nonroot
 WORKDIR /app
 COPY --from=go-builder /nexushub         ./nexushub
 COPY --from=go-builder /nexushub-migrate ./nexushub-migrate
 COPY --from=go-builder /nexushub-seed    ./nexushub-seed
 COPY --from=node-builder /build/dist ./frontend/dist
 COPY migrations/ ./migrations/
-RUN chown -R nexushub:nexushub /app
 EXPOSE 8080
+# HEALTHCHECK calls the binary itself with -health. The flag is
+# wired in cmd/api/main.go: a single HTTP GET to /api/v1/health
+# with a 3s timeout, exit 0 on 2xx else 1. No shell needed — the
+# exec-form CMD invokes the binary directly.
 HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
-    CMD curl -f http://localhost:8080/api/v1/health || exit 1
-USER nexushub
-ENTRYPOINT ["./nexushub"]
+    CMD ["/app/nexushub", "-health"]
+# `nonroot` is uid 65532 on the distroless base; no chown step is
+# needed because the file owners on COPY default to root:root which
+# is fine for read-only execution and `nonroot` has read+execute on
+# the world-readable copies.
+USER nonroot
+ENTRYPOINT ["/app/nexushub"]

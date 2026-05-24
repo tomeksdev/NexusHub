@@ -1,8 +1,11 @@
 package handler
 
 import (
+	"context"
 	"errors"
+	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/netip"
 	"time"
@@ -13,19 +16,182 @@ import (
 
 	"github.com/tomeksdev/NexusHub/backend/internal/apierror"
 	"github.com/tomeksdev/NexusHub/backend/internal/crypto"
+	"github.com/tomeksdev/NexusHub/backend/internal/diag"
+	"github.com/tomeksdev/NexusHub/backend/internal/ebpf"
 	"github.com/tomeksdev/NexusHub/backend/internal/httppage"
 	"github.com/tomeksdev/NexusHub/backend/internal/repository"
 	"github.com/tomeksdev/NexusHub/backend/internal/wg"
 )
 
+// endpointHost returns the host portion of "host:port", preserving
+// IPv6 literals. Returns "" for an empty string. Falls back to the
+// raw value if it doesn't parse as host:port (e.g. operator typed a
+// bare hostname without a port — still useful to compare).
+func endpointHost(s string) string {
+	if s == "" {
+		return ""
+	}
+	if h, _, err := net.SplitHostPort(s); err == nil {
+		return h
+	}
+	return s
+}
+
+// findEndpointConflict scans wg_interfaces for a row with the same
+// (endpointHost, listenPort) tuple as the candidate. excludeID is
+// the row being updated, if any. Returns the colliding interface
+// name (empty if none).
+//
+// We do the scan in Go instead of SQL because endpoint can hold
+// IPv6 literals like "[::1]:51820" that split_part would mishandle.
+// The wg_interfaces table is small (typically <10 rows even on
+// large deployments), so a linear walk is cheap.
+func (h *InterfaceHandler) findEndpointConflict(ctx context.Context, hostPart string, port int, excludeID *uuid.UUID) (string, error) {
+	rows, err := h.Interfaces.List(ctx)
+	if err != nil {
+		return "", err
+	}
+	for i := range rows {
+		r := &rows[i]
+		if excludeID != nil && r.ID == *excludeID {
+			continue
+		}
+		if r.ListenPort != port {
+			continue
+		}
+		other := ""
+		if r.Endpoint != nil {
+			other = endpointHost(*r.Endpoint)
+		}
+		// Both empty → conflict (default 0.0.0.0 bind on the same
+		// port). One empty + other set → no conflict (different
+		// binds). Both set → conflict iff hosts match.
+		if (hostPart == "" && other == "") || (hostPart != "" && hostPart == other) {
+			return r.Name, nil
+		}
+	}
+	return "", nil
+}
+
+// endpointConflictMessage formats the operator-facing 409 body. Lifts
+// the candidate's full host:port back together for clarity.
+func endpointConflictMessage(host string, port int, otherName string) string {
+	display := fmt.Sprintf(":%d", port)
+	if host != "" {
+		display = net.JoinHostPort(host, fmt.Sprintf("%d", port))
+	}
+	return fmt.Sprintf("Endpoint %s is already used by interface %s.", display, otherName)
+}
+
 // InterfaceHandler owns CRUD on wg_interfaces.
 type InterfaceHandler struct {
 	Interfaces *repository.InterfaceRepo
-	AEAD       *crypto.AEAD
-	// Client brings the device up in the kernel after a DB insert and
-	// tears it down on delete. Nil in tests and dev environments without
-	// the kernel module.
+	// Peers powers the /interfaces/:id/next-ip endpoint that the
+	// peer-creation modal calls to suggest the next free address.
+	// Optional — without it the endpoint 500s but the rest of the
+	// CRUD stays functional.
+	Peers *repository.PeerRepo
+	AEAD  *crypto.AEAD
+	// Client pushes private key + listen port + peers into the kernel
+	// device once it exists. Nil in tests and dev environments without
+	// the WG kernel module loaded.
 	Client wg.Client
+	// Links creates / deletes the kernel link itself. wgctrl can only
+	// configure existing devices, so without this every Create lands
+	// in the DB but nothing reaches the kernel. Nil ⇒ skip the
+	// rtnetlink steps (acceptable for tests and for hosts where the
+	// operator manages link lifecycle out-of-band).
+	Links wg.LinkManager
+	// KernelWarnings, when set, captures the slog.Warn-level kernel
+	// apply failures so the Support page can surface them. Nil ⇒
+	// failures stay in slog only.
+	KernelWarnings *diag.KernelWarnings
+	// EBPFAttacher attaches/detaches the TC eBPF program when this
+	// handler creates or deletes a Location. Without it the eBPF
+	// rules engine never sees traffic on Locations created after
+	// API startup. Nil ⇒ no runtime attach (e.g. dev environments
+	// without CAP_BPF).
+	EBPFAttacher RuntimeAttacher
+	// Rules, when set, is used to regenerate cross-location system
+	// deny rules after a Create / address-changed Update / Delete.
+	// Optional — older deployments (and tests that don't exercise
+	// the rule path) leave it nil and the lifecycle hook is a no-op.
+	Rules *repository.RuleRepo
+	// Sync receives the post-regenerate kernel reconcile sweep so the
+	// eBPF data plane converges atomically with the DB write. Without
+	// it the kernel state lags until the next background reconcile
+	// cycle. Optional — nil is acceptable for tests that don't
+	// exercise the kernel path.
+	Sync ebpf.Syncer
+}
+
+// regenerateSystemRules rebuilds the auto-generated cross-location deny
+// rules from the full current interface set, then reconciles the kernel
+// state so the eBPF data plane reflects the new rule set immediately
+// (without waiting for the background reconcile cycle). Called from
+// Create / Update (when address changes) / Delete. Failures are logged
+// but non-fatal — system rules are a safety net, not a correctness
+// requirement, and rolling back the interface mutation because the
+// rule regenerator hiccuped would surprise the operator more than the
+// rule mismatch.
+func (h *InterfaceHandler) regenerateSystemRules(ctx context.Context) {
+	if h == nil || h.Rules == nil {
+		return
+	}
+	ifaces, err := h.Interfaces.List(ctx)
+	if err != nil {
+		slog.WarnContext(ctx, "system rules: list interfaces", "err", err)
+		return
+	}
+	locs := make([]repository.SystemRuleLocation, 0, len(ifaces))
+	for i := range ifaces {
+		locs = append(locs, repository.SystemRuleLocation{
+			ID:   ifaces[i].ID,
+			Name: ifaces[i].Name,
+			CIDR: ifaces[i].Address.Masked(),
+		})
+	}
+	if err := h.Rules.RegenerateSystemDenies(ctx, locs); err != nil {
+		slog.WarnContext(ctx, "system rules: regenerate", "err", err)
+		return
+	}
+
+	// Reconcile the kernel against the new active-rule set so the new
+	// system rules land in eBPF maps immediately and stale UUIDs from
+	// the previous generation get pulled. We pass the full active set
+	// (system + admin) because Syncer.Reconcile expects the complete
+	// desired state, not a delta — anything in the kernel but not in
+	// this list gets dropped.
+	if h.Sync == nil {
+		return
+	}
+	active, err := h.Rules.ActiveSnapshot(ctx)
+	if err != nil {
+		slog.WarnContext(ctx, "system rules: active snapshot", "err", err)
+		return
+	}
+	rules := make([]ebpf.Rule, 0, len(active))
+	for i := range active {
+		rules = append(rules, ToSyncRule(&active[i]))
+	}
+	if err := h.Sync.Reconcile(ctx, rules); err != nil {
+		slog.WarnContext(ctx, "system rules: kernel reconcile", "err", err)
+	}
+}
+
+// recordKernelWarning is the bridge between the existing slog.Warn
+// sites and the operator-visible ring. Both still happen so the
+// systemd journal captures the full record; the ring is the
+// abbreviated UI feed.
+func (h *InterfaceHandler) recordKernelWarning(origin, iface, msg string) {
+	if h == nil || h.KernelWarnings == nil {
+		return
+	}
+	h.KernelWarnings.Push(diag.KernelWarning{
+		Origin:  origin,
+		Iface:   iface,
+		Message: msg,
+	})
 }
 
 type interfaceResponse struct {
@@ -81,6 +247,26 @@ func (h *InterfaceHandler) Create(c *gin.Context) {
 		return
 	}
 
+	// Pre-validate (endpoint_host, listen_port) — same port on a
+	// different endpoint host is fine, same port on the same host
+	// is a conflict. Empty endpoint behaves like a default-bind
+	// 0.0.0.0, so two rows with no endpoint and the same port are
+	// also a conflict (preserves the v0.x guard).
+	endpointStr := ""
+	if req.Endpoint != nil {
+		endpointStr = *req.Endpoint
+	}
+	hostPart := endpointHost(endpointStr)
+	if other, perr := h.findEndpointConflict(c.Request.Context(), hostPart, req.ListenPort, nil); perr != nil {
+		slog.ErrorContext(c, "check endpoint+port", "err", perr)
+		writeError(c, http.StatusInternalServerError, apierror.CodeInternal, "internal error")
+		return
+	} else if other != "" {
+		writeError(c, http.StatusConflict, "ENDPOINT_CONFLICT",
+			endpointConflictMessage(hostPart, req.ListenPort, other))
+		return
+	}
+
 	kp, err := wg.GenerateKeyPair()
 	if err != nil {
 		slog.ErrorContext(c, "generate keypair", "err", err)
@@ -106,6 +292,10 @@ func (h *InterfaceHandler) Create(c *gin.Context) {
 	if err != nil {
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+			// Migration 010 dropped the listen_port unique
+			// constraint; the only 23505 left here is the name
+			// clash. Endpoint conflicts are caught by the API-layer
+			// pre-flight above before we reach the INSERT.
 			writeError(c, http.StatusConflict, apierror.CodeConflict, "interface name already exists")
 			return
 		}
@@ -114,11 +304,25 @@ func (h *InterfaceHandler) Create(c *gin.Context) {
 		return
 	}
 
-	// Bring the kernel device up with the fresh keys + port. Most netlink
-	// backends implicitly create a wg device on first ConfigureDevice
-	// call; on platforms that don't (older kernels, some userspace impls)
-	// the operator will need to `ip link add dev <name> type wireguard`
-	// first — we log rather than fail so the API row still lands.
+	// Bring the kernel device up. Order matters: rtnetlink creates +
+	// addresses + ups the link, then wgctrl pushes the private key /
+	// listen port over generic netlink. Failures here are logged rather
+	// than rolled back — the DB row is the source of truth and the
+	// startup reconciler will converge on next API restart.
+	if h.Links != nil {
+		if err := h.Links.EnsureLink(out.Name); err != nil {
+			slog.WarnContext(c, "kernel ensure link", "err", err, "iface", out.Name)
+			h.recordKernelWarning("wg.create.link", out.Name, err.Error())
+		}
+		if err := h.Links.EnsureAddress(out.Name, out.Address); err != nil {
+			slog.WarnContext(c, "kernel ensure address", "err", err, "iface", out.Name)
+			h.recordKernelWarning("wg.create.address", out.Name, err.Error())
+		}
+		if err := h.Links.EnsureUp(out.Name); err != nil {
+			slog.WarnContext(c, "kernel link up", "err", err, "iface", out.Name)
+			h.recordKernelWarning("wg.create.up", out.Name, err.Error())
+		}
+	}
 	if h.Client != nil {
 		port := out.ListenPort
 		kcfg := wg.Config{
@@ -126,9 +330,39 @@ func (h *InterfaceHandler) Create(c *gin.Context) {
 			ListenPort: &port,
 		}
 		if err := h.Client.ConfigureDevice(out.Name, kcfg); err != nil {
-			slog.WarnContext(c, "kernel create interface", "err", err, "iface", out.Name)
+			slog.WarnContext(c, "kernel configure interface", "err", err, "iface", out.Name)
+			h.recordKernelWarning("wg.create.configure", out.Name, err.Error())
+		}
+		// Read-back: confirm the kernel actually accepted the port we
+		// asked for. wgctrl can pick a different port silently when
+		// the requested one is in use by something netlink doesn't
+		// see (e.g. a non-WG UDP socket). Surfacing the drift in the
+		// API response means the UI can warn instead of lying.
+		if live, derr := h.Client.Device(out.Name); derr == nil &&
+			live.ListenPort != 0 && live.ListenPort != out.ListenPort {
+			slog.WarnContext(c, "kernel listen-port drift after create",
+				"iface", out.Name,
+				"requested", out.ListenPort, "actual", live.ListenPort)
+			h.recordKernelWarning("wg.create.port_drift", out.Name,
+				"kernel chose a different listen port than requested")
 		}
 	}
+	// Round-5 fix: a Location created at runtime needs the TC eBPF
+	// program attached before it can enforce any rule. Without
+	// this, rules live in the kernel maps but no hook on the new
+	// wgN consults them — the rules page shows "Active: ON" while
+	// traffic flows. Failure here is logged + surfaced via the
+	// kernel-warnings ring; the create response still succeeds so
+	// the operator sees the Location appear and can fix the eBPF
+	// side separately.
+	if h.EBPFAttacher != nil {
+		if err := h.EBPFAttacher.AttachTC(out.Name); err != nil {
+			slog.WarnContext(c, "ebpf tc attach", "err", err, "iface", out.Name)
+		}
+	}
+	// New location → regenerate cross-location system deny rules so the
+	// new interface's CIDR shows up in every pair.
+	h.regenerateSystemRules(c.Request.Context())
 	c.JSON(http.StatusCreated, toInterfaceResponse(out))
 }
 
@@ -168,6 +402,203 @@ func (h *InterfaceHandler) Get(c *gin.Context) {
 	c.JSON(http.StatusOK, toInterfaceResponse(iface))
 }
 
+// NextIP returns the next free address inside the interface's CIDR,
+// after reserving everything currently assigned to a peer plus the
+// network/broadcast/iface-self addresses. The peer-create modal
+// calls this so operators see a concrete suggestion instead of a
+// blank field. Errors:
+//   - 404 when the interface id is unknown
+//   - 409 ENDPOINT_POOL_EXHAUSTED when every address is taken
+type nextIPResponse struct {
+	AssignedIP string `json:"assigned_ip"`
+}
+
+func (h *InterfaceHandler) NextIP(c *gin.Context) {
+	id, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		writeError(c, http.StatusBadRequest, apierror.CodeInvalidRequest, "invalid id")
+		return
+	}
+	ctx := c.Request.Context()
+	iface, err := h.Interfaces.GetByID(ctx, id)
+	if errors.Is(err, repository.ErrInterfaceNotFound) {
+		writeError(c, http.StatusNotFound, apierror.CodeNotFound, "interface not found")
+		return
+	}
+	if err != nil {
+		slog.ErrorContext(ctx, "get interface", "err", err)
+		writeError(c, http.StatusInternalServerError, apierror.CodeInternal, "internal error")
+		return
+	}
+	if h.Peers == nil {
+		// Defensive: if the dep wasn't wired, fall back to the
+		// network address + 1 so the frontend always gets a
+		// suggestion rather than a 500.
+		writeError(c, http.StatusInternalServerError, apierror.CodeInternal, "peer repo unavailable")
+		return
+	}
+	used, err := h.Peers.AssignedIPsByInterface(ctx, iface.ID)
+	if err != nil {
+		slog.ErrorContext(ctx, "list assigned ips", "err", err)
+		writeError(c, http.StatusInternalServerError, apierror.CodeInternal, "internal error")
+		return
+	}
+	next, err := wg.AllocateIP(iface.Address, used)
+	if errors.Is(err, wg.ErrPoolExhausted) {
+		writeError(c, http.StatusConflict, apierror.CodePoolExhausted, "interface IP pool exhausted")
+		return
+	}
+	if err != nil {
+		slog.ErrorContext(ctx, "allocate ip", "err", err)
+		writeError(c, http.StatusInternalServerError, apierror.CodeInternal, "internal error")
+		return
+	}
+	c.JSON(http.StatusOK, nextIPResponse{AssignedIP: next.String()})
+}
+
+// updateInterfaceRequest is the PATCH-shaped payload. Pointer-to-
+// pointer for optional columns so the JSON decoder can distinguish
+// "absent" (don't touch) from "null" (clear) — gin's binding gives us
+// the latter via explicit JSON null with the inner pointer nil.
+type updateInterfaceRequest struct {
+	ListenPort *int      `json:"listen_port"`
+	Address    *string   `json:"address"`
+	DNS        *[]string `json:"dns"`
+	MTU        **int     `json:"mtu,omitempty"`
+	Endpoint   **string  `json:"endpoint,omitempty"`
+	PostUp     **string  `json:"post_up,omitempty"`
+	PostDown   **string  `json:"post_down,omitempty"`
+	IsActive   *bool     `json:"is_active"`
+}
+
+// Update applies a partial change to a wg_interfaces row. Name and key
+// material are intentionally not editable — renaming a kernel link
+// requires a delete + recreate, and rotating the server private key
+// invalidates every peer's PSK in one shot. Both are fixable by the
+// operator deleting the location and recreating it.
+func (h *InterfaceHandler) Update(c *gin.Context) {
+	id, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		writeError(c, http.StatusBadRequest, apierror.CodeInvalidRequest, "invalid id")
+		return
+	}
+	var req updateInterfaceRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		writeError(c, http.StatusBadRequest, apierror.CodeInvalidRequest, err.Error())
+		return
+	}
+
+	params := repository.UpdateInterfaceParams{
+		ListenPort: req.ListenPort,
+		DNS:        req.DNS,
+		MTU:        req.MTU,
+		Endpoint:   req.Endpoint,
+		PostUp:     req.PostUp,
+		PostDown:   req.PostDown,
+		IsActive:   req.IsActive,
+	}
+	if req.Address != nil {
+		pfx, err := netip.ParsePrefix(*req.Address)
+		if err != nil {
+			writeError(c, http.StatusBadRequest, apierror.CodeInvalidRequest, "address must be a CIDR")
+			return
+		}
+		params.Address = &pfx
+	}
+	if req.ListenPort != nil &&
+		(*req.ListenPort < 1 || *req.ListenPort > 65535) {
+		writeError(c, http.StatusBadRequest, apierror.CodeInvalidRequest,
+			"listen_port must be 1–65535")
+		return
+	}
+
+	ctx := c.Request.Context()
+
+	// Pre-validate (endpoint_host, listen_port) on update. We need to
+	// know both the candidate port and the candidate endpoint to make
+	// the call; if either is unchanged we read the current row.
+	if req.ListenPort != nil || (req.Endpoint != nil) {
+		current, gerr := h.Interfaces.GetByID(ctx, id)
+		if errors.Is(gerr, repository.ErrInterfaceNotFound) {
+			writeError(c, http.StatusNotFound, apierror.CodeNotFound, "interface not found")
+			return
+		}
+		if gerr != nil {
+			slog.ErrorContext(ctx, "lookup interface", "err", gerr)
+			writeError(c, http.StatusInternalServerError, apierror.CodeInternal, "internal error")
+			return
+		}
+		newPort := current.ListenPort
+		if req.ListenPort != nil {
+			newPort = *req.ListenPort
+		}
+		newEndpoint := ""
+		if current.Endpoint != nil {
+			newEndpoint = *current.Endpoint
+		}
+		if req.Endpoint != nil && *req.Endpoint != nil {
+			newEndpoint = **req.Endpoint
+		} else if req.Endpoint != nil && *req.Endpoint == nil {
+			newEndpoint = ""
+		}
+		hostPart := endpointHost(newEndpoint)
+		if other, perr := h.findEndpointConflict(ctx, hostPart, newPort, &id); perr != nil {
+			slog.ErrorContext(ctx, "check endpoint+port", "err", perr)
+			writeError(c, http.StatusInternalServerError, apierror.CodeInternal, "internal error")
+			return
+		} else if other != "" {
+			writeError(c, http.StatusConflict, "ENDPOINT_CONFLICT",
+				endpointConflictMessage(hostPart, newPort, other))
+			return
+		}
+	}
+
+	out, err := h.Interfaces.Update(ctx, id, params)
+	if errors.Is(err, repository.ErrInterfaceNotFound) {
+		writeError(c, http.StatusNotFound, apierror.CodeNotFound, "interface not found")
+		return
+	}
+	if err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+			// Endpoint conflicts are caught above; this fall-through
+			// is the name-uniqueness case.
+			writeError(c, http.StatusConflict, apierror.CodeConflict, "interface name already exists")
+			return
+		}
+		slog.ErrorContext(ctx, "update interface", "err", err)
+		writeError(c, http.StatusInternalServerError, apierror.CodeInternal, "internal error")
+		return
+	}
+
+	// Push the changed knobs into the kernel. Address / port changes
+	// are the operator-visible bits the rtnetlink + wgctrl layers
+	// need to know about. Failures are logged; the DB row is
+	// authoritative and the reconciler will re-converge on restart.
+	if h.Links != nil && req.Address != nil {
+		if err := h.Links.EnsureAddress(out.Name, out.Address); err != nil {
+			slog.WarnContext(ctx, "kernel ensure address on update", "err", err, "iface", out.Name)
+		}
+	}
+	if h.Client != nil && req.ListenPort != nil {
+		port := out.ListenPort
+		if err := h.Client.ConfigureDevice(out.Name, wg.Config{
+			ListenPort: &port,
+		}); err != nil {
+			slog.WarnContext(ctx, "kernel apply listen port", "err", err, "iface", out.Name)
+		}
+	}
+
+	// Address changed → system rules reference the old CIDR; regenerate.
+	// We skip the call when only the listen port / endpoint / DNS moved
+	// since none of those affect the deny-rule CIDRs.
+	if req.Address != nil {
+		h.regenerateSystemRules(ctx)
+	}
+
+	c.JSON(http.StatusOK, toInterfaceResponse(out))
+}
+
 func (h *InterfaceHandler) Delete(c *gin.Context) {
 	id, err := uuid.Parse(c.Param("id"))
 	if err != nil {
@@ -204,5 +635,23 @@ func (h *InterfaceHandler) Delete(c *gin.Context) {
 			slog.WarnContext(ctx, "kernel clear interface peers", "err", err, "iface", name)
 		}
 	}
+	// Detach the TC eBPF program before tearing the link down.
+	// link.Close on a TCX link reaches into the kernel link list;
+	// doing it after the link is gone is harmless but spammier.
+	if h.EBPFAttacher != nil && name != "" {
+		if err := h.EBPFAttacher.DetachTC(name); err != nil {
+			slog.WarnContext(ctx, "ebpf tc detach", "err", err, "iface", name)
+		}
+	}
+	// Tear the rtnetlink link down. Done after the wgctrl peer-clear so
+	// in-flight handshakes see a closed door rather than a still-up
+	// device with no auth.
+	if h.Links != nil && name != "" {
+		if err := h.Links.DeleteLink(name); err != nil {
+			slog.WarnContext(ctx, "kernel delete link", "err", err, "iface", name)
+		}
+	}
+	// Location removed → drop the deny rules that reference its CIDR.
+	h.regenerateSystemRules(ctx)
 	c.Status(http.StatusNoContent)
 }

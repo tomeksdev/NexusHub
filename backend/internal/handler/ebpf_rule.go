@@ -40,25 +40,64 @@ type RuleHandler struct {
 }
 
 type ruleResponse struct {
-	ID          uuid.UUID  `json:"id"`
-	Name        string     `json:"name"`
-	Description *string    `json:"description,omitempty"`
-	Action      string     `json:"action"`
-	Direction   string     `json:"direction"`
-	Protocol    string     `json:"protocol"`
-	SrcCIDR     *string    `json:"src_cidr,omitempty"`
-	DstCIDR     *string    `json:"dst_cidr,omitempty"`
-	SrcPortFrom *int       `json:"src_port_from,omitempty"`
-	SrcPortTo   *int       `json:"src_port_to,omitempty"`
-	DstPortFrom *int       `json:"dst_port_from,omitempty"`
-	DstPortTo   *int       `json:"dst_port_to,omitempty"`
-	RatePPS     *int       `json:"rate_pps,omitempty"`
-	RateBurst   *int       `json:"rate_burst,omitempty"`
-	Priority    int        `json:"priority"`
-	IsActive    bool       `json:"is_active"`
-	CreatedBy   *uuid.UUID `json:"created_by,omitempty"`
-	CreatedAt   time.Time  `json:"created_at"`
-	UpdatedAt   time.Time  `json:"updated_at"`
+	ID          uuid.UUID `json:"id"`
+	Name        string    `json:"name"`
+	Description *string   `json:"description,omitempty"`
+	Action      string    `json:"action"`
+	Direction   string    `json:"direction"`
+	Protocol    string    `json:"protocol"`
+	SrcCIDR     *string   `json:"src_cidr,omitempty"`
+	DstCIDR     *string   `json:"dst_cidr,omitempty"`
+	SrcPortFrom *int      `json:"src_port_from,omitempty"`
+	SrcPortTo   *int      `json:"src_port_to,omitempty"`
+	DstPortFrom *int      `json:"dst_port_from,omitempty"`
+	DstPortTo   *int      `json:"dst_port_to,omitempty"`
+	RatePPS     *int      `json:"rate_pps,omitempty"`
+	RateBurst   *int      `json:"rate_burst,omitempty"`
+	Priority    int       `json:"priority"`
+	IsActive    bool      `json:"is_active"`
+	// KernelLoaded reports whether this rule has a current
+	// programming in the kernel rule_meta map. False with
+	// IsActive=true is the actionable error state — the operator
+	// flipped the rule on but the kernel doesn't know about it
+	// (Syncer was Noop, or Apply failed silently). The frontend
+	// renders this as a separate column.
+	KernelLoaded bool `json:"kernel_loaded"`
+	// RuleHitsPackets / RuleHitsBytes are the kernel-side counters
+	// for matched packets, summed across CPUs. omitempty so the
+	// frontend can render "—" when the syncer is the noop or the
+	// rule has never matched anything. Round-9 observability: an
+	// operator who sees "Active: ON, Kernel: LOADED, Hits: 0"
+	// after pinging through the rule's src→dst path knows the
+	// data plane never saw the packet — actionable.
+	RuleHitsPackets *uint64 `json:"rule_hits_packets,omitempty"`
+	RuleHitsBytes   *uint64 `json:"rule_hits_bytes,omitempty"`
+	// Owner gates the lifecycle UI: "admin" rules are fully editable
+	// + deletable; "system" rules are auto-generated and protected
+	// (operator can only toggle is_active). The frontend renders a
+	// "System" badge and disables Delete when owner=system.
+	Owner     string     `json:"owner"`
+	CreatedBy *uuid.UUID `json:"created_by,omitempty"`
+	CreatedAt time.Time  `json:"created_at"`
+	UpdatedAt time.Time  `json:"updated_at"`
+}
+
+// toRuleResponseFor builds the response for a single repo rule and
+// stamps the kernel-loaded flag from the syncer. The free function
+// stays as a thin wrapper for callers that don't have the handler in
+// scope (tests).
+func (h *RuleHandler) toRuleResponseFor(r *repository.Rule) ruleResponse {
+	resp := toRuleResponse(r)
+	if h != nil && h.Sync != nil {
+		resp.KernelLoaded = h.Sync.Has(r.ID)
+		if pkts, bytes, ok := h.Sync.Hits(r.ID); ok {
+			p := pkts
+			b := bytes
+			resp.RuleHitsPackets = &p
+			resp.RuleHitsBytes = &b
+		}
+	}
+	return resp
 }
 
 func toRuleResponse(r *repository.Rule) ruleResponse {
@@ -79,14 +118,18 @@ func toRuleResponse(r *repository.Rule) ruleResponse {
 		DstPortFrom: r.DstPortFrom, DstPortTo: r.DstPortTo,
 		RatePPS: r.RatePPS, RateBurst: r.RateBurst,
 		Priority: r.Priority, IsActive: r.IsActive,
+		Owner:     r.Owner,
 		CreatedBy: r.CreatedBy,
 		CreatedAt: r.CreatedAt, UpdatedAt: r.UpdatedAt,
 	}
 }
 
-// toSyncRule flattens a repo rule to the shape the syncer wants. Lives
+// ToSyncRule flattens a repo rule to the shape the syncer wants. Lives
 // here (handler layer) so neither repository nor ebpf packages need
-// to know about each other.
+// to know about each other. Exported so cmd/api/main.go can use it
+// during startup reconcile without re-deriving the same conversion.
+func ToSyncRule(r *repository.Rule) ebpf.Rule { return toSyncRule(r) }
+
 func toSyncRule(r *repository.Rule) ebpf.Rule {
 	u16 := func(v *int) *uint16 {
 		if v == nil {
@@ -235,7 +278,7 @@ func (h *RuleHandler) Create(c *gin.Context) {
 			slog.WarnContext(ctx, "sync apply after create", "rule_id", out.ID, "err", err)
 		}
 	}
-	c.JSON(http.StatusCreated, toRuleResponse(out))
+	c.JSON(http.StatusCreated, h.toRuleResponseFor(out))
 }
 
 func (h *RuleHandler) List(c *gin.Context) {
@@ -250,9 +293,10 @@ func (h *RuleHandler) List(c *gin.Context) {
 		writeError(c, http.StatusInternalServerError, apierror.CodeInternal, "internal error")
 		return
 	}
+
 	out := make([]ruleResponse, 0, len(items))
 	for i := range items {
-		out = append(out, toRuleResponse(&items[i]))
+		out = append(out, h.toRuleResponseFor(&items[i]))
 	}
 	c.JSON(http.StatusOK, httppage.Wrap(out, total, pg, sortField, sortDesc))
 }
@@ -273,7 +317,7 @@ func (h *RuleHandler) Get(c *gin.Context) {
 		writeError(c, http.StatusInternalServerError, apierror.CodeInternal, "internal error")
 		return
 	}
-	c.JSON(http.StatusOK, toRuleResponse(r))
+	c.JSON(http.StatusOK, h.toRuleResponseFor(r))
 }
 
 // updateRuleRequest uses the cleared/set-to/leave-alone trichotomy via
@@ -301,6 +345,29 @@ func (h *RuleHandler) Update(c *gin.Context) {
 	}
 
 	ctx := c.Request.Context()
+
+	// For system rules, only is_active is editable. Everything else is
+	// owned by the system-rule regenerator and would either be reverted
+	// on the next interface change or break the rule's identity (rule
+	// name encodes the location pair). Reject any other field in the
+	// PATCH so the operator sees the constraint immediately instead of
+	// having their edit silently undone.
+	current, gerr := h.Rules.GetByID(ctx, id)
+	if errors.Is(gerr, repository.ErrRuleNotFound) {
+		writeError(c, http.StatusNotFound, apierror.CodeNotFound, "rule not found")
+		return
+	}
+	if gerr != nil {
+		slog.ErrorContext(ctx, "get rule for update", "err", gerr)
+		writeError(c, http.StatusInternalServerError, apierror.CodeInternal, "internal error")
+		return
+	}
+	if current.Owner == repository.RuleOwnerSystem && updateTouchesNonActiveFields(p) {
+		writeError(c, http.StatusConflict, apierror.CodeConflict,
+			"system rules accept only is_active changes — other fields are managed by the system-rule generator")
+		return
+	}
+
 	out, err := h.Rules.Update(ctx, id, p)
 	if errors.Is(err, repository.ErrRuleNotFound) {
 		writeError(c, http.StatusNotFound, apierror.CodeNotFound, "rule not found")
@@ -329,7 +396,7 @@ func (h *RuleHandler) Update(c *gin.Context) {
 			slog.WarnContext(ctx, "sync delete after deactivate", "rule_id", out.ID, "err", err)
 		}
 	}
-	c.JSON(http.StatusOK, toRuleResponse(out))
+	c.JSON(http.StatusOK, h.toRuleResponseFor(out))
 }
 
 func (h *RuleHandler) Delete(c *gin.Context) {
@@ -339,6 +406,27 @@ func (h *RuleHandler) Delete(c *gin.Context) {
 		return
 	}
 	ctx := c.Request.Context()
+
+	// Look up first so we can reject deletes of system rules — those
+	// are regenerated by the interface lifecycle and shouldn't be
+	// removed by hand. Operator can disable them via PATCH is_active
+	// to stop enforcement without breaking the baseline.
+	current, err := h.Rules.GetByID(ctx, id)
+	if errors.Is(err, repository.ErrRuleNotFound) {
+		writeError(c, http.StatusNotFound, apierror.CodeNotFound, "rule not found")
+		return
+	}
+	if err != nil {
+		slog.ErrorContext(ctx, "get rule for delete", "err", err)
+		writeError(c, http.StatusInternalServerError, apierror.CodeInternal, "internal error")
+		return
+	}
+	if current.Owner == repository.RuleOwnerSystem {
+		writeError(c, http.StatusConflict, apierror.CodeConflict,
+			"system rules can't be deleted — toggle is_active off to stop enforcement, or remove the location to drop the rule")
+		return
+	}
+
 	if err := h.Rules.Delete(ctx, id); err != nil {
 		if errors.Is(err, repository.ErrRuleNotFound) {
 			writeError(c, http.StatusNotFound, apierror.CodeNotFound, "rule not found")
@@ -352,6 +440,60 @@ func (h *RuleHandler) Delete(c *gin.Context) {
 		slog.WarnContext(ctx, "sync delete after row delete", "rule_id", id, "err", err)
 	}
 	c.Status(http.StatusNoContent)
+}
+
+// EnableAllSystemRules flips is_active=true on every owner='system'
+// row in one go and re-applies them into the kernel. Lets the operator
+// turn on the cross-location default-deny baseline with a single click
+// instead of toggling each pair individually. Idempotent: calling twice
+// is the same as calling once (no-op on the second call, no error).
+func (h *RuleHandler) EnableAllSystemRules(c *gin.Context) {
+	h.sweepSystemRules(c, true)
+}
+
+// DisableAllSystemRules is the mirror: flips every system rule to
+// is_active=false and removes them from the kernel.
+func (h *RuleHandler) DisableAllSystemRules(c *gin.Context) {
+	h.sweepSystemRules(c, false)
+}
+
+// sweepSystemRules is the shared body of Enable/DisableAllSystemRules.
+// Returns 200 with a small JSON envelope naming the number of rows
+// flipped so the frontend can render "Enabled N rules" in the toast.
+func (h *RuleHandler) sweepSystemRules(c *gin.Context, active bool) {
+	ctx := c.Request.Context()
+	flipped, err := h.Rules.SetSystemRulesActive(ctx, active)
+	if err != nil {
+		slog.ErrorContext(ctx, "sweep system rules", "err", err, "active", active)
+		writeError(c, http.StatusInternalServerError, apierror.CodeInternal, "internal error")
+		return
+	}
+
+	// Re-apply each flipped rule into the kernel so wg show reflects
+	// the change immediately. We read each row fresh so we get the
+	// canonical Rule shape the syncer expects; bulk-reapplying via
+	// ActiveSnapshot would also work but does more work per call.
+	for _, id := range flipped {
+		rule, gerr := h.Rules.GetByID(ctx, id)
+		if gerr != nil {
+			slog.WarnContext(ctx, "sweep: get flipped rule", "rule_id", id, "err", gerr)
+			continue
+		}
+		if active {
+			if err := h.Sync.Apply(ctx, toSyncRule(rule)); err != nil {
+				slog.WarnContext(ctx, "sweep apply", "rule_id", id, "err", err)
+			}
+		} else {
+			if err := h.Sync.Delete(ctx, id); err != nil {
+				slog.WarnContext(ctx, "sweep delete", "rule_id", id, "err", err)
+			}
+		}
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"flipped": len(flipped),
+		"active":  active,
+	})
 }
 
 // ListBindings returns every binding (peer or interface) for a rule.
@@ -580,6 +722,27 @@ func buildUpdateParams(raw map[string]any) (repository.UpdateRuleParams, error) 
 		p.IsActive = &b
 	}
 	return p, nil
+}
+
+// updateTouchesNonActiveFields reports whether the operator's PATCH
+// would change anything other than is_active. System rules accept
+// only is_active flips; this check lets the handler reject everything
+// else with a single comparison instead of inspecting each field.
+func updateTouchesNonActiveFields(p repository.UpdateRuleParams) bool {
+	return p.Name != nil ||
+		p.Description != nil ||
+		p.Action != nil ||
+		p.Direction != nil ||
+		p.Protocol != nil ||
+		p.SrcCIDR != nil ||
+		p.DstCIDR != nil ||
+		p.SrcPortFrom != nil ||
+		p.SrcPortTo != nil ||
+		p.DstPortFrom != nil ||
+		p.DstPortTo != nil ||
+		p.RatePPS != nil ||
+		p.RateBurst != nil ||
+		p.Priority != nil
 }
 
 // Helpers ---

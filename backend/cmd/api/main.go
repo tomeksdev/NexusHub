@@ -19,6 +19,8 @@ import (
 	"github.com/tomeksdev/NexusHub/backend/internal/config"
 	"github.com/tomeksdev/NexusHub/backend/internal/crypto"
 	"github.com/tomeksdev/NexusHub/backend/internal/db"
+	"github.com/tomeksdev/NexusHub/backend/internal/diag"
+	baseebpf "github.com/tomeksdev/NexusHub/backend/internal/ebpf"
 	"github.com/tomeksdev/NexusHub/backend/internal/handler"
 	"github.com/tomeksdev/NexusHub/backend/internal/metrics"
 	"github.com/tomeksdev/NexusHub/backend/internal/middleware"
@@ -38,10 +40,42 @@ func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 	slog.SetDefault(logger)
 
+	// `-health` is the Docker HEALTHCHECK entry point. Exists so the
+	// runtime image can stay on a distroless base (no curl/wget) — the
+	// binary calls its own /health endpoint via Go's net/http and exits
+	// 0 on success, non-zero otherwise. Uses PORT from env so the
+	// healthcheck stays consistent with the listener.
+	for _, a := range os.Args[1:] {
+		if a == "-health" || a == "--health" {
+			os.Exit(healthcheck())
+		}
+	}
+
 	if err := run(); err != nil {
 		slog.Error("api exited with error", "err", err)
 		os.Exit(1)
 	}
+}
+
+// healthcheck does a single GET to http://127.0.0.1:$PORT/api/v1/health
+// with a 3-second timeout. Returns 0 on 2xx, 1 on anything else.
+// Deliberately doesn't read config.Load() — config errors during
+// startup shouldn't make the healthcheck pass.
+func healthcheck() int {
+	port := os.Getenv("PORT")
+	if port == "" {
+		port = "8080"
+	}
+	c := &http.Client{Timeout: 3 * time.Second}
+	resp, err := c.Get("http://127.0.0.1:" + port + "/api/v1/health")
+	if err != nil {
+		return 1
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		return 0
+	}
+	return 1
 }
 
 func run() error {
@@ -106,7 +140,23 @@ func run() error {
 	// Try to open a netlink client. If we can't (no CAP_NET_ADMIN, no
 	// kernel module, containerised dev env), skip kernel sync and run
 	// DB-only — the handlers and reconciler are both nil-safe on wgClient.
+	// Kernel-apply diagnostics ring. Best-effort surfacing of slog.Warn
+	// failures from the WG/eBPF apply paths so the Support page can
+	// show "what's broken" without ssh-ing in. Tuned generously: 50
+	// entries, 15-minute TTL.
+	kernelWarnings := diag.New(50, 15*time.Minute)
+
 	var wgClient wg.Client
+	// linkManager is the rtnetlink side. Cheap to construct (no
+	// resources held until called) so we always wire it; the operator
+	// may have run NexusHub in an env without CAP_NET_ADMIN, in which
+	// case the per-call netlink syscalls fail and the handlers log
+	// without aborting.
+	linkManager := wg.NewNetlinkManager()
+	// wgIfaceNames is the list of DB-known WireGuard interface names
+	// after the startup reconcile. eBPF startup uses it to auto-attach
+	// TC (one program per interface) without an env var.
+	var wgIfaceNames []string
 	if kc, werr := wg.NewKernelClient(); werr != nil {
 		slog.Warn("wgctrl unavailable — running DB-only", "err", werr)
 	} else {
@@ -120,18 +170,24 @@ func run() error {
 		if dbs, rerr := loadDBInterfaces(ctx, aead, ifaceRepo, peerRepo); rerr != nil {
 			slog.Error("reconcile: load db state", "err", rerr)
 		} else {
-			wg.ReconcileStartup(ctx, wgClient, slog.Default(), dbs)
+			wg.ReconcileStartup(ctx, wgClient, linkManager, slog.Default(), dbs)
 			// Register the WG Prometheus collector with the interfaces
 			// we just reconciled. Interfaces added at runtime will not
 			// surface until restart — that matches the reconciler model
 			// where startup is the alignment point.
-			names := make([]string, 0, len(dbs))
+			wgIfaceNames = make([]string, 0, len(dbs))
 			for _, d := range dbs {
-				names = append(names, d.Name)
+				wgIfaceNames = append(wgIfaceNames, d.Name)
 			}
-			if len(names) > 0 {
-				metrics.Registry.MustRegister(wg.NewWGCollector(wgClient, names, slog.Default()))
+			if len(wgIfaceNames) > 0 {
+				metrics.Registry.MustRegister(wg.NewWGCollector(wgClient, wgIfaceNames, slog.Default()))
 			}
+			// Background poller writes live counters back to the DB
+			// every 30s so a freshly-opened Peers page shows non-zero
+			// rx/tx and current handshake without waiting for an SSE
+			// tick. Errors are logged and swallowed — the SSE stream
+			// is the real-time path; this is the page-load fallback.
+			go runPeerStatsPoller(ctx, wgClient, peerRepo, wgIfaceNames, slog.Default())
 		}
 	}
 
@@ -141,9 +197,37 @@ func run() error {
 	// returned stack carries a NoopSyncer so the handlers see a
 	// consistent interface either way.
 	connLogRepo := repository.NewConnectionLogRepo(pool)
+	// TC interfaces: every WG iface from the DB, plus the operator
+	// override if set (de-duped inside startEBPF). XDP stays
+	// env-driven because the WAN NIC isn't something the API can
+	// derive safely.
+	tcIfaces := append([]string(nil), wgIfaceNames...)
+	if extra := tcInterfaceFromEnv(); extra != "" {
+		tcIfaces = append(tcIfaces, extra)
+	}
 	ebpfStk := startEBPF(ctx, connLogRepo,
-		xdpInterfaceFromEnv(), tcInterfaceFromEnv(), slog.Default())
+		xdpInterfaceFromEnv(), tcIfaces, kernelWarnings, slog.Default())
 	defer ebpfStk.Close()
+
+	// Seed the kernel maps from the active rules in PostgreSQL so the
+	// datapath enforces what the DB says it should — without this,
+	// every restart leaves the kernel empty until the operator
+	// re-touches each rule via the API. Errors are logged and
+	// swallowed; the handlers still work, the kernel just trails the
+	// DB until next manual sync.
+	if active, err := ruleRepo.ActiveSnapshot(ctx); err != nil {
+		slog.Warn("ebpf rule snapshot failed — kernel will trail DB", "err", err)
+	} else if len(active) > 0 {
+		syncRules := make([]baseebpf.Rule, 0, len(active))
+		for i := range active {
+			syncRules = append(syncRules, handler.ToSyncRule(&active[i]))
+		}
+		if err := ebpfStk.syncer.Reconcile(ctx, syncRules); err != nil {
+			slog.Warn("ebpf rule reconcile at startup failed", "err", err, "n", len(syncRules))
+		} else {
+			slog.Info("ebpf rules reconciled to kernel", "count", len(syncRules))
+		}
+	}
 
 	router := handler.NewRouter(handler.Deps{
 		JWTIssuer:         jwtIssuer,
@@ -156,7 +240,11 @@ func run() error {
 		AEAD:              aead,
 		RefreshTTL:        cfg.JWTRefreshExpiry,
 		EBPFSync:          ebpfStk.syncer,
+		EBPFAttacher:      ebpfStk,
+		EBPFInv:           ebpfStk,
 		WG:                wgClient,
+		WGLinks:           linkManager,
+		KernelWarnings:    kernelWarnings,
 		DefaultWGEndpoint: cfg.WGEndpoint,
 		LoginLimit: middleware.RateLimitConfig{
 			Name:      "login",
@@ -203,6 +291,68 @@ func run() error {
 	return nil
 }
 
+// runPeerStatsPoller bridges the live WG kernel device state into the
+// wg_peers table on a 30 s cadence. It exists so a freshly-opened
+// admin page reflects current handshake / RX / TX without waiting for
+// the SSE stream to deliver its first delta — matching what
+// `wg show <iface> dump` would show. Errors are logged and the loop
+// continues; a transient netlink hiccup must not stop the poller for
+// good.
+func runPeerStatsPoller(
+	ctx context.Context,
+	client wg.Client,
+	peers *repository.PeerRepo,
+	ifaces []string,
+	log *slog.Logger,
+) {
+	if client == nil || peers == nil || len(ifaces) == 0 {
+		return
+	}
+	t := time.NewTicker(30 * time.Second)
+	defer t.Stop()
+	// Run once eagerly so a slow first tick doesn't make the very
+	// first page load wait 30 s for non-zero values.
+	pollAndWritePeerStats(ctx, client, peers, ifaces, log)
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			pollAndWritePeerStats(ctx, client, peers, ifaces, log)
+		}
+	}
+}
+
+func pollAndWritePeerStats(
+	ctx context.Context,
+	client wg.Client,
+	peers *repository.PeerRepo,
+	ifaces []string,
+	log *slog.Logger,
+) {
+	var batch []repository.PeerLiveStats
+	for _, name := range ifaces {
+		dev, err := client.Device(name)
+		if err != nil || dev == nil {
+			continue
+		}
+		for _, p := range dev.Peers {
+			batch = append(batch, repository.PeerLiveStats{
+				PublicKey:     p.PublicKey,
+				LastHandshake: p.LastHandshake,
+				RxBytes:       p.RxBytes,
+				TxBytes:       p.TxBytes,
+			})
+		}
+	}
+	if len(batch) == 0 {
+		return
+	}
+	if err := peers.UpsertLiveStats(ctx, batch); err != nil {
+		log.Warn("peer stats poll: upsert failed", "err", err, "rows", len(batch))
+	}
+}
+
 // loadDBInterfaces is the glue between the repository layer and the wg
 // reconciler's plain-data spec type. It decrypts every interface private
 // key and every active peer PSK before handing them off — the reconciler
@@ -228,6 +378,7 @@ func loadDBInterfaces(
 		}
 		dbi := wg.DBInterface{
 			Name: iface.Name, PrivateKey: priv, ListenPort: iface.ListenPort,
+			Address: iface.Address,
 		}
 		peerRows, err := peers.ListByInterface(ctx, iface.ID)
 		if err != nil {

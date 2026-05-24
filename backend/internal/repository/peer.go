@@ -27,14 +27,22 @@ func NewPeerRepo(pool *pgxpool.Pool) *PeerRepo {
 // generated client-side and never reach the server). When present it is
 // the encrypted blob; callers must Open before exporting.
 type Peer struct {
-	ID                  uuid.UUID
-	InterfaceID         uuid.UUID
-	OwnerUserID         *uuid.UUID
-	Name                string
-	Description         *string
-	PublicKey           string
-	PrivateKey          []byte // encrypted; may be nil
-	AllowedIPs          []netip.Prefix
+	ID          uuid.UUID
+	InterfaceID uuid.UUID
+	OwnerUserID *uuid.UUID
+	Name        string
+	Description *string
+	PublicKey   string
+	PrivateKey  []byte // encrypted; may be nil
+	// AllowedIPs is the SERVER-side filter — source IPs accepted from
+	// this peer / destinations routed to this peer. Asymmetric with the
+	// client view; see ClientAllowedIPs.
+	AllowedIPs []netip.Prefix
+	// ClientAllowedIPs is what gets written into the peer's exported
+	// .conf [Peer] AllowedIPs slot — destinations the client should
+	// route through the tunnel. Empty ⇒ renderer falls back to the
+	// interface CIDR.
+	ClientAllowedIPs    []netip.Prefix
 	AssignedIP          netip.Addr
 	Endpoint            *string
 	PersistentKeepalive *int
@@ -56,6 +64,7 @@ type CreatePeerParams struct {
 	PublicKey           string
 	PrivateKey          []byte // encrypted; may be nil
 	AllowedIPs          []netip.Prefix
+	ClientAllowedIPs    []netip.Prefix
 	AssignedIP          netip.Addr
 	Endpoint            *string
 	PersistentKeepalive *int
@@ -67,24 +76,27 @@ func (r *PeerRepo) Create(ctx context.Context, p CreatePeerParams) (*Peer, error
 	const q = `
 		INSERT INTO wg_peers
 		   (interface_id, owner_user_id, name, description,
-		    public_key, private_key, allowed_ips, assigned_ip,
-		    endpoint, persistent_keepalive, dns, expires_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7::cidr[], $8::inet,
-		        $9, $10, $11, $12)
+		    public_key, private_key, allowed_ips, client_allowed_ips,
+		    assigned_ip, endpoint, persistent_keepalive, dns, expires_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7::cidr[], $8::cidr[],
+		        $9::inet, $10, $11, $12, $13)
 		RETURNING id, status::text, created_at, updated_at,
 		          rx_bytes, tx_bytes`
 	allowed := prefixesToStrings(p.AllowedIPs)
+	clientAllowed := prefixesToStrings(p.ClientAllowedIPs)
 	out := Peer{
 		InterfaceID: p.InterfaceID, OwnerUserID: p.OwnerUserID,
 		Name: p.Name, Description: p.Description,
 		PublicKey: p.PublicKey, PrivateKey: p.PrivateKey,
-		AllowedIPs: p.AllowedIPs, AssignedIP: p.AssignedIP,
-		Endpoint: p.Endpoint, PersistentKeepalive: p.PersistentKeepalive,
+		AllowedIPs: p.AllowedIPs, ClientAllowedIPs: p.ClientAllowedIPs,
+		AssignedIP: p.AssignedIP,
+		Endpoint:   p.Endpoint, PersistentKeepalive: p.PersistentKeepalive,
 		DNS: p.DNS, ExpiresAt: p.ExpiresAt,
 	}
 	err := r.pool.QueryRow(ctx, q,
 		p.InterfaceID, p.OwnerUserID, p.Name, p.Description,
-		p.PublicKey, p.PrivateKey, allowed, p.AssignedIP.String(),
+		p.PublicKey, p.PrivateKey, allowed, clientAllowed,
+		p.AssignedIP.String(),
 		p.Endpoint, p.PersistentKeepalive, p.DNS, p.ExpiresAt,
 	).Scan(&out.ID, &out.Status, &out.CreatedAt, &out.UpdatedAt,
 		&out.RxBytes, &out.TxBytes)
@@ -163,6 +175,48 @@ func (r *PeerRepo) ListPage(ctx context.Context, ifaceID uuid.UUID, limit, offse
 	return items, total, nil
 }
 
+// ListPageByOwner returns the paginated peers belonging to a user
+// across every interface they have peers on. Used by the User detail
+// view; the existing ListPage stays scoped to one interface so the
+// per-Location admin flow doesn't change.
+func (r *PeerRepo) ListPageByOwner(ctx context.Context, ownerID uuid.UUID, limit, offset int, sortField string, sortDesc bool) ([]Peer, int, error) {
+	if !contains(PeerSortFields, sortField) {
+		sortField = "name"
+	}
+	dir := "ASC"
+	if sortDesc {
+		dir = "DESC"
+	}
+	query := fmt.Sprintf("%s WHERE owner_user_id = $1 ORDER BY %s %s NULLS LAST LIMIT $2 OFFSET $3",
+		selectPeer, sortField, dir)
+
+	rows, err := r.pool.Query(ctx, query, ownerID, limit, offset)
+	if err != nil {
+		return nil, 0, fmt.Errorf("list peers by owner: %w", err)
+	}
+	defer rows.Close()
+
+	var items []Peer
+	for rows.Next() {
+		p, err := scanPeer(rows)
+		if err != nil {
+			return nil, 0, err
+		}
+		items = append(items, *p)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, 0, err
+	}
+
+	var total int
+	if err := r.pool.QueryRow(ctx,
+		`SELECT count(*) FROM wg_peers WHERE owner_user_id = $1`, ownerID,
+	).Scan(&total); err != nil {
+		return nil, 0, fmt.Errorf("count peers by owner: %w", err)
+	}
+	return items, total, nil
+}
+
 func contains(list []string, s string) bool {
 	for _, v := range list {
 		if v == s {
@@ -195,6 +249,130 @@ func (r *PeerRepo) AssignedIPsByInterface(ctx context.Context, ifaceID uuid.UUID
 		out = append(out, a)
 	}
 	return out, rows.Err()
+}
+
+// PeerLiveStats is one row of counters from the WG kernel poller.
+// Public-key keyed because that's what the kernel reports; the repo
+// upserts on the unique (public_key) constraint.
+type PeerLiveStats struct {
+	PublicKey     string
+	LastHandshake time.Time // zero ⇒ no handshake yet
+	RxBytes       int64
+	TxBytes       int64
+}
+
+// UpsertLiveStats writes the latest WG counters back to wg_peers so a
+// fresh page load reflects current traffic without waiting for an SSE
+// tick. Only rows where the public_key already exists are touched —
+// kernel devices may carry peers we never persisted (e.g. an operator
+// added one with `wg set` out of band).
+//
+// Last-handshake is only written when non-zero so we don't blow away a
+// known timestamp with the kernel's epoch sentinel during a brief
+// netlink read failure.
+func (r *PeerRepo) UpsertLiveStats(ctx context.Context, stats []PeerLiveStats) error {
+	if len(stats) == 0 {
+		return nil
+	}
+	const q = `
+		UPDATE wg_peers
+		   SET rx_bytes = $2,
+		       tx_bytes = $3,
+		       last_handshake = COALESCE(NULLIF($4, '0001-01-01 00:00:00+00'::timestamptz), last_handshake)
+		 WHERE public_key = $1`
+	batch := &pgx.Batch{}
+	for _, s := range stats {
+		batch.Queue(q, s.PublicKey, s.RxBytes, s.TxBytes, s.LastHandshake)
+	}
+	br := r.pool.SendBatch(ctx, batch)
+	// Close returns the first error encountered across the queued
+	// commands plus any Close-time failure. We swallow it because the
+	// loop below already surfaces each per-row error; double-reporting
+	// the same wire failure adds noise without helping debugging.
+	defer func() { _ = br.Close() }()
+	for range stats {
+		if _, err := br.Exec(); err != nil {
+			return fmt.Errorf("upsert live stats: %w", err)
+		}
+	}
+	return nil
+}
+
+// UpdatePeerParams is the PATCH-shaped param set. Pointer fields
+// opt in per-column. Pointer-to-pointer for nullable text columns
+// so the caller can clear them without leaking "" semantics.
+type UpdatePeerParams struct {
+	Name                *string
+	Description         **string
+	OwnerUserID         **uuid.UUID
+	AllowedIPs          *[]netip.Prefix
+	ClientAllowedIPs    *[]netip.Prefix
+	Endpoint            **string
+	DNS                 *[]string
+	PersistentKeepalive **int
+	ExpiresAt           **time.Time
+	Status              *string // enabled | disabled | revoked
+}
+
+func (r *PeerRepo) Update(ctx context.Context, id uuid.UUID, p UpdatePeerParams) (*Peer, error) {
+	sets := []string{}
+	args := []any{id}
+	idx := 2
+	add := func(expr string, v any) {
+		sets = append(sets, fmt.Sprintf("%s = $%d", expr, idx))
+		args = append(args, v)
+		idx++
+	}
+	if p.Name != nil {
+		add("name", *p.Name)
+	}
+	if p.Description != nil {
+		add("description", *p.Description)
+	}
+	if p.OwnerUserID != nil {
+		add("owner_user_id", *p.OwnerUserID)
+	}
+	if p.AllowedIPs != nil {
+		// Cast through ::cidr[] so the array literal is interpreted
+		// against the column type.
+		sets = append(sets, fmt.Sprintf("allowed_ips = $%d::cidr[]", idx))
+		args = append(args, prefixesToStrings(*p.AllowedIPs))
+		idx++
+	}
+	if p.ClientAllowedIPs != nil {
+		sets = append(sets, fmt.Sprintf("client_allowed_ips = $%d::cidr[]", idx))
+		args = append(args, prefixesToStrings(*p.ClientAllowedIPs))
+		idx++
+	}
+	if p.Endpoint != nil {
+		add("endpoint", *p.Endpoint)
+	}
+	if p.DNS != nil {
+		add("dns", *p.DNS)
+	}
+	if p.PersistentKeepalive != nil {
+		add("persistent_keepalive", *p.PersistentKeepalive)
+	}
+	if p.ExpiresAt != nil {
+		add("expires_at", *p.ExpiresAt)
+	}
+	if p.Status != nil {
+		sets = append(sets, fmt.Sprintf("status = $%d::wg_peer_status", idx))
+		args = append(args, *p.Status)
+		idx++
+	}
+	if len(sets) == 0 {
+		return r.GetByID(ctx, id)
+	}
+	q := fmt.Sprintf(`UPDATE wg_peers SET %s WHERE id = $1`, joinComma(sets))
+	cmd, err := r.pool.Exec(ctx, q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("update peer: %w", err)
+	}
+	if cmd.RowsAffected() == 0 {
+		return nil, ErrPeerNotFound
+	}
+	return r.GetByID(ctx, id)
 }
 
 func (r *PeerRepo) UpdateStatus(ctx context.Context, id uuid.UUID, status string) error {
@@ -265,7 +443,8 @@ func (r *PeerRepo) RotatePSK(ctx context.Context, peerID uuid.UUID, sealedPSK []
 const selectPeer = `
 	SELECT id, interface_id, owner_user_id, name, description,
 	       public_key, private_key,
-	       allowed_ips::text[], host(assigned_ip),
+	       allowed_ips::text[], client_allowed_ips::text[],
+	       host(assigned_ip),
 	       endpoint, persistent_keepalive, dns, status::text,
 	       last_handshake, rx_bytes, tx_bytes, expires_at,
 	       created_at, updated_at
@@ -282,14 +461,15 @@ func (r *PeerRepo) scanOne(ctx context.Context, where string, args ...any) (*Pee
 
 func scanPeer(s scannable) (*Peer, error) {
 	var (
-		p           Peer
-		allowedStrs []string
-		assignedStr string
+		p                 Peer
+		allowedStrs       []string
+		clientAllowedStrs []string
+		assignedStr       string
 	)
 	err := s.Scan(
 		&p.ID, &p.InterfaceID, &p.OwnerUserID, &p.Name, &p.Description,
 		&p.PublicKey, &p.PrivateKey,
-		&allowedStrs, &assignedStr,
+		&allowedStrs, &clientAllowedStrs, &assignedStr,
 		&p.Endpoint, &p.PersistentKeepalive, &p.DNS, &p.Status,
 		&p.LastHandshake, &p.RxBytes, &p.TxBytes, &p.ExpiresAt,
 		&p.CreatedAt, &p.UpdatedAt,
@@ -297,13 +477,13 @@ func scanPeer(s scannable) (*Peer, error) {
 	if err != nil {
 		return nil, err
 	}
-	p.AllowedIPs = make([]netip.Prefix, 0, len(allowedStrs))
-	for _, s := range allowedStrs {
-		pfx, perr := netip.ParsePrefix(s)
-		if perr != nil {
-			return nil, fmt.Errorf("parse allowed_ip %q: %w", s, perr)
-		}
-		p.AllowedIPs = append(p.AllowedIPs, pfx)
+	p.AllowedIPs, err = parsePrefixSlice(allowedStrs, "allowed_ip")
+	if err != nil {
+		return nil, err
+	}
+	p.ClientAllowedIPs, err = parsePrefixSlice(clientAllowedStrs, "client_allowed_ip")
+	if err != nil {
+		return nil, err
 	}
 	a, perr := netip.ParseAddr(assignedStr)
 	if perr != nil {
@@ -311,6 +491,18 @@ func scanPeer(s scannable) (*Peer, error) {
 	}
 	p.AssignedIP = a
 	return &p, nil
+}
+
+func parsePrefixSlice(in []string, label string) ([]netip.Prefix, error) {
+	out := make([]netip.Prefix, 0, len(in))
+	for _, s := range in {
+		pfx, err := netip.ParsePrefix(s)
+		if err != nil {
+			return nil, fmt.Errorf("parse %s %q: %w", label, s, err)
+		}
+		out = append(out, pfx)
+	}
+	return out, nil
 }
 
 func prefixesToStrings(in []netip.Prefix) []string {

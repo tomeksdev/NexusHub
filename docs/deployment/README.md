@@ -133,6 +133,7 @@ and the data plane.
 | Backup + restore + DR drill | [backup-restore.md](./backup-restore.md) |
 | Prometheus + Grafana + alerts | [observability.md](./observability.md) |
 | Load testing baseline | [load-testing.md](./load-testing.md) |
+| Migration recovery (dirty state) | [migration-recovery.md](./migration-recovery.md) |
 
 ## Choosing a tag
 

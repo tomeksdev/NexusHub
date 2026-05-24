@@ -48,7 +48,7 @@ export function Modal({
 
   return (
     <div
-      className="fixed inset-0 bg-slate-950/70 flex items-center justify-center p-4 z-50"
+      className="fixed inset-0 bg-black/70 flex items-center justify-center p-4 z-50"
       onClick={(e) => {
         if (e.target === e.currentTarget) onClose();
       }}
@@ -60,16 +60,16 @@ export function Modal({
         aria-labelledby={titleId}
         aria-describedby={description ? descId : undefined}
         tabIndex={-1}
-        className={`bg-slate-900 border border-slate-800 rounded-lg w-full ${maxWidthClass} max-h-[90vh] overflow-y-auto focus-visible:outline-2 focus-visible:outline-indigo-500 focus-visible:outline-offset-2`}
+        className={`bg-[var(--color-surface)] border border-[var(--color-line-strong)] rounded-xl w-full ${maxWidthClass} max-h-[90vh] overflow-y-auto shadow-2xl focus-visible:outline-2 focus-visible:outline-[var(--color-accent)] focus-visible:outline-offset-2`}
       >
         <div className="p-6 space-y-4">
           <header className="flex items-baseline justify-between">
             <div>
-              <h2 id={titleId} className="text-lg font-semibold">
+              <h2 id={titleId} className="text-lg font-semibold text-white">
                 {title}
               </h2>
               {description && (
-                <p id={descId} className="text-xs text-slate-500 mt-0.5">
+                <p id={descId} className="text-faint text-xs mt-0.5">
                   {description}
                 </p>
               )}
@@ -78,7 +78,7 @@ export function Modal({
               type="button"
               onClick={onClose}
               aria-label="Close dialog"
-              className="text-slate-500 hover:text-slate-200 text-sm focus-visible:outline-2 focus-visible:outline-indigo-500 rounded"
+              className="text-muted hover:text-white text-sm rounded focus-visible:outline-2 focus-visible:outline-[var(--color-accent)]"
             >
               ✕
             </button>

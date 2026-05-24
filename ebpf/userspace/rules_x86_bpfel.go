@@ -12,16 +12,6 @@ import (
 	"github.com/cilium/ebpf"
 )
 
-type RulesLpmV4Key struct {
-	Prefixlen uint32
-	Addr      [4]uint8
-}
-
-type RulesLpmV6Key struct {
-	Prefixlen uint32
-	Addr      [16]uint8
-}
-
 type RulesRateKeyV4 struct {
 	RuleId uint32
 	Addr   uint32
@@ -42,20 +32,52 @@ type RulesRuleHits struct {
 	Bytes   uint64
 }
 
-type RulesRuleMeta struct {
-	Action      uint8
-	Protocol    uint8
-	Direction   uint8
-	IsActive    uint8
-	SrcPortFrom uint16
-	SrcPortTo   uint16
-	DstPortFrom uint16
-	DstPortTo   uint16
-	Priority    uint16
-	Pad         uint16
-	RatePps     uint32
-	RateBurst   uint32
-	Pad2        uint32
+type RulesRuleV4Record struct {
+	Action       uint8
+	Protocol     uint8
+	Direction    uint8
+	IsActive     uint8
+	HasSrc       uint8
+	HasDst       uint8
+	HasProtocol  uint8
+	SrcPrefixLen uint8
+	DstPrefixLen uint8
+	Pad          [3]uint8
+	RatePps      uint32
+	RateBurst    uint32
+	SrcPortFrom  uint16
+	SrcPortTo    uint16
+	DstPortFrom  uint16
+	DstPortTo    uint16
+	Priority     uint16
+	Pad2         uint16
+	SrcAddr      [4]uint8
+	DstAddr      [4]uint8
+	RuleId       uint32
+}
+
+type RulesRuleV6Record struct {
+	Action       uint8
+	Protocol     uint8
+	Direction    uint8
+	IsActive     uint8
+	HasSrc       uint8
+	HasDst       uint8
+	HasProtocol  uint8
+	SrcPrefixLen uint8
+	DstPrefixLen uint8
+	Pad          [3]uint8
+	RatePps      uint32
+	RateBurst    uint32
+	SrcPortFrom  uint16
+	SrcPortTo    uint16
+	DstPortFrom  uint16
+	DstPortTo    uint16
+	Priority     uint16
+	Pad2         uint16
+	SrcAddr      [16]uint8
+	DstAddr      [16]uint8
+	RuleId       uint32
 }
 
 // LoadRules returns the embedded CollectionSpec for Rules.
@@ -110,12 +132,11 @@ type RulesMapSpecs struct {
 	LogEvents   *ebpf.MapSpec `ebpf:"log_events"`
 	RateStateV4 *ebpf.MapSpec `ebpf:"rate_state_v4"`
 	RateStateV6 *ebpf.MapSpec `ebpf:"rate_state_v6"`
-	RuleDstV4   *ebpf.MapSpec `ebpf:"rule_dst_v4"`
-	RuleDstV6   *ebpf.MapSpec `ebpf:"rule_dst_v6"`
+	RuleCountV4 *ebpf.MapSpec `ebpf:"rule_count_v4"`
+	RuleCountV6 *ebpf.MapSpec `ebpf:"rule_count_v6"`
 	RuleHits    *ebpf.MapSpec `ebpf:"rule_hits"`
-	RuleMeta    *ebpf.MapSpec `ebpf:"rule_meta"`
-	RuleSrcV4   *ebpf.MapSpec `ebpf:"rule_src_v4"`
-	RuleSrcV6   *ebpf.MapSpec `ebpf:"rule_src_v6"`
+	RuleTableV4 *ebpf.MapSpec `ebpf:"rule_table_v4"`
+	RuleTableV6 *ebpf.MapSpec `ebpf:"rule_table_v6"`
 }
 
 // RulesObjects contains all objects after they have been loaded into the kernel.
@@ -140,12 +161,11 @@ type RulesMaps struct {
 	LogEvents   *ebpf.Map `ebpf:"log_events"`
 	RateStateV4 *ebpf.Map `ebpf:"rate_state_v4"`
 	RateStateV6 *ebpf.Map `ebpf:"rate_state_v6"`
-	RuleDstV4   *ebpf.Map `ebpf:"rule_dst_v4"`
-	RuleDstV6   *ebpf.Map `ebpf:"rule_dst_v6"`
+	RuleCountV4 *ebpf.Map `ebpf:"rule_count_v4"`
+	RuleCountV6 *ebpf.Map `ebpf:"rule_count_v6"`
 	RuleHits    *ebpf.Map `ebpf:"rule_hits"`
-	RuleMeta    *ebpf.Map `ebpf:"rule_meta"`
-	RuleSrcV4   *ebpf.Map `ebpf:"rule_src_v4"`
-	RuleSrcV6   *ebpf.Map `ebpf:"rule_src_v6"`
+	RuleTableV4 *ebpf.Map `ebpf:"rule_table_v4"`
+	RuleTableV6 *ebpf.Map `ebpf:"rule_table_v6"`
 }
 
 func (m *RulesMaps) Close() error {
@@ -153,12 +173,11 @@ func (m *RulesMaps) Close() error {
 		m.LogEvents,
 		m.RateStateV4,
 		m.RateStateV6,
-		m.RuleDstV4,
-		m.RuleDstV6,
+		m.RuleCountV4,
+		m.RuleCountV6,
 		m.RuleHits,
-		m.RuleMeta,
-		m.RuleSrcV4,
-		m.RuleSrcV6,
+		m.RuleTableV4,
+		m.RuleTableV6,
 	)
 }
 

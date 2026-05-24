@@ -10,6 +10,7 @@ import (
 
 	"github.com/tomeksdev/NexusHub/backend/internal/auth"
 	"github.com/tomeksdev/NexusHub/backend/internal/crypto"
+	"github.com/tomeksdev/NexusHub/backend/internal/diag"
 	"github.com/tomeksdev/NexusHub/backend/internal/ebpf"
 	"github.com/tomeksdev/NexusHub/backend/internal/metrics"
 	"github.com/tomeksdev/NexusHub/backend/internal/middleware"
@@ -39,6 +40,24 @@ type Deps struct {
 	// environments without the kernel module — handlers skip kernel sync
 	// and remain DB-only.
 	WG wg.Client
+	// WGLinks creates / brings up / tears down the kernel link itself
+	// via rtnetlink. Separate from WG (which is generic-netlink via
+	// wgctrl) because the two subsystems are. Nil ⇒ handlers skip the
+	// link-management step.
+	WGLinks wg.LinkManager
+	// KernelWarnings collects best-effort kernel-apply failures so
+	// the Support page can render them. Nil ⇒ warnings are slog-only.
+	KernelWarnings *diag.KernelWarnings
+	// EBPFAttacher attaches/detaches the TC program when a Location
+	// is created or deleted at runtime. Without it, the eBPF
+	// program only runs on Locations that existed at startup and
+	// new ones bypass enforcement entirely.
+	EBPFAttacher RuntimeAttacher
+	// EBPFInventory backs the /diag/ebpf endpoint. Same eBPF stack
+	// satisfies both interfaces in production; tests can pass nil
+	// or a stub.
+	EBPFInv EBPFInventory
+
 	// DefaultWGEndpoint and DefaultWGDNS feed the wg-quick config
 	// renderer's fall-back chain (peer → interface → default). They're
 	// sourced from WG_ENDPOINT and the interface DNS column respectively.
@@ -49,6 +68,16 @@ type Deps struct {
 	// limiter; the middleware itself decides this based on PerMinute == 0.
 	LoginLimit   middleware.RateLimitConfig
 	RefreshLimit middleware.RateLimitConfig
+}
+
+// RuntimeAttacher is the seam between the InterfaceHandler and the
+// eBPF stack in cmd/api. Kept narrow so the handler doesn't grow a
+// kernel-side dependency. Both methods are safe to call when the
+// underlying stack is in a degraded state — they no-op rather than
+// erroring.
+type RuntimeAttacher interface {
+	AttachTC(ifaceName string) error
+	DetachTC(ifaceName string) error
 }
 
 // NewRouter builds the Gin engine with all middleware and routes registered.
@@ -120,32 +149,74 @@ func NewRouter(deps Deps) *gin.Engine {
 	// download a config they didn't create.
 	if deps.Interfaces != nil && deps.Peers != nil && deps.AEAD != nil {
 		ifaceH := &InterfaceHandler{
-			Interfaces: deps.Interfaces, AEAD: deps.AEAD, Client: deps.WG,
+			Interfaces: deps.Interfaces, Peers: deps.Peers,
+			AEAD:   deps.AEAD,
+			Client: deps.WG, Links: deps.WGLinks,
+			KernelWarnings: deps.KernelWarnings,
+			EBPFAttacher:   deps.EBPFAttacher,
+			Rules:          deps.Rules,
+			Sync:           deps.EBPFSync,
 		}
 		peerH := &PeerHandler{
-			Peers: deps.Peers, Interfaces: deps.Interfaces, AEAD: deps.AEAD,
+			Peers: deps.Peers, Interfaces: deps.Interfaces,
+			Users:           deps.Users,
+			AEAD:            deps.AEAD,
 			Client:          deps.WG,
 			DefaultEndpoint: deps.DefaultWGEndpoint,
 			DefaultDNS:      deps.DefaultWGDNS,
 		}
 		statusH := &StatusHandler{Client: deps.WG, Interfaces: deps.Interfaces}
+		dashH := &DashboardHandler{
+			Users:      deps.Users,
+			Interfaces: deps.Interfaces,
+			Peers:      deps.Peers,
+			Client:     deps.WG,
+		}
+
+		// /me/* lives in the authenticated-but-not-admin group so
+		// users with the `user` role can fetch their own peers and
+		// download their own .conf without admin help. Ownership
+		// is enforced inside MeHandler; foreign ids return 404 so
+		// the API doesn't leak existence of other users' peers.
+		meH := &MeHandler{Peers: deps.Peers, PeerH: peerH}
+		authed.GET("/me/peers", meH.ListPeers)
+		authed.GET("/me/peers/:id/config", meH.Config)
+		authed.GET("/me/peers/:id/config.png", meH.ConfigQR)
 
 		admin := authed.Group("")
 		admin.Use(middleware.RequireRole("super_admin", "admin"))
 		admin.GET("/interfaces", ifaceH.List)
 		admin.POST("/interfaces", ifaceH.Create)
 		admin.GET("/interfaces/:id", ifaceH.Get)
+		admin.GET("/interfaces/:id/next-ip", ifaceH.NextIP)
+		admin.PATCH("/interfaces/:id", ifaceH.Update)
 		admin.DELETE("/interfaces/:id", ifaceH.Delete)
 
 		admin.GET("/peers", peerH.List)
 		admin.POST("/peers", peerH.Create)
 		admin.GET("/peers/:id", peerH.Get)
+		admin.PATCH("/peers/:id", peerH.Update)
 		admin.DELETE("/peers/:id", peerH.Delete)
 		admin.POST("/peers/:id/rotate-psk", peerH.RotatePSK)
 		admin.GET("/peers/:id/config", peerH.Config)
 		admin.GET("/peers/:id/config.png", peerH.ConfigQR)
 
 		admin.GET("/wg/status", statusH.Status)
+		admin.GET("/dashboard", dashH.Get)
+
+		// Diagnostics endpoints — admin-gated. Two distinct surfaces
+		// today: the kernel-warnings ring (introduced in round 3)
+		// and the eBPF attachment inventory (round 9). Both fall
+		// back gracefully when their dependency is nil so a degraded
+		// stack still serves the API.
+		diagH := &DiagHandler{
+			KernelWarnings: deps.KernelWarnings,
+			EBPF:           deps.EBPFInv,
+		}
+		if deps.KernelWarnings != nil {
+			admin.GET("/diag/kernel-warnings", diagH.KernelWarningsList)
+		}
+		admin.GET("/diag/ebpf", diagH.EBPFState)
 		admin.GET("/metrics", metrics.Handler())
 
 		// Live peer state — same admin gate as wg/status; leaks handshake
@@ -162,6 +233,11 @@ func NewRouter(deps Deps) *gin.Engine {
 	if deps.Users != nil {
 		userH := &UserHandler{Users: deps.Users}
 		admin.GET("/users", userH.List)
+		admin.POST("/users", userH.Create)
+		admin.GET("/users/:id", userH.Get)
+		admin.PATCH("/users/:id", userH.Update)
+		admin.POST("/users/:id/password", userH.SetPassword)
+		admin.DELETE("/users/:id", userH.Delete)
 	}
 	if deps.Audit != nil {
 		auditH := &AuditHandler{Audit: deps.Audit}
@@ -189,6 +265,10 @@ func NewRouter(deps Deps) *gin.Engine {
 		admin.GET("/rules/:id/bindings", ruleH.ListBindings)
 		admin.POST("/rules/:id/bindings", ruleH.CreateBinding)
 		admin.DELETE("/rules/:id/bindings/:binding_id", ruleH.DeleteBinding)
+		// Sweep endpoints — flip every owner='system' row at once.
+		// Used by the Rules-page "Enable all system rules" button.
+		admin.POST("/system-rules/enable-all", ruleH.EnableAllSystemRules)
+		admin.POST("/system-rules/disable-all", ruleH.DisableAllSystemRules)
 	}
 
 	return r

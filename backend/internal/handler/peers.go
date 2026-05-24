@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/netip"
 	"strings"
@@ -33,7 +34,12 @@ var peerPSKAAD = []byte("wg_peer_preshared_keys.preshared_key")
 type PeerHandler struct {
 	Peers      *repository.PeerRepo
 	Interfaces *repository.InterfaceRepo
-	AEAD       *crypto.AEAD
+	// Users is optional. When set, peer create rejects an
+	// owner_user_id pointing at a disabled user — without this the
+	// operator can hand out VPN credentials to an account that can no
+	// longer log in to manage them.
+	Users *repository.UserRepo
+	AEAD  *crypto.AEAD
 	// Client pushes peer changes into the kernel WireGuard device. Nil in
 	// tests and dev environments without the kernel module — handlers
 	// degrade to DB-only writes in that case.
@@ -56,6 +62,7 @@ type peerResponse struct {
 	Description         *string    `json:"description,omitempty"`
 	PublicKey           string     `json:"public_key"`
 	AllowedIPs          []string   `json:"allowed_ips"`
+	ClientAllowedIPs    []string   `json:"client_allowed_ips"`
 	AssignedIP          string     `json:"assigned_ip"`
 	Endpoint            *string    `json:"endpoint,omitempty"`
 	PersistentKeepalive *int       `json:"persistent_keepalive,omitempty"`
@@ -74,11 +81,16 @@ func toPeerResponse(p *repository.Peer) peerResponse {
 	for i, a := range p.AllowedIPs {
 		allowed[i] = a.String()
 	}
+	clientAllowed := make([]string, len(p.ClientAllowedIPs))
+	for i, a := range p.ClientAllowedIPs {
+		clientAllowed[i] = a.String()
+	}
 	return peerResponse{
 		ID: p.ID, InterfaceID: p.InterfaceID, OwnerUserID: p.OwnerUserID,
 		Name: p.Name, Description: p.Description, PublicKey: p.PublicKey,
-		AllowedIPs: allowed, AssignedIP: p.AssignedIP.String(),
-		Endpoint: p.Endpoint, PersistentKeepalive: p.PersistentKeepalive,
+		AllowedIPs: allowed, ClientAllowedIPs: clientAllowed,
+		AssignedIP: p.AssignedIP.String(),
+		Endpoint:   p.Endpoint, PersistentKeepalive: p.PersistentKeepalive,
 		DNS: p.DNS, Status: p.Status, LastHandshake: p.LastHandshake,
 		RxBytes: p.RxBytes, TxBytes: p.TxBytes, ExpiresAt: p.ExpiresAt,
 		CreatedAt: p.CreatedAt, UpdatedAt: p.UpdatedAt,
@@ -86,11 +98,17 @@ func toPeerResponse(p *repository.Peer) peerResponse {
 }
 
 type createPeerRequest struct {
-	InterfaceID         string     `json:"interface_id"        binding:"required,uuid"`
-	Name                string     `json:"name"                binding:"required"`
-	Description         *string    `json:"description"`
-	PublicKey           *string    `json:"public_key"`
-	AllowedIPs          []string   `json:"allowed_ips"`
+	InterfaceID string  `json:"interface_id"        binding:"required,uuid"`
+	Name        string  `json:"name"                binding:"required"`
+	Description *string `json:"description"`
+	PublicKey   *string `json:"public_key"`
+	// AllowedIPs is the server-side filter — what the kernel accepts
+	// from this peer / routes to this peer.
+	AllowedIPs []string `json:"allowed_ips"`
+	// ClientAllowedIPs is what gets emitted into the peer's exported
+	// .conf [Peer] block. Different concept than AllowedIPs; see
+	// renderWgQuickConfig for fallback semantics.
+	ClientAllowedIPs    []string   `json:"client_allowed_ips"`
 	AssignedIP          *string    `json:"assigned_ip"`
 	Endpoint            *string    `json:"endpoint"`
 	PersistentKeepalive *int       `json:"persistent_keepalive"`
@@ -151,6 +169,25 @@ func (h *PeerHandler) Create(c *gin.Context) {
 		}
 	}
 
+	// Validate persistent_keepalive bound at the boundary so the DB
+	// CHECK constraint isn't the first line of defense.
+	if req.PersistentKeepalive != nil &&
+		(*req.PersistentKeepalive < 0 || *req.PersistentKeepalive > 65535) {
+		writeError(c, http.StatusBadRequest, apierror.CodeInvalidRequest,
+			"persistent_keepalive must be 0–65535")
+		return
+	}
+
+	// Endpoint, when supplied, must parse as host:port — wgctrl rejects
+	// anything else with an opaque netlink error otherwise.
+	if req.Endpoint != nil && *req.Endpoint != "" {
+		if _, _, err := net.SplitHostPort(*req.Endpoint); err != nil {
+			writeError(c, http.StatusBadRequest, apierror.CodeInvalidRequest,
+				"endpoint must be host:port")
+			return
+		}
+	}
+
 	// Assigned IP — explicit if supplied, else next free.
 	var assigned netip.Addr
 	if req.AssignedIP != nil && *req.AssignedIP != "" {
@@ -162,6 +199,27 @@ func (h *PeerHandler) Create(c *gin.Context) {
 		if !iface.Address.Contains(a) {
 			writeError(c, http.StatusBadRequest, apierror.CodeInvalidRequest, "assigned_ip not in interface CIDR")
 			return
+		}
+		// Reject the addresses the allocator would have skipped: the
+		// network address, the v4 broadcast, and the interface's own
+		// address. Letting any of these through would silently break
+		// routing for the whole subnet.
+		if a == iface.Address.Masked().Addr() {
+			writeError(c, http.StatusBadRequest, apierror.CodeInvalidRequest,
+				"assigned_ip is the network address")
+			return
+		}
+		if a == iface.Address.Addr() {
+			writeError(c, http.StatusBadRequest, apierror.CodeInvalidRequest,
+				"assigned_ip collides with the interface address")
+			return
+		}
+		if a.Is4() {
+			if b, ok := wg.Broadcast(iface.Address); ok && a == b {
+				writeError(c, http.StatusBadRequest, apierror.CodeInvalidRequest,
+					"assigned_ip is the broadcast address")
+				return
+			}
 		}
 		assigned = a
 	} else {
@@ -183,15 +241,34 @@ func (h *PeerHandler) Create(c *gin.Context) {
 		}
 	}
 
-	allowed := parsePrefixes(req.AllowedIPs)
-	if len(allowed) == 0 {
-		// Default to the assigned /32 (or /128) so the peer only routes
-		// itself; operators can broaden later.
-		bits := 32
-		if !assigned.Is4() {
-			bits = 128
+	allowed, err := parsePrefixesStrict(req.AllowedIPs)
+	if err != nil {
+		writeError(c, http.StatusBadRequest, apierror.CodeInvalidRequest,
+			"allowed_ips: "+err.Error())
+		return
+	}
+	if err := rejectFullTunnelServerSide(allowed); err != nil {
+		writeError(c, http.StatusBadRequest, apierror.CodeInvalidRequest, err.Error())
+		return
+	}
+	// The assigned /32 (or /128) is load-bearing — the WG kernel module
+	// rejects the peer's own source IP without it, which would break
+	// every broader route. Always present in the saved list, whether
+	// the operator supplied it explicitly or not.
+	bits := 32
+	if !assigned.Is4() {
+		bits = 128
+	}
+	assignedPfx := netip.PrefixFrom(assigned, bits)
+	covered := false
+	for _, p := range allowed {
+		if p.Contains(assigned) {
+			covered = true
+			break
 		}
-		allowed = []netip.Prefix{netip.PrefixFrom(assigned, bits)}
+	}
+	if !covered {
+		allowed = append([]netip.Prefix{assignedPfx}, allowed...)
 	}
 
 	dns := req.DNS
@@ -206,15 +283,45 @@ func (h *PeerHandler) Create(c *gin.Context) {
 			writeError(c, http.StatusBadRequest, apierror.CodeInvalidRequest, "owner_user_id must be uuid")
 			return
 		}
+		// Block assigning peers to a disabled (or non-existent) user.
+		// is_active is the soft-delete flag; an owner who can't log in
+		// can't manage their own VPN credentials, which defeats the
+		// purpose of the linkage.
+		if h.Users != nil {
+			u, uerr := h.Users.GetByID(ctx, ou)
+			if errors.Is(uerr, repository.ErrUserNotFound) {
+				writeError(c, http.StatusBadRequest, apierror.CodeInvalidRequest,
+					"owner_user_id does not exist")
+				return
+			}
+			if uerr != nil {
+				slog.ErrorContext(ctx, "lookup peer owner", "err", uerr)
+				writeError(c, http.StatusInternalServerError, apierror.CodeInternal, "internal error")
+				return
+			}
+			if !u.IsActive {
+				writeError(c, http.StatusBadRequest, apierror.CodeInvalidRequest,
+					"owner_user_id refers to a disabled user")
+				return
+			}
+		}
 		owner = &ou
+	}
+
+	clientAllowed, err := parsePrefixesStrict(req.ClientAllowedIPs)
+	if err != nil {
+		writeError(c, http.StatusBadRequest, apierror.CodeInvalidRequest,
+			"client_allowed_ips: "+err.Error())
+		return
 	}
 
 	out, err := h.Peers.Create(ctx, repository.CreatePeerParams{
 		InterfaceID: ifaceID, OwnerUserID: owner,
 		Name: req.Name, Description: req.Description,
 		PublicKey: pubKey, PrivateKey: sealedPriv,
-		AllowedIPs: allowed, AssignedIP: assigned,
-		Endpoint: req.Endpoint, PersistentKeepalive: req.PersistentKeepalive,
+		AllowedIPs: allowed, ClientAllowedIPs: clientAllowed,
+		AssignedIP: assigned,
+		Endpoint:   req.Endpoint, PersistentKeepalive: req.PersistentKeepalive,
 		DNS: dns, ExpiresAt: req.ExpiresAt,
 	})
 	if err != nil {
@@ -263,22 +370,49 @@ func assignedBits(a netip.Addr) int {
 }
 
 func (h *PeerHandler) List(c *gin.Context) {
-	ifaceParam := c.Query("interface_id")
-	if ifaceParam == "" {
-		writeError(c, http.StatusBadRequest, apierror.CodeInvalidRequest, "interface_id query parameter required")
-		return
-	}
-	ifaceID, err := uuid.Parse(ifaceParam)
-	if err != nil {
-		writeError(c, http.StatusBadRequest, apierror.CodeInvalidRequest, "interface_id must be uuid")
-		return
-	}
 	pg := httppage.Parse(c)
 	sortField, sortDesc := pg.ResolveSort(repository.PeerSortFields, "name")
-	peers, total, err := h.Peers.ListPage(c.Request.Context(), ifaceID,
-		pg.Limit, pg.Offset, sortField, sortDesc)
+	ctx := c.Request.Context()
+
+	// Two filter modes: by interface_id (the per-Location admin
+	// flow) OR by owner_user_id (the User detail view). Exactly
+	// one must be supplied — combining them would need a third
+	// repo method and we haven't found a use case yet.
+	ifaceParam := c.Query("interface_id")
+	ownerParam := c.Query("owner_user_id")
+	if ifaceParam == "" && ownerParam == "" {
+		writeError(c, http.StatusBadRequest, apierror.CodeInvalidRequest,
+			"interface_id or owner_user_id query parameter required")
+		return
+	}
+	if ifaceParam != "" && ownerParam != "" {
+		writeError(c, http.StatusBadRequest, apierror.CodeInvalidRequest,
+			"interface_id and owner_user_id cannot be combined")
+		return
+	}
+
+	var (
+		peers []repository.Peer
+		total int
+		err   error
+	)
+	if ownerParam != "" {
+		ownerID, perr := uuid.Parse(ownerParam)
+		if perr != nil {
+			writeError(c, http.StatusBadRequest, apierror.CodeInvalidRequest, "owner_user_id must be uuid")
+			return
+		}
+		peers, total, err = h.Peers.ListPageByOwner(ctx, ownerID, pg.Limit, pg.Offset, sortField, sortDesc)
+	} else {
+		ifaceID, perr := uuid.Parse(ifaceParam)
+		if perr != nil {
+			writeError(c, http.StatusBadRequest, apierror.CodeInvalidRequest, "interface_id must be uuid")
+			return
+		}
+		peers, total, err = h.Peers.ListPage(ctx, ifaceID, pg.Limit, pg.Offset, sortField, sortDesc)
+	}
 	if err != nil {
-		slog.ErrorContext(c, "list peers", "err", err)
+		slog.ErrorContext(ctx, "list peers", "err", err)
 		writeError(c, http.StatusInternalServerError, apierror.CodeInternal, "internal error")
 		return
 	}
@@ -349,6 +483,194 @@ func (h *PeerHandler) Delete(c *gin.Context) {
 		}
 	}
 	c.Status(http.StatusNoContent)
+}
+
+// updatePeerRequest is the PATCH body for /peers/:id. Pointer fields
+// opt in per-column; the inner pointer-to-pointer pattern on text
+// columns lets callers explicitly clear them (JSON null) vs. leave
+// alone (field absent).
+type updatePeerRequest struct {
+	Name                *string     `json:"name"`
+	Description         **string    `json:"description,omitempty"`
+	OwnerUserID         **string    `json:"owner_user_id,omitempty"`
+	AllowedIPs          *[]string   `json:"allowed_ips"`
+	ClientAllowedIPs    *[]string   `json:"client_allowed_ips"`
+	Endpoint            **string    `json:"endpoint,omitempty"`
+	DNS                 *[]string   `json:"dns"`
+	PersistentKeepalive **int       `json:"persistent_keepalive,omitempty"`
+	ExpiresAt           **time.Time `json:"expires_at,omitempty"`
+	Status              *string     `json:"status"`
+}
+
+// Update applies a partial change to a peer row and pushes the diff
+// to the kernel device. Operators reach this when they need to add a
+// network to an existing peer's AllowedIPs without rotating keys.
+func (h *PeerHandler) Update(c *gin.Context) {
+	id, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		writeError(c, http.StatusBadRequest, apierror.CodeInvalidRequest, "invalid id")
+		return
+	}
+	var req updatePeerRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		writeError(c, http.StatusBadRequest, apierror.CodeInvalidRequest, err.Error())
+		return
+	}
+	ctx := c.Request.Context()
+
+	// Pull the current row first — needed for the kernel apply
+	// path (we need to know the interface to talk to the right
+	// device) and for cross-validation of allowed_ips against
+	// assigned_ip.
+	current, err := h.Peers.GetByID(ctx, id)
+	if errors.Is(err, repository.ErrPeerNotFound) {
+		writeError(c, http.StatusNotFound, apierror.CodeNotFound, "peer not found")
+		return
+	}
+	if err != nil {
+		slog.ErrorContext(ctx, "get peer", "err", err)
+		writeError(c, http.StatusInternalServerError, apierror.CodeInternal, "internal error")
+		return
+	}
+
+	params := repository.UpdatePeerParams{
+		Name:        req.Name,
+		Description: req.Description,
+		Endpoint:    req.Endpoint,
+		DNS:         req.DNS,
+		Status:      req.Status,
+		ExpiresAt:   req.ExpiresAt,
+	}
+	if req.PersistentKeepalive != nil {
+		if inner := *req.PersistentKeepalive; inner != nil &&
+			(*inner < 0 || *inner > 65535) {
+			writeError(c, http.StatusBadRequest, apierror.CodeInvalidRequest,
+				"persistent_keepalive must be 0–65535")
+			return
+		}
+		params.PersistentKeepalive = req.PersistentKeepalive
+	}
+	if req.OwnerUserID != nil {
+		var ownerPtr *uuid.UUID
+		if inner := *req.OwnerUserID; inner != nil && *inner != "" {
+			ou, perr := uuid.Parse(*inner)
+			if perr != nil {
+				writeError(c, http.StatusBadRequest, apierror.CodeInvalidRequest, "owner_user_id must be uuid")
+				return
+			}
+			// Block reassigning to a disabled user — same rule as Create.
+			if h.Users != nil {
+				u, uerr := h.Users.GetByID(ctx, ou)
+				if errors.Is(uerr, repository.ErrUserNotFound) {
+					writeError(c, http.StatusBadRequest, apierror.CodeInvalidRequest,
+						"owner_user_id does not exist")
+					return
+				}
+				if uerr != nil {
+					slog.ErrorContext(ctx, "lookup peer owner", "err", uerr)
+					writeError(c, http.StatusInternalServerError, apierror.CodeInternal, "internal error")
+					return
+				}
+				if !u.IsActive {
+					writeError(c, http.StatusBadRequest, apierror.CodeInvalidRequest,
+						"owner_user_id refers to a disabled user")
+					return
+				}
+			}
+			ownerPtr = &ou
+		}
+		// JSON null on owner_user_id ⇒ ownerPtr stays nil ⇒ clear.
+		params.OwnerUserID = &ownerPtr
+	}
+	if req.AllowedIPs != nil {
+		ips, perr := parsePrefixesStrict(*req.AllowedIPs)
+		if perr != nil {
+			writeError(c, http.StatusBadRequest, apierror.CodeInvalidRequest,
+				"allowed_ips: "+perr.Error())
+			return
+		}
+		if err := rejectFullTunnelServerSide(ips); err != nil {
+			writeError(c, http.StatusBadRequest, apierror.CodeInvalidRequest, err.Error())
+			return
+		}
+		// The assigned /32 (or /128) is load-bearing: without it the WG
+		// kernel module won't accept the peer's own source IP, which
+		// breaks every other route. Auto-add when missing so the operator
+		// can't lock themselves out by forgetting it. Mirrors the Create
+		// path's "empty → default to assigned /32" rule but applied here
+		// as "non-empty but missing → augment, not replace".
+		assignedBitsN := assignedBits(current.AssignedIP)
+		assignedPfx := netip.PrefixFrom(current.AssignedIP, assignedBitsN)
+		covered := false
+		for _, p := range ips {
+			if p.Contains(current.AssignedIP) {
+				covered = true
+				break
+			}
+		}
+		if !covered {
+			// Prepend so the operator's added networks remain visible
+			// in the order they typed them when the row round-trips.
+			ips = append([]netip.Prefix{assignedPfx}, ips...)
+		}
+		params.AllowedIPs = &ips
+	}
+	if req.ClientAllowedIPs != nil {
+		ips, perr := parsePrefixesStrict(*req.ClientAllowedIPs)
+		if perr != nil {
+			writeError(c, http.StatusBadRequest, apierror.CodeInvalidRequest,
+				"client_allowed_ips: "+perr.Error())
+			return
+		}
+		params.ClientAllowedIPs = &ips
+	}
+	if req.Endpoint != nil {
+		if inner := *req.Endpoint; inner != nil && *inner != "" {
+			if _, _, err := net.SplitHostPort(*inner); err != nil {
+				writeError(c, http.StatusBadRequest, apierror.CodeInvalidRequest,
+					"endpoint must be host:port")
+				return
+			}
+		}
+	}
+
+	out, err := h.Peers.Update(ctx, id, params)
+	if errors.Is(err, repository.ErrPeerNotFound) {
+		writeError(c, http.StatusNotFound, apierror.CodeNotFound, "peer not found")
+		return
+	}
+	if err != nil {
+		slog.ErrorContext(ctx, "update peer", "err", err)
+		writeError(c, http.StatusInternalServerError, apierror.CodeInternal, "internal error")
+		return
+	}
+
+	// Kernel re-apply: push the new AllowedIPs / endpoint /
+	// keepalive into the live device so existing handshakes pick
+	// up the change without a wg restart. ReplaceAllowedIPs=true
+	// clears the kernel's old set in one shot.
+	if h.Client != nil {
+		iface, ierr := h.Interfaces.GetByID(ctx, out.InterfaceID)
+		if ierr == nil {
+			allowed := append([]netip.Prefix(nil), out.AllowedIPs...)
+			allowed = append(allowed, netip.PrefixFrom(out.AssignedIP, assignedBits(out.AssignedIP)))
+			cfg := wg.Config{Peers: []wg.PeerConfig{{
+				PublicKey:  out.PublicKey,
+				Endpoint:   optString(out.Endpoint),
+				AllowedIPs: allowed,
+				Replace:    true,
+			}}}
+			if out.PersistentKeepalive != nil {
+				ka := time.Duration(*out.PersistentKeepalive) * time.Second
+				cfg.Peers[0].PersistentKeepAlive = &ka
+			}
+			if err := h.Client.ConfigureDevice(iface.Name, cfg); err != nil {
+				slog.WarnContext(ctx, "kernel apply peer update", "err", err, "iface", iface.Name)
+			}
+		}
+	}
+
+	c.JSON(http.StatusOK, toPeerResponse(out))
 }
 
 // RotatePSK generates a fresh 32-byte preshared key, encrypts it under the
@@ -439,14 +761,23 @@ func (h *PeerHandler) ConfigQR(c *gin.Context) {
 	c.Data(http.StatusOK, "image/png", png)
 }
 
-// renderConfig is the shared heavy lifter. It writes its own error
-// responses on failure and returns err so the caller can short-circuit.
+// renderConfig parses the peer id from the URL and delegates to
+// renderConfigFor. Used by the admin Config + ConfigQR endpoints.
 func (h *PeerHandler) renderConfig(c *gin.Context) (string, *repository.Peer, error) {
 	id, err := uuid.Parse(c.Param("id"))
 	if err != nil {
 		writeError(c, http.StatusBadRequest, apierror.CodeInvalidRequest, "invalid id")
 		return "", nil, err
 	}
+	return h.RenderConfigFor(c, id)
+}
+
+// RenderConfigFor builds the wg-quick config for a specific peer id.
+// Exported so the user self-service handler (/me/peers) can reuse
+// the renderer after performing its own ownership check. Writes its
+// own error responses and returns the error so callers can short-
+// circuit; on success the third return is nil.
+func (h *PeerHandler) RenderConfigFor(c *gin.Context, id uuid.UUID) (string, *repository.Peer, error) {
 	ctx := c.Request.Context()
 	peer, err := h.Peers.GetByID(ctx, id)
 	if errors.Is(err, repository.ErrPeerNotFound) {
@@ -473,7 +804,7 @@ func (h *PeerHandler) renderConfig(c *gin.Context) (string, *repository.Peer, er
 			writeError(c, http.StatusInternalServerError, apierror.CodeInternal, "internal error")
 			return "", nil, err
 		}
-		privB64 = wg.EncodePublicKey(raw) // base64 encoding works for either half
+		privB64 = wg.EncodeKey(raw)
 	}
 
 	// Preshared key is optional; if rotation has never run there's no row.
@@ -491,7 +822,7 @@ func (h *PeerHandler) renderConfig(c *gin.Context) (string, *repository.Peer, er
 			writeError(c, http.StatusInternalServerError, apierror.CodeInternal, "internal error")
 			return "", nil, err
 		}
-		pskB64 = wg.EncodePublicKey(raw)
+		pskB64 = wg.EncodeKey(raw)
 	}
 
 	cfg := renderWgQuickConfig(peer, iface, privB64, pskB64, h.DefaultEndpoint, h.DefaultDNS)
@@ -530,12 +861,20 @@ func renderWgQuickConfig(
 	if pskB64 != "" {
 		fmt.Fprintf(&sb, "PresharedKey = %s\n", pskB64)
 	}
-	allowed := []string{"0.0.0.0/0", "::/0"}
-	if len(p.AllowedIPs) > 0 {
-		allowed = make([]string, 0, len(p.AllowedIPs))
-		for _, a := range p.AllowedIPs {
+	// AllowedIPs in the [Peer] block is what the CLIENT routes through
+	// the tunnel — different concept than wg_peers.allowed_ips, which
+	// is the server-side filter. Operator-supplied client_allowed_ips
+	// wins; otherwise default to the interface CIDR (split-tunnel —
+	// reaches the server's network only). Operators wanting full-tunnel
+	// set client_allowed_ips=[0.0.0.0/0,::/0] explicitly.
+	var allowed []string
+	if len(p.ClientAllowedIPs) > 0 {
+		allowed = make([]string, 0, len(p.ClientAllowedIPs))
+		for _, a := range p.ClientAllowedIPs {
 			allowed = append(allowed, a.String())
 		}
+	} else {
+		allowed = []string{iface.Address.Masked().String()}
 	}
 	fmt.Fprintf(&sb, "AllowedIPs = %s\n", strings.Join(allowed, ", "))
 
@@ -548,6 +887,16 @@ func renderWgQuickConfig(
 		endpoint = defaultEndpoint
 	}
 	if endpoint != "" {
+		// WireGuard requires Endpoint to include an explicit UDP
+		// port. Operators sometimes save the location's endpoint
+		// as bare "vpn.example.com" — without a port the exported
+		// .conf produces "Endpoint = vpn.example.com" which
+		// silently fails to parse. Append the location's listen
+		// port when one is missing. SplitHostPort doubles as the
+		// validity check; if it fails, the string lacks a port.
+		if _, _, err := net.SplitHostPort(endpoint); err != nil {
+			endpoint = net.JoinHostPort(endpoint, fmt.Sprintf("%d", iface.ListenPort))
+		}
 		fmt.Fprintf(&sb, "Endpoint = %s\n", endpoint)
 	}
 	if p.PersistentKeepalive != nil && *p.PersistentKeepalive > 0 {
@@ -556,15 +905,40 @@ func renderWgQuickConfig(
 	return sb.String()
 }
 
-func parsePrefixes(in []string) []netip.Prefix {
+// rejectFullTunnelServerSide blocks 0.0.0.0/0 and ::/0 in the server-side
+// AllowedIPs list. Operationally these are footguns: the WG kernel module
+// would accept any source IP from the peer, defeating the per-peer source
+// validation that the rest of the security model relies on. The client-
+// side `client_allowed_ips` (what gets exported into the peer's .conf)
+// can still carry 0.0.0.0/0 — full-tunnel routing is a legitimate client
+// configuration, just not a legitimate server-side filter.
+func rejectFullTunnelServerSide(in []netip.Prefix) error {
+	for _, p := range in {
+		if p.Bits() == 0 {
+			return fmt.Errorf(
+				"allowed_ips: %s is not allowed server-side (use client_allowed_ips for full-tunnel client routing)",
+				p,
+			)
+		}
+	}
+	return nil
+}
+
+// parsePrefixesStrict refuses any unparseable entry. parsePrefixes was
+// silently dropping bad input, which let typos like "10.0.0/24" or
+// "10.0.0.0/240" escape into requests; the strict variant returns an
+// error so the handler can 400.
+func parsePrefixesStrict(in []string) ([]netip.Prefix, error) {
 	out := make([]netip.Prefix, 0, len(in))
 	for _, s := range in {
 		if s == "" {
 			continue
 		}
-		if p, err := netip.ParsePrefix(s); err == nil {
-			out = append(out, p)
+		p, err := netip.ParsePrefix(s)
+		if err != nil {
+			return nil, fmt.Errorf("invalid CIDR %q: %w", s, err)
 		}
+		out = append(out, p)
 	}
-	return out
+	return out, nil
 }

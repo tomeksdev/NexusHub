@@ -2,6 +2,7 @@ import { useState, type FormEvent } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 
 import { Modal } from "../components/Modal";
+import { PortField } from "../components/PortField";
 import { ApiError, api } from "../lib/api";
 import type { Rule } from "./RulesPage";
 
@@ -41,6 +42,14 @@ function protocolTakesPorts(p: string): boolean {
   return p === "tcp" || p === "udp";
 }
 
+// normalisePort converts the backend's "0 means wildcard" sentinel
+// into undefined so the PortField component can express it as Any
+// without leaking the magic number into the UI state.
+function normalisePort(v: number | undefined): number | undefined {
+  if (v == null || v === 0) return undefined;
+  return v;
+}
+
 export function RuleEditorModal({ rule, onClose }: Props) {
   const qc = useQueryClient();
   const editing = rule !== null;
@@ -54,17 +63,21 @@ export function RuleEditorModal({ rule, onClose }: Props) {
   const [protocol, setProtocol] = useState<string>(rule?.protocol ?? "any");
   const [srcCIDR, setSrcCIDR] = useState(rule?.src_cidr ?? "");
   const [dstCIDR, setDstCIDR] = useState(rule?.dst_cidr ?? "");
-  const [srcPortFrom, setSrcPortFrom] = useState(
-    rule?.src_port_from?.toString() ?? "",
+  // Ports are kept as undefined ⇒ Any (backend stores 0..0). The
+  // PortField component handles the Any/Single/Range UX; here we
+  // just hold the resulting bounds. A stored 0..0 from an existing
+  // rule is normalised to undefined for cleaner downstream logic.
+  const [srcPortFrom, setSrcPortFrom] = useState<number | undefined>(
+    normalisePort(rule?.src_port_from),
   );
-  const [srcPortTo, setSrcPortTo] = useState(
-    rule?.src_port_to?.toString() ?? "",
+  const [srcPortTo, setSrcPortTo] = useState<number | undefined>(
+    normalisePort(rule?.src_port_to),
   );
-  const [dstPortFrom, setDstPortFrom] = useState(
-    rule?.dst_port_from?.toString() ?? "",
+  const [dstPortFrom, setDstPortFrom] = useState<number | undefined>(
+    normalisePort(rule?.dst_port_from),
   );
-  const [dstPortTo, setDstPortTo] = useState(
-    rule?.dst_port_to?.toString() ?? "",
+  const [dstPortTo, setDstPortTo] = useState<number | undefined>(
+    normalisePort(rule?.dst_port_to),
   );
   const [ratePPS, setRatePPS] = useState(rule?.rate_pps?.toString() ?? "");
   const [rateBurst, setRateBurst] = useState(
@@ -85,14 +98,12 @@ export function RuleEditorModal({ rule, onClose }: Props) {
       if (srcCIDR.trim()) body.src_cidr = srcCIDR.trim();
       if (dstCIDR.trim()) body.dst_cidr = dstCIDR.trim();
       if (protocolTakesPorts(protocol)) {
-        const sf = parseInt(srcPortFrom, 10);
-        const st = parseInt(srcPortTo, 10);
-        const df = parseInt(dstPortFrom, 10);
-        const dt = parseInt(dstPortTo, 10);
-        if (!Number.isNaN(sf)) body.src_port_from = sf;
-        if (!Number.isNaN(st)) body.src_port_to = st;
-        if (!Number.isNaN(df)) body.dst_port_from = df;
-        if (!Number.isNaN(dt)) body.dst_port_to = dt;
+        // Operator-facing Any maps to the backend's 0..0 sentinel.
+        // Single (N) and Range (A..B) ship the literal numbers.
+        body.src_port_from = srcPortFrom ?? 0;
+        body.src_port_to = srcPortTo ?? 0;
+        body.dst_port_from = dstPortFrom ?? 0;
+        body.dst_port_to = dstPortTo ?? 0;
       }
       if (action === "rate_limit") {
         const pps = parseInt(ratePPS, 10);
@@ -137,7 +148,7 @@ export function RuleEditorModal({ rule, onClose }: Props) {
               onChange={(e) => setName(e.target.value)}
               required
               maxLength={128}
-              className={inputClass}
+              className="field-input"
             />
           </Field>
           <Field label="Priority (0–1000)">
@@ -147,7 +158,7 @@ export function RuleEditorModal({ rule, onClose }: Props) {
               max={1000}
               value={priority}
               onChange={(e) => setPriority(e.target.value)}
-              className={inputClass}
+              className="field-input"
             />
           </Field>
         </div>
@@ -157,7 +168,7 @@ export function RuleEditorModal({ rule, onClose }: Props) {
             type="text"
             value={description}
             onChange={(e) => setDescription(e.target.value)}
-            className={inputClass}
+            className="field-input"
           />
         </Field>
 
@@ -166,7 +177,7 @@ export function RuleEditorModal({ rule, onClose }: Props) {
             <select
               value={action}
               onChange={(e) => setAction(e.target.value)}
-              className={inputClass}
+              className="field-input"
             >
               {ACTIONS.map((a) => (
                 <option key={a} value={a}>
@@ -179,7 +190,7 @@ export function RuleEditorModal({ rule, onClose }: Props) {
             <select
               value={direction}
               onChange={(e) => setDirection(e.target.value)}
-              className={inputClass}
+              className="field-input"
             >
               {DIRECTIONS.map((d) => (
                 <option key={d} value={d}>
@@ -192,7 +203,7 @@ export function RuleEditorModal({ rule, onClose }: Props) {
             <select
               value={protocol}
               onChange={(e) => setProtocol(e.target.value)}
-              className={inputClass}
+              className="field-input"
             >
               {PROTOCOLS.map((p) => (
                 <option key={p} value={p}>
@@ -210,7 +221,7 @@ export function RuleEditorModal({ rule, onClose }: Props) {
               placeholder="10.0.0.0/24"
               value={srcCIDR}
               onChange={(e) => setSrcCIDR(e.target.value)}
-              className={inputClass}
+              className="field-input"
             />
           </Field>
           <Field label="Destination CIDR">
@@ -219,53 +230,33 @@ export function RuleEditorModal({ rule, onClose }: Props) {
               placeholder="192.168.1.0/24"
               value={dstCIDR}
               onChange={(e) => setDstCIDR(e.target.value)}
-              className={inputClass}
+              className="field-input"
             />
           </Field>
         </div>
 
         {protocolTakesPorts(protocol) && (
-          <div className="grid grid-cols-4 gap-4">
-            <Field label="Src port from">
-              <input
-                type="number"
-                min={0}
-                max={65535}
-                value={srcPortFrom}
-                onChange={(e) => setSrcPortFrom(e.target.value)}
-                className={inputClass}
-              />
-            </Field>
-            <Field label="Src port to">
-              <input
-                type="number"
-                min={0}
-                max={65535}
-                value={srcPortTo}
-                onChange={(e) => setSrcPortTo(e.target.value)}
-                className={inputClass}
-              />
-            </Field>
-            <Field label="Dst port from">
-              <input
-                type="number"
-                min={0}
-                max={65535}
-                value={dstPortFrom}
-                onChange={(e) => setDstPortFrom(e.target.value)}
-                className={inputClass}
-              />
-            </Field>
-            <Field label="Dst port to">
-              <input
-                type="number"
-                min={0}
-                max={65535}
-                value={dstPortTo}
-                onChange={(e) => setDstPortTo(e.target.value)}
-                className={inputClass}
-              />
-            </Field>
+          <div className="grid grid-cols-2 gap-4">
+            <PortField
+              label="Source port"
+              from={srcPortFrom}
+              to={srcPortTo}
+              onChange={(f, t) => {
+                setSrcPortFrom(f);
+                setSrcPortTo(t);
+              }}
+              idPrefix="src-port"
+            />
+            <PortField
+              label="Destination port"
+              from={dstPortFrom}
+              to={dstPortTo}
+              onChange={(f, t) => {
+                setDstPortFrom(f);
+                setDstPortTo(t);
+              }}
+              idPrefix="dst-port"
+            />
           </div>
         )}
 
@@ -278,7 +269,7 @@ export function RuleEditorModal({ rule, onClose }: Props) {
                 value={ratePPS}
                 onChange={(e) => setRatePPS(e.target.value)}
                 required
-                className={inputClass}
+                className="field-input"
               />
             </Field>
             <Field label="Burst (optional)">
@@ -287,40 +278,34 @@ export function RuleEditorModal({ rule, onClose }: Props) {
                 min={0}
                 value={rateBurst}
                 onChange={(e) => setRateBurst(e.target.value)}
-                className={inputClass}
+                className="field-input"
               />
             </Field>
           </div>
         )}
 
-        <label className="flex items-center gap-2 text-sm text-slate-300">
+        <label className="flex items-center gap-2 text-sm text-muted">
           <input
             type="checkbox"
             checked={isActive}
             onChange={(e) => setIsActive(e.target.checked)}
-            className="rounded border-slate-700 bg-slate-800"
+            className="accent-[var(--color-accent)]"
           />
           Active
         </label>
 
         {mut.isError && (
-          <p className="text-rose-400 text-sm">
-            {(mut.error as Error).message}
-          </p>
+          <p className="text-danger text-sm">{(mut.error as Error).message}</p>
         )}
 
         <div className="flex justify-end gap-2 pt-2">
-          <button
-            type="button"
-            onClick={onClose}
-            className="px-4 py-2 rounded-md text-sm text-slate-300 hover:bg-slate-800 focus-visible:outline-2 focus-visible:outline-indigo-500 focus-visible:outline-offset-2"
-          >
+          <button type="button" onClick={onClose} className="btn-ghost">
             Cancel
           </button>
           <button
             type="submit"
             disabled={mut.isPending || !name.trim()}
-            className="px-4 py-2 rounded-md text-sm bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 focus-visible:outline-2 focus-visible:outline-indigo-400 focus-visible:outline-offset-2"
+            className="btn-primary"
           >
             {mut.isPending ? "Saving…" : editing ? "Save" : "Create"}
           </button>
@@ -329,9 +314,6 @@ export function RuleEditorModal({ rule, onClose }: Props) {
     </Modal>
   );
 }
-
-const inputClass =
-  "w-full px-3 py-1.5 rounded-md bg-slate-950 border border-slate-800 text-sm text-slate-100 focus-visible:outline-2 focus-visible:outline-indigo-500 focus-visible:outline-offset-1 focus:border-indigo-500";
 
 function Field({
   label,
@@ -343,10 +325,10 @@ function Field({
   children: React.ReactNode;
 }) {
   return (
-    <label className="block text-xs text-slate-400 space-y-1">
-      <span>
+    <label className="field-label">
+      <span className="field-label-text">
         {label}
-        {required && <span className="text-rose-400"> *</span>}
+        {required && <span className="text-danger"> *</span>}
       </span>
       {children}
     </label>

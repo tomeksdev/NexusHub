@@ -24,7 +24,12 @@ type InterfaceSpec struct {
 	Name       string
 	PrivateKey []byte
 	ListenPort int
-	Peers      []PeerSpec
+	// Address is the link-side CIDR (e.g. 10.7.0.1/24). Empty when the
+	// reconciler is invoked from a path that doesn't know the address;
+	// in that case Links.EnsureAddress is skipped and an operator is
+	// expected to have set it out of band.
+	Address netip.Prefix
+	Peers   []PeerSpec
 }
 
 // Reconciler brings the live kernel state in line with the DB-side truth.
@@ -37,6 +42,11 @@ type InterfaceSpec struct {
 // netlink error on a single peer doesn't wipe the whole device.
 type Reconciler struct {
 	Client Client
+	// Links is the rtnetlink side. Optional — when nil, the reconciler
+	// assumes the operator manages link lifecycle out of band and only
+	// drives wgctrl. When set, every interface is ensure-link / ensure-
+	// address / ensure-up'd before ConfigureDevice runs.
+	Links  LinkManager
 	Logger *slog.Logger
 }
 
@@ -69,13 +79,34 @@ func (r *Reconciler) Reconcile(ctx context.Context, specs []InterfaceSpec) []Rec
 func (r *Reconciler) reconcileOne(ctx context.Context, spec InterfaceSpec, log *slog.Logger) ReconcileResult {
 	res := ReconcileResult{Interface: spec.Name}
 
+	// rtnetlink path first — wgctrl can't create the link itself. When
+	// Links is nil we fall through and assume the link exists; the
+	// follow-up Device() call will surface the truth either way.
+	if r.Links != nil {
+		if err := r.Links.EnsureLink(spec.Name); err != nil {
+			log.Warn("reconcile: ensure link", "interface", spec.Name, "err", err)
+			res.Errors = append(res.Errors, err)
+		}
+		if spec.Address.IsValid() {
+			if err := r.Links.EnsureAddress(spec.Name, spec.Address); err != nil {
+				log.Warn("reconcile: ensure address", "interface", spec.Name, "err", err)
+				res.Errors = append(res.Errors, err)
+			}
+		}
+		if err := r.Links.EnsureUp(spec.Name); err != nil {
+			log.Warn("reconcile: link up", "interface", spec.Name, "err", err)
+			res.Errors = append(res.Errors, err)
+		}
+	}
+
 	live, err := r.Client.Device(spec.Name)
 	if err != nil {
-		// Device doesn't exist in kernel yet — ConfigureDevice on most
-		// netlink backends will create it implicitly when we push the
-		// private key and listen port below. We treat every DB peer as
-		// "added" in that case.
-		log.Info("reconcile: device not live, will create via ConfigureDevice",
+		// Device still not visible after the rtnetlink pass — log and
+		// fall through with a synthetic empty device so the diff below
+		// treats every DB peer as "added". ConfigureDevice will then
+		// either succeed (link came up between the two calls) or fail
+		// loudly.
+		log.Info("reconcile: device not live, treating as fresh",
 			"interface", spec.Name, "err", err)
 		live = &Device{Name: spec.Name}
 	}
