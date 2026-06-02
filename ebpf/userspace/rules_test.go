@@ -140,7 +140,7 @@ func TestRulesLoaderSetAndReadCountV4(t *testing.T) {
 	}
 	defer l.Close()
 
-	// Uninitialised: array index 0 reads as zero per BPF semantics.
+	// Uninitialized: array index 0 reads as zero per BPF semantics.
 	c, err := l.RuleCountV4()
 	if err != nil {
 		t.Fatalf("read count: %v", err)
