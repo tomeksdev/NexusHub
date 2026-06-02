@@ -117,7 +117,10 @@ func serveIndex(w http.ResponseWriter, r *http.Request, root fs.FS) {
 			http.StatusServiceUnavailable)
 		return
 	}
-	defer f.Close()
+	// Close returns its own error but we've already started writing
+	// the response body — there's nothing useful to do with it. The
+	// discard makes the lint check happy without changing behaviour.
+	defer func() { _ = f.Close() }()
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(http.StatusOK)
