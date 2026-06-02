@@ -16,6 +16,7 @@ import (
 	"github.com/tomeksdev/NexusHub/backend/internal/middleware"
 	"github.com/tomeksdev/NexusHub/backend/internal/openapi"
 	"github.com/tomeksdev/NexusHub/backend/internal/repository"
+	"github.com/tomeksdev/NexusHub/backend/internal/uifs"
 	"github.com/tomeksdev/NexusHub/backend/internal/wg"
 )
 
@@ -270,6 +271,16 @@ func NewRouter(deps Deps) *gin.Engine {
 		admin.POST("/system-rules/enable-all", ruleH.EnableAllSystemRules)
 		admin.POST("/system-rules/disable-all", ruleH.DisableAllSystemRules)
 	}
+
+	// Embedded SPA fallback. NoRoute fires for any path that didn't
+	// match a registered handler above — which by design includes
+	// `/`, `/login`, `/peers/abc`, and anything else the React Router
+	// owns on the client. uifs.Handler() does its own real-file vs
+	// SPA-fallback disambiguation (assets get a real 404, page
+	// routes get index.html). When the embedded bundle is empty
+	// (developer-mode build), uifs returns a 503 with a clear
+	// "build the frontend first" message instead of a generic 404.
+	r.NoRoute(gin.WrapH(uifs.Handler()))
 
 	return r
 }
