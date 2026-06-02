@@ -8,6 +8,142 @@ them are expected; the public API contract freezes at `v2.0.0`.
 
 ## [Unreleased]
 
+### Added
+
+- **`backend/internal/uifs` — embedded SPA bundle.** `//go:embed
+  all:dist` pulls the built React frontend into the API binary so a
+  single `nexushub-api` ships the whole control plane. Handler
+  serves real files with hash-asset cache control
+  (`max-age=31536000, immutable` for `/assets/*`, `no-store` for
+  the entry doc), falls back to `index.html` for any unknown path
+  (SPA routing), and returns a clear plain-text 503 if the bundle
+  is missing instead of a generic 404. `IsEmpty()` exposed so
+  diagnostics can tell "API up, UI missing" apart from "service
+  down".
+- **`Capabilities.PermissionDenied`** in `ebpf/userspace`. `Probe()`
+  scans `ProbeErrs` for `syscall.EPERM`/`syscall.EACCES` (wrapped or
+  raw) and flips the new bool. `MissingRequired()` then leads with
+  `eBPF probe lacks permission (EPERM/EACCES) — container/process
+  needs CAP_BPF (+ CAP_NET_ADMIN)` instead of the misleading
+  "required kernel features missing" line, so Docker operators stop
+  chasing kernel upgrades when the actual fix is `cap_add: BPF`.
+  `Summary()` appends `(permission_denied=yes — probes blocked by
+  capability/seccomp)` for the startup log line.
+
+### Changed
+
+- **`scripts/install.sh` prompts read from `/dev/tty`.** The
+  documented one-liner (`curl ... | sudo bash`) sets stdin to the
+  script stream, so the previous `-t 0` check went non-interactive
+  and exited with `missing env var: NEXUSHUB_WG_ENDPOINT_HOST` even
+  when there was a real operator at the terminal. Detection now
+  uses `/dev/tty` readable/writable; non-interactive path
+  (cloud-init, container build) still works through env vars.
+- **Stable runtime directory at `/opt/nexushub`** (overridable via
+  `$NEXUSHUB_RUNTIME_DIR`). Installer extracts the archive's
+  `migrations/`, `env.example`, `LICENSE`, `README.md` there with
+  `root:nexushub` ownership and `g+rX`; `nexushub-migrate up` and
+  `nexushub-seed` run with that as their CWD. Replaces the
+  preview.2 behaviour of running migrate from the operator's shell
+  pwd, which the `nexushub` system user couldn't read.
+- **Installer prepares bpffs + pin directory** before `systemctl
+  start`. Mounts bpffs if not mounted, creates
+  `/sys/fs/bpf/nexushub` with `nexushub:nexushub` ownership and
+  mode `0700`. Closes the `could not create bpf pin dir —
+  disabling map pinning` warning operators saw in the journal.
+- **Installer health probe also checks `/`** after `/api/v1/health`.
+  Non-fatal (operator might be running an API-only build), but a
+  404 here prints the API-only summary block instead of a
+  misleading "open the dashboard at http://..." message.
+- **Docker tag matrix.** `docker-publish.yml` now publishes both
+  `ghcr.io/tomeksdev/nexushub:2.0.0-preview.3` (conventional Docker
+  form) and `ghcr.io/tomeksdev/nexushub:v2.0.0-preview.3` (matches
+  the bare-metal `NEXUSHUB_VERSION`). `latest` + `{{major}}` +
+  `{{major}}.{{minor}}` gated off pre-release tags via
+  `enable=${{ !contains(github.ref, '-') }}` so a preview push
+  doesn't accidentally repoint `:latest`.
+- **Docker compose ships migrate + seed.** Both
+  `docker/docker-compose.yml` and `docker/docker-compose.prod.yml`
+  now include the one-shot migration + seed services with explicit
+  `entrypoint: ["/app/nexushub-migrate"]` / `["/app/nexushub-seed"]`
+  so `command:` lands on the right binary. The image's default
+  `ENTRYPOINT` is the API, which previously caused migrate
+  containers to start the API and bail with
+  `load config: required key JWT_SECRET missing value`. The app
+  service waits via `depends_on: condition:
+  service_completed_successfully` so `docker compose up -d` finishes
+  in the right order without manual restart.
+- **Dockerfile builds frontend before the Go build.** Stage order
+  reordered: `node-builder` runs first, then `go-builder` does
+  `COPY --from=node-builder /build/dist/ ./backend/internal/uifs/dist/`
+  before the `go build ./cmd/api/` lines. The `//go:embed`
+  directive picks up the real bundle inside the Docker image — `/`
+  now serves the dashboard instead of `404 page not found`. The
+  runtime stage keeps the `/app/frontend/dist` copy so
+  `docker-compose.prod.yml`'s Caddy + named-volume topology still
+  works for operators who prefer a real web server in front of the
+  API.
+- **systemd unit cleanup.** `StartLimitBurst` +
+  `StartLimitIntervalSec` moved from `[Service]` (where systemd
+  rejects them with `Unknown key name`) to `[Unit]` where they
+  belong. Inline `# comment` on `PrivateDevices=no` moved to its
+  own line — systemd was parsing the whole tail as the boolean
+  value and warning `Failed to parse boolean value, ignoring: no
+  [...]`.
+
+### Fixed
+
+- **Bare-metal installer wizard runtime fixes (#79).** Closes the
+  six install-flow blockers reported against `v2.0.0-preview.2`
+  bare-metal testing: TTY prompts (#79 P0-1), runtime directory for
+  migrations (#79 P0-2), embedded frontend (#79 P0-3), systemd unit
+  parse warnings (#79 P1-4 + P1-5), bpffs preparation (#79 P1-7),
+  and UI health probe (#79 P1-9).
+- **Docker install-flow fixes (#81).** Closes the four blockers
+  reported against `v2.0.0-preview.2` Docker testing: GHCR tag
+  shape (#81 D1), compose entrypoint (#81 D2), embedded frontend
+  in the image (#81 D4), and misleading eBPF probe summary in
+  permission-denied environments (#81 D5).
+
+### Known limitations
+
+- **eBPF verifier rejects `xdp_rules` with `R7 pointer -= pointer
+  prohibited`** on the operator's target kernel. The API starts
+  with eBPF degraded; WireGuard control still works, rules don't
+  enforce. Tracked separately; needs C-side debugging and a
+  verifier-safe pointer expression rewrite in
+  `ebpf/src/rules.c`. Not a `-preview.3` blocker.
+- **Release-pipeline smoke test** for the published artifact (asset
+  presence, frontend embedded, systemd unit parses) — would have
+  caught the preview.2 gaps before publish. Deferred.
+
+### Operator notes
+
+Operators on `v2.0.0-preview.2` re-run the one-liner once
+`v2.0.0-preview.3` is tagged:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/tomeksdev/NexusHub/main/scripts/install.sh \
+  | sudo NEXUSHUB_VERSION=v2.0.0-preview.3 bash
+```
+
+The wizard preserves an existing `/etc/nexushub/env` by default,
+so this is a binary + frontend upgrade with the same secrets. Pass
+`NEXUSHUB_REGENERATE_ENV=1` to rotate generated secrets (requires
+re-seeding peer private keys — only do this if you have to).
+
+Docker users on the older `:2.0.0-preview.2` image either upgrade
+the `NEXUSHUB_TAG` env var to `v2.0.0-preview.3` (or
+`2.0.0-preview.3`), or pull `:latest` once that tag points at a
+stable release. The compose files in `docker/` have been rewritten
+to include migrate + seed; copy the new versions into your local
+checkout if you maintain a custom compose alongside.
+
+## [v2.0.0-preview.2] — 2026-06-02
+
+Closes the install-flow gap that prevented `v2.0.0-preview.1`
+operators from getting past the binary-download step.
+
 ### Fixed
 
 - **Bare-metal installer publishes the asset it downloads (#79).**
@@ -219,5 +355,6 @@ land along with the binary update:
 
 DB rows otherwise survive intact.
 
-[Unreleased]: https://github.com/tomeksdev/NexusHub/compare/v2.0.0-preview.1...HEAD
+[Unreleased]: https://github.com/tomeksdev/NexusHub/compare/v2.0.0-preview.2...HEAD
+[v2.0.0-preview.2]: https://github.com/tomeksdev/NexusHub/releases/tag/v2.0.0-preview.2
 [v2.0.0-preview.1]: https://github.com/tomeksdev/NexusHub/releases/tag/v2.0.0-preview.1
