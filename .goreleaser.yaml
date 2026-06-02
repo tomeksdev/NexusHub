@@ -1,14 +1,20 @@
-# GoReleaser config for the `nexushub` CLI.
+# GoReleaser config for NexusHub.
+#
+# Builds two parallel archive sets:
+#
+#   nexushub_<ver>_<os>_<arch>.tar.gz         — the `nexushub` CLI
+#   nexushub-api_<ver>_linux_<arch>.tar.gz    — the API server stack
+#                                               (api + migrate + seed)
+#
+# The bare-metal installer (scripts/install.sh) downloads the
+# nexushub-api archive on every install. The CLI archive is for
+# operators who want to manage NexusHub from their workstation.
 #
 # Run locally (no release):
 #   goreleaser build --single-target --snapshot --clean
 #
-# Release on tag push (handled by the release GitHub Actions workflow):
+# Release on tag push (handled by .github/workflows/release-cli.yml):
 #   git tag v2.0.0 && git push --tags
-#
-# The backend API + frontend ship as container images via the
-# docker-publish workflow; this config is CLI-only so operators
-# downloading a binary can manage a deployment without Docker.
 
 version: 2
 
@@ -19,15 +25,15 @@ before:
     # goreleaser runs hooks via exec — no shell, so `cd ... &&` doesn't
     # work. -C runs go in the named directory.
     - go -C cli mod tidy
+    - go -C backend mod tidy
+    - go -C ebpf mod tidy
 
 builds:
-  - id: nexushub
+  # CLI binary — operator-side management tool.
+  - id: nexushub-cli
     main: .
     dir: cli
     binary: nexushub
-    # CGO disabled for portable static binaries; GOTOOLCHAIN=auto lets
-    # Go fetch the toolchain matching cli/go.mod's `go` directive on
-    # release runners that don't have it pre-installed.
     env:
       - CGO_ENABLED=0
       - GOTOOLCHAIN=auto
@@ -42,8 +48,70 @@ builds:
       - -X main.buildVersion={{ .Version }}
       - -X main.buildCommit={{ .ShortCommit }}
 
+  # API server — Linux-only. The installer drops this at
+  # /usr/local/bin/nexushub-api; the systemd unit invokes it.
+  - id: nexushub-api
+    main: ./cmd/api
+    dir: backend
+    binary: nexushub-api
+    env:
+      - CGO_ENABLED=0
+      - GOTOOLCHAIN=auto
+    goos:
+      - linux
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w
+      - -X main.buildVersion={{ .Version }}
+      - -X main.buildCommit={{ .ShortCommit }}
+
+  # Migration runner — Linux-only, ships in the same archive as the
+  # API so the installer can `nexushub-migrate up` without a second
+  # download.
+  - id: nexushub-migrate
+    main: ./cmd/migrate
+    dir: backend
+    binary: nexushub-migrate
+    env:
+      - CGO_ENABLED=0
+      - GOTOOLCHAIN=auto
+    goos:
+      - linux
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w
+      - -X main.buildVersion={{ .Version }}
+      - -X main.buildCommit={{ .ShortCommit }}
+
+  # First-admin seeder — Linux-only. Same archive as the API; ran
+  # once at install time, harmless to keep installed for re-seed
+  # scenarios.
+  - id: nexushub-seed
+    main: ./cmd/seed
+    dir: backend
+    binary: nexushub-seed
+    env:
+      - CGO_ENABLED=0
+      - GOTOOLCHAIN=auto
+    goos:
+      - linux
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w
+      - -X main.buildVersion={{ .Version }}
+      - -X main.buildCommit={{ .ShortCommit }}
+
 archives:
-  - id: nexushub
+  # CLI archive — multi-OS (linux + darwin), one binary per archive.
+  - id: nexushub-cli-archive
+    ids:
+      - nexushub-cli
     formats: [tar.gz]
     name_template: >-
       {{ .ProjectName }}_
@@ -55,6 +123,33 @@ archives:
       - README.md
       - src: docs/deployment/README.md
         dst: DEPLOYMENT.md
+
+  # API server archive — Linux-only, three binaries in one tarball.
+  # The installer extracts all three and drops them into
+  # /usr/local/bin/. Migrations + seed don't ship as Docker
+  # entrypoints either — they're one-shots invoked from install.sh.
+  - id: nexushub-api-archive
+    ids:
+      - nexushub-api
+      - nexushub-migrate
+      - nexushub-seed
+    formats: [tar.gz]
+    name_template: >-
+      nexushub-api_
+      {{- .Version }}_
+      {{- .Os }}_
+      {{- .Arch }}
+    files:
+      - LICENSE
+      - README.md
+      - src: deploy/systemd/nexushub-api.service
+        dst: nexushub-api.service
+      - src: deploy/systemd/env.example
+        dst: env.example
+      - src: migrations/*.up.sql
+        dst: migrations/
+      - src: migrations/*.down.sql
+        dst: migrations/
 
 checksum:
   name_template: "{{ .ProjectName }}_{{ .Version }}_checksums.txt"
@@ -70,7 +165,9 @@ changelog:
 # mirror the repo metadata. Conflicts intentionally omitted — operators
 # running v1 and v2 side-by-side is out of scope; they pick one.
 nfpms:
-  - id: nexushub
+  - id: nexushub-cli-pkg
+    ids:
+      - nexushub-cli
     package_name: nexushub
     vendor: tomeksdev
     homepage: https://github.com/tomeksdev/NexusHub
