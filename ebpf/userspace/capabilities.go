@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"syscall"
 
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/asm"
@@ -45,6 +46,14 @@ type Capabilities struct {
 	// "not supported" — typically EPERM when the process lacks CAP_BPF
 	// or CAP_SYS_ADMIN.
 	ProbeErrs []error
+
+	// PermissionDenied flips to true when at least one probe returned
+	// EPERM. In Docker containers this is the common case (no
+	// CAP_BPF / no `--privileged` / restrictive seccomp) and the
+	// operator-facing diagnostic should say "permission denied"
+	// rather than "kernel features missing" — the kernel might be
+	// perfectly capable.
+	PermissionDenied bool
 }
 
 // Probe tests the running kernel for every feature the loader
@@ -55,16 +64,46 @@ func Probe() Capabilities {
 	c.HasRingbuf, c.ProbeErrs = runProbe("ringbuf", mapProbe(ebpf.RingBuf), c.ProbeErrs)
 	c.HasPerCPUHash, c.ProbeErrs = runProbe("percpu_hash", mapProbe(ebpf.PerCPUHash), c.ProbeErrs)
 	c.HasBPFLoop, c.ProbeErrs = runProbe("bpf_loop", bpfLoopProbe, c.ProbeErrs)
+	for _, e := range c.ProbeErrs {
+		if isPermissionDenied(e) {
+			c.PermissionDenied = true
+			break
+		}
+	}
 	return c
+}
+
+// isPermissionDenied reports whether the wrapped error tree contains
+// syscall.EPERM or syscall.EACCES — the two errno values the kernel
+// returns when bpf() syscalls are blocked by capability/seccomp/LSM.
+// Used to tell "kernel can't do this" apart from "this process isn't
+// allowed to ask the kernel".
+func isPermissionDenied(err error) bool {
+	if err == nil {
+		return false
+	}
+	return errors.Is(err, syscall.EPERM) || errors.Is(err, syscall.EACCES)
 }
 
 // MissingRequired returns a descriptive error listing every feature
 // whose absence prevents the loader from starting, or nil when every
-// required feature is present.
+// required feature is present. When any probe came back EPERM/EACCES
+// we lead with a permission-denied phrasing instead of "kernel
+// features missing" — the host kernel might be perfectly capable
+// and the operator just needs to add CAP_BPF (Docker `--cap-add
+// BPF`, Helm `dataPlane.enabled=true`, systemd unit's existing
+// AmbientCapabilities). Without that hint operators chase a non-
+// existent kernel version mismatch.
 func (c Capabilities) MissingRequired() error {
 	missing := c.missingList()
 	if len(missing) == 0 {
 		return nil
+	}
+	if c.PermissionDenied {
+		return fmt.Errorf(
+			"eBPF probe lacks permission (EPERM/EACCES) — container/process needs CAP_BPF (+ CAP_NET_ADMIN). Features reported unavailable: %s",
+			strings.Join(missing, ", "),
+		)
 	}
 	return fmt.Errorf("required kernel features missing: %s", strings.Join(missing, ", "))
 }
@@ -90,6 +129,10 @@ func (c Capabilities) missingList() []string {
 }
 
 // Summary returns a single-line human-readable string for startup logs.
+// PermissionDenied=true gets called out at the end so operators
+// scanning the log line don't have to guess from the "missing"
+// markers whether the host kernel or the container ACL is the
+// constraint.
 func (c Capabilities) Summary() string {
 	parts := []string{
 		feat("kernel_btf", c.HasKernelBTF),
@@ -97,7 +140,11 @@ func (c Capabilities) Summary() string {
 		feat("percpu_hash", c.HasPerCPUHash),
 		feat("bpf_loop", c.HasBPFLoop),
 	}
-	return strings.Join(parts, " ")
+	out := strings.Join(parts, " ")
+	if c.PermissionDenied {
+		out += " (permission_denied=yes — probes blocked by capability/seccomp)"
+	}
+	return out
 }
 
 func feat(name string, ok bool) string {

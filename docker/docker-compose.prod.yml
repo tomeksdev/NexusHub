@@ -8,6 +8,42 @@
 # Backup:  scripts/backup.sh
 
 services:
+  # One-shot migration. The image's default entrypoint is the API
+  # binary, so we override entrypoint here. Compose holds the api
+  # service back via depends_on / service_completed_successfully
+  # until migrate exits 0.
+  migrate:
+    image: ghcr.io/tomeksdev/nexushub:${NEXUSHUB_TAG:-latest}
+    working_dir: /app
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgres://nexushub:${POSTGRES_PASSWORD}@postgres:5432/nexushub?sslmode=disable
+    entrypoint: ["/app/nexushub-migrate"]
+    command: ["up"]
+    restart: "no"
+
+  # First-admin seed. Idempotent; the admin password lives in
+  # this service's env only, never on disk.
+  seed:
+    image: ghcr.io/tomeksdev/nexushub:${NEXUSHUB_TAG:-latest}
+    working_dir: /app
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    environment:
+      DATABASE_URL: postgres://nexushub:${POSTGRES_PASSWORD}@postgres:5432/nexushub?sslmode=disable
+      NEXUSHUB_ADMIN_EMAIL: ${NEXUSHUB_ADMIN_EMAIL}
+      NEXUSHUB_ADMIN_USERNAME: ${NEXUSHUB_ADMIN_USERNAME}
+      NEXUSHUB_ADMIN_PASSWORD: ${NEXUSHUB_ADMIN_PASSWORD}
+      NEXUSHUB_SEED_WG: "0"
+    entrypoint: ["/app/nexushub-seed"]
+    command: []
+    restart: "no"
+
   api:
     image: ghcr.io/tomeksdev/nexushub:${NEXUSHUB_TAG:-latest}
     environment:
@@ -20,6 +56,10 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+      seed:
+        condition: service_completed_successfully
     # NET_ADMIN for wgctrl; CAP_BPF for eBPF map ops. Everything
     # else dropped — matches the systemd unit's capability set.
     cap_add:

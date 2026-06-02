@@ -1,4 +1,18 @@
-# Stage 1: Build Go backend
+# Stage 1: Build frontend
+#
+# Runs first because the Go build embeds the SPA bundle via
+# //go:embed (see backend/internal/uifs/). Without this stage's
+# output copied into backend/internal/uifs/dist/ before `go build`,
+# the embedded FS is empty and `/` serves a 503 instead of the
+# dashboard.
+FROM node:26-bookworm-slim AS node-builder
+WORKDIR /build
+COPY frontend/package*.json ./
+RUN npm ci
+COPY frontend/ ./
+RUN npm run build
+
+# Stage 2: Build Go backend
 FROM golang:1.26-bookworm AS go-builder
 WORKDIR /build
 # backend/go.mod has `replace github.com/tomeksdev/NexusHub/ebpf => ../ebpf`,
@@ -9,6 +23,12 @@ COPY ebpf/go.mod ebpf/go.sum ./ebpf/
 RUN cd backend && go mod download
 COPY backend/ ./backend/
 COPY ebpf/ ./ebpf/
+# Drop the freshly-built SPA into backend/internal/uifs/dist/ so the
+# //go:embed directive in the next step pulls real bytes into the
+# binary. Without this the embed prefix only sees the .gitkeep
+# marker and the runtime image serves the "frontend bundle not
+# included" degraded page at /.
+COPY --from=node-builder /build/dist/ ./backend/internal/uifs/dist/
 # Three binaries ship in the runtime image:
 #   /nexushub       — the API server (default entrypoint)
 #   /nexushub-migrate — the migration runner (Helm pre-install hook)
@@ -19,20 +39,12 @@ RUN CGO_ENABLED=0 go build -ldflags="-s -w" -o /nexushub         ./cmd/api/ \
  && CGO_ENABLED=0 go build -ldflags="-s -w" -o /nexushub-migrate ./cmd/migrate/ \
  && CGO_ENABLED=0 go build -ldflags="-s -w" -o /nexushub-seed    ./cmd/seed/
 
-# Stage 2: Build frontend
-FROM node:26-bookworm-slim AS node-builder
-WORKDIR /build
-COPY frontend/package*.json ./
-RUN npm ci
-COPY frontend/ ./
-RUN npm run build
-
 # Stage 3: Runtime
 #
 # distroless/static-debian12:nonroot ships with: ca-certificates, /etc/passwd
 # entries for the `nonroot` user (uid 65532), tzdata, and nothing else.
 # No shell, no package manager, no curl/wget/wg/ip/iptables. The Go
-# binaries are CGO_ENABLED=0 in stage 1 so they don't need libc.
+# binaries are CGO_ENABLED=0 in stage 2 so they don't need libc.
 #
 # Cuts the bookworm-slim CVE surface (libssh2, libcurl, gnutls, krb5,
 # etc. — ~220 CVE alerts on the previous base) down to whatever the
@@ -48,6 +60,11 @@ WORKDIR /app
 COPY --from=go-builder /nexushub         ./nexushub
 COPY --from=go-builder /nexushub-migrate ./nexushub-migrate
 COPY --from=go-builder /nexushub-seed    ./nexushub-seed
+# Also copy the raw dist/ for compose's prod stack — Caddy mounts
+# /app/frontend/dist over a named volume and serves the SPA itself
+# in the "API + Caddy" topology. The single-container topology
+# (docker-compose.yml + the bare-metal install) ignores this copy
+# and uses the embedded bundle inside the API binary instead.
 COPY --from=node-builder /build/dist ./frontend/dist
 COPY migrations/ ./migrations/
 EXPOSE 8080
