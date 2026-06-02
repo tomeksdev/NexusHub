@@ -2,7 +2,9 @@ package userspace
 
 import (
 	"errors"
+	"fmt"
 	"strings"
+	"syscall"
 	"testing"
 
 	"github.com/cilium/ebpf"
@@ -91,6 +93,52 @@ func TestCapabilitiesSummary(t *testing.T) {
 		if !strings.Contains(got, w) {
 			t.Fatalf("summary %q missing %q", got, w)
 		}
+	}
+	if strings.Contains(got, "permission_denied") {
+		t.Fatalf("summary should not mention permission_denied when no probe was EPERM: %q", got)
+	}
+}
+
+// When ProbeErrs carries an EPERM-classified failure the summary
+// and the MissingRequired error message both call it out. Docker
+// operators chase the wrong fix (kernel upgrade) without that hint.
+func TestCapabilitiesPermissionDeniedSurfacing(t *testing.T) {
+	c := Capabilities{
+		HasKernelBTF:     true,
+		PermissionDenied: true,
+	}
+	sum := c.Summary()
+	if !strings.Contains(sum, "permission_denied=yes") {
+		t.Errorf("summary missing permission_denied marker: %q", sum)
+	}
+	err := c.MissingRequired()
+	if err == nil {
+		t.Fatal("MissingRequired should return non-nil when nothing supported")
+	}
+	if !strings.Contains(err.Error(), "permission") {
+		t.Errorf("MissingRequired should lead with permission message: %q", err)
+	}
+}
+
+func TestIsPermissionDenied(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"nil", nil, false},
+		{"random", errors.New("boom"), false},
+		{"raw EPERM", syscall.EPERM, true},
+		{"wrapped EPERM", fmt.Errorf("probe: %w", syscall.EPERM), true},
+		{"raw EACCES", syscall.EACCES, true},
+		{"wrapped EACCES", fmt.Errorf("probe: %w", syscall.EACCES), true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := isPermissionDenied(tc.err); got != tc.want {
+				t.Errorf("got %v want %v", got, tc.want)
+			}
+		})
 	}
 }
 

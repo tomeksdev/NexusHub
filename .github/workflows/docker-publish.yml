@@ -37,11 +37,24 @@ jobs:
         uses: docker/metadata-action@v6
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          # Tag matrix:
+          # - `2.0.0-preview.X` — `{{version}}` strips the leading `v`,
+          #   conventional Docker form.
+          # - `v2.0.0-preview.X` — `{{raw}}` keeps the leading `v` so
+          #   `NEXUSHUB_VERSION=v2.0.0-preview.X` matches both the
+          #   bare-metal installer's tag and the Docker image without
+          #   the operator remembering which form to use.
+          # - `{{major}}.{{minor}}` + `{{major}}` only emit for clean
+          #   semver tags; the `enable=` line below disables them for
+          #   pre-releases so we don't accidentally publish
+          #   `2.0` from `v2.0.0-preview.3`.
+          # - `latest` is also gated off pre-releases.
           tags: |
             type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=semver,pattern={{major}}
-            type=raw,value=latest
+            type=semver,pattern={{raw}}
+            type=semver,pattern={{major}}.{{minor}},enable=${{ !contains(github.ref, '-') }}
+            type=semver,pattern={{major}},enable=${{ !contains(github.ref, '-') }}
+            type=raw,value=latest,enable=${{ !contains(github.ref, '-') }}
 
       - name: Build & push (multi-arch)
         uses: docker/build-push-action@v7

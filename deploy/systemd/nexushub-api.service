@@ -11,6 +11,12 @@ Wants=network-online.target
 # api process handles the absence gracefully but we nudge the module
 # in at unit start via ExecStartPre below.
 Requires=network-online.target
+# StartLimit* belong in [Unit] (not [Service]) on every supported
+# systemd version. Three failed starts in 60s flip the unit to
+# `failed` instead of looping silently — genuine misconfigs become
+# operator-visible.
+StartLimitBurst=3
+StartLimitIntervalSec=60s
 
 [Service]
 Type=simple
@@ -45,18 +51,19 @@ NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=yes
 PrivateTmp=yes
-PrivateDevices=no          # needs /dev/net/tun for wg, and bpf()
+# Needs /dev/net/tun for wg + bpf() syscalls. Inline comments on
+# the same line break systemd's boolean parser on older releases,
+# so the explanation stays on its own line above.
+PrivateDevices=no
 ReadWritePaths=/var/lib/nexushub /var/log/nexushub
 ReadOnlyPaths=/etc/nexushub
 
 # Restart policy — crash-only service. Restart on any non-zero
-# exit, delay long enough to not storm logs, cap at 3 attempts
-# per minute so genuine misconfigs surface as failed units rather
-# than looping silently.
+# exit, delay long enough to not storm logs. The StartLimit*
+# directives live in [Unit] above (they're not accepted under
+# [Service] on the target systemd).
 Restart=on-failure
 RestartSec=5s
-StartLimitBurst=3
-StartLimitIntervalSec=60s
 
 # Graceful shutdown: 15s matches the backend's own Shutdown timeout.
 # Systemd sends SIGTERM, waits, then SIGKILL if we haven't exited.

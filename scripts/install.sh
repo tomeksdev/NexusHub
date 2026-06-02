@@ -3,21 +3,20 @@
 #
 # Installs the API server (nexushub-api), the migration runner
 # (nexushub-migrate), the first-admin seeder (nexushub-seed),
-# their systemd unit, postgresql + wireguard-tools, then runs
-# the migrations, seeds the first admin, and starts the service.
+# their systemd unit, postgresql + wireguard-tools, then runs the
+# migrations, seeds the first admin, and starts the service.
 #
 # One-liner bootstrap (replace the tag with the release you want):
 #   curl -fsSL https://raw.githubusercontent.com/tomeksdev/NexusHub/main/scripts/install.sh \
-#     | sudo NEXUSHUB_VERSION=v2.0.0-preview.2 bash
+#     | sudo NEXUSHUB_VERSION=v2.0.0-preview.3 bash
 #
-# Interactive mode (TTY attached) prompts for the values the script
-# can't infer; non-interactive mode (piped stdin in CI / cloud-init)
-# reads everything from env vars and exits non-zero with a clear
-# message if any are missing.
+# Interactive mode (operator at a real terminal) prompts via
+# /dev/tty so the curl-pipe pattern above still works. Non-
+# interactive runs (no /dev/tty) read every value from env vars
+# and exit non-zero with a clear missing-var error.
 #
-# The script is idempotent — re-running it upgrades the binaries
-# and refreshes the unit. By default it never overwrites
-# /etc/nexushub/env or touches the Postgres database; pass
+# Idempotent: re-running upgrades binaries + refreshes the unit
+# without touching /etc/nexushub/env or the database. Pass
 # NEXUSHUB_REGENERATE_ENV=1 to force a fresh env write.
 
 set -euo pipefail
@@ -30,6 +29,11 @@ NEXUSHUB_STATE_DIR="${NEXUSHUB_STATE_DIR:-/var/lib/nexushub}"
 NEXUSHUB_LOG_DIR="${NEXUSHUB_LOG_DIR:-/var/log/nexushub}"
 NEXUSHUB_CONFIG_DIR="${NEXUSHUB_CONFIG_DIR:-/etc/nexushub}"
 NEXUSHUB_BIN_DIR="${NEXUSHUB_BIN_DIR:-/usr/local/bin}"
+# Stable runtime directory the API process can read. Holds the SQL
+# migrations, the env.example template, and any future assets the
+# binaries need at startup. Owned root:nexushub, mode 0750.
+NEXUSHUB_RUNTIME_DIR="${NEXUSHUB_RUNTIME_DIR:-/opt/nexushub}"
+NEXUSHUB_BPF_PIN_DIR="${NEXUSHUB_BPF_PIN_DIR:-/sys/fs/bpf/nexushub}"
 REPO_RELEASE="https://github.com/tomeksdev/NexusHub/releases"
 
 # --- Logging ---------------------------------------------------------------
@@ -54,9 +58,13 @@ case "$ARCH" in
 esac
 
 # --- TTY detection ---------------------------------------------------------
-# Curl-piped installs have no stdin; CI/cloud-init also has no stdin.
-# Either way, every prompt value must come from an env var.
-if [[ -t 0 ]]; then
+# The documented one-liner is `curl ... | sudo bash`, which means
+# stdin is the script stream — `-t 0` reports non-interactive even
+# when there's an operator at a real terminal. Detect via /dev/tty
+# instead so the curl-pipe install can prompt; non-interactive runs
+# (cloud-init, container build) usually have neither stdin nor
+# /dev/tty and fall through to the env-var path.
+if [[ -r /dev/tty && -w /dev/tty ]]; then
   INTERACTIVE=1
 else
   INTERACTIVE=0
@@ -64,8 +72,10 @@ fi
 
 # prompt VAR_NAME "Question text" [default]
 # Reads from $VAR_NAME if already set in the env. Otherwise:
-#   interactive  → prompt the user; accept default on empty input
-#   non-interactive → fail with a clear error if no env var + no default
+#   interactive  → prompt via /dev/tty; accept default on empty
+#                  input.
+#   non-interactive → fail with a clear error if no env var and no
+#                     default.
 prompt() {
   local var="$1" question="$2" default="${3:-}"
   if [[ -n "${!var:-}" ]]; then
@@ -78,9 +88,9 @@ prompt() {
   fi
   local prompt_text="$question"
   [[ -n "$default" ]] && prompt_text="$question [$default]"
-  printf '%s: ' "$prompt_text"
+  printf '%s: ' "$prompt_text" >/dev/tty
   local answer
-  read -r answer
+  read -r answer </dev/tty
   [[ -z "$answer" && -n "$default" ]] && answer="$default"
   [[ -n "$answer" ]] || die "$var is required"
   printf -v "$var" '%s' "$answer"
@@ -96,14 +106,14 @@ prompt_secret() {
   (( INTERACTIVE == 1 )) || die "missing env var: $var (no TTY)"
   local answer1 answer2
   while :; do
-    printf '%s: ' "$question"
-    read -rs answer1
-    printf '\n'
+    printf '%s: ' "$question" >/dev/tty
+    read -rs answer1 </dev/tty
+    printf '\n' >/dev/tty
     [[ -n "$answer1" ]] || { warn "value cannot be empty"; continue; }
     if [[ "$confirm" == "confirm" ]]; then
-      printf 'Confirm %s: ' "$question"
-      read -rs answer2
-      printf '\n'
+      printf 'Confirm %s: ' "$question" >/dev/tty
+      read -rs answer2 </dev/tty
+      printf '\n' >/dev/tty
       if [[ "$answer1" != "$answer2" ]]; then
         warn "values did not match — try again"
         continue
@@ -161,6 +171,7 @@ fi
 install -d -m 0700 -o "$NEXUSHUB_USER" -g "$NEXUSHUB_USER" "$NEXUSHUB_STATE_DIR"
 install -d -m 0750 -o "$NEXUSHUB_USER" -g "$NEXUSHUB_USER" "$NEXUSHUB_LOG_DIR"
 install -d -m 0750 -o root            -g "$NEXUSHUB_USER" "$NEXUSHUB_CONFIG_DIR"
+install -d -m 0750 -o root            -g "$NEXUSHUB_USER" "$NEXUSHUB_RUNTIME_DIR"
 
 # --- Postgres -------------------------------------------------------------
 # Create the role + DB if missing, always sync the role's password
@@ -213,14 +224,42 @@ for bin in nexushub-api nexushub-migrate nexushub-seed; do
   install -m 0755 -o root -g root "$TMPDIR/$bin" "$NEXUSHUB_BIN_DIR/$bin"
 done
 
+# --- Runtime files --------------------------------------------------------
+# Migrations + supporting docs go into the runtime dir. The migrate
+# binary reads `file://migrations` relative to its CWD, so we need a
+# stable location the nexushub user can read; the operator's
+# current shell pwd doesn't qualify (and broke preview.2).
+log "installing runtime files into $NEXUSHUB_RUNTIME_DIR"
+if [[ -d "$TMPDIR/migrations" ]]; then
+  rm -rf "$NEXUSHUB_RUNTIME_DIR/migrations"
+  cp -a "$TMPDIR/migrations" "$NEXUSHUB_RUNTIME_DIR/migrations"
+else
+  die "migrations/ missing from $ASSET — release archive is incomplete"
+fi
+for f in env.example LICENSE README.md; do
+  [[ -f "$TMPDIR/$f" ]] && cp -a "$TMPDIR/$f" "$NEXUSHUB_RUNTIME_DIR/$f"
+done
+chown -R root:"$NEXUSHUB_USER" "$NEXUSHUB_RUNTIME_DIR"
+# g+rX so directories are traversable + files readable; owner keeps
+# write to roll forward / replace artefacts on reinstall.
+chmod -R u=rwX,g=rX,o= "$NEXUSHUB_RUNTIME_DIR"
+
 # --- Systemd unit ---------------------------------------------------------
 log "installing systemd unit"
-# The unit ships inside the release archive (see .goreleaser.yaml
-# archive `files:` block); using the bundled copy means the unit's
-# template is always the one matching the binary the operator just
-# installed.
 install -m 0644 -o root -g root "$TMPDIR/nexushub-api.service" \
   /etc/systemd/system/nexushub-api.service
+
+# --- BPF pin directory ----------------------------------------------------
+# eBPF maps survive an API restart only when pinned under bpffs.
+# The service runs as `nexushub`; it can't mount filesystems or
+# create directories under /sys/fs/bpf/ at runtime. We do both
+# here, before systemctl start, so the loader finds the dir
+# already prepared with the right ownership.
+log "preparing bpf pin dir $NEXUSHUB_BPF_PIN_DIR"
+if ! mountpoint -q /sys/fs/bpf; then
+  mount -t bpf bpf /sys/fs/bpf
+fi
+install -d -m 0700 -o "$NEXUSHUB_USER" -g "$NEXUSHUB_USER" "$NEXUSHUB_BPF_PIN_DIR"
 
 # --- Env file -------------------------------------------------------------
 ENV_FILE="$NEXUSHUB_CONFIG_DIR/env"
@@ -259,17 +298,18 @@ else
 fi
 
 # --- Migrations + seed ----------------------------------------------------
-# Both run as the nexushub user with the env file exported so the
-# binaries pick up DATABASE_URL etc. without --flags.
+# Run from the runtime dir so `file://migrations` resolves. `env -i`
+# clears the parent environment; we then pass exactly what the
+# binaries need from /etc/nexushub/env. The runtime dir is the CWD
+# via `cd` inside the sudo command (sudo doesn't have --chdir on
+# every Debian/Ubuntu version we support).
 run_as_nexushub() {
-  # Strip CR-LF the env file might carry on a re-edit. `env -i` keeps
-  # the child environment clean so previous values don't leak in.
   sudo -u "$NEXUSHUB_USER" \
     env -i \
     PATH="/usr/local/bin:/usr/bin:/bin" \
     HOME="$NEXUSHUB_STATE_DIR" \
     $(grep -v '^[[:space:]]*#' "$ENV_FILE" | grep -v '^[[:space:]]*$' | xargs) \
-    "$@"
+    sh -c "cd '$NEXUSHUB_RUNTIME_DIR' && exec \"\$@\"" -- "$@"
 }
 
 log "running migrations"
@@ -280,10 +320,10 @@ run_as_nexushub "$NEXUSHUB_BIN_DIR/nexushub-migrate" up
 # the same admin email returns success without creating duplicates.
 log "seeding first admin user"
 run_as_nexushub \
-  NEXUSHUB_ADMIN_EMAIL="$NEXUSHUB_ADMIN_EMAIL" \
-  NEXUSHUB_ADMIN_USERNAME="$NEXUSHUB_ADMIN_USERNAME" \
-  NEXUSHUB_ADMIN_PASSWORD="$NEXUSHUB_ADMIN_PASSWORD" \
-  "$NEXUSHUB_BIN_DIR/nexushub-seed"
+  env NEXUSHUB_ADMIN_EMAIL="$NEXUSHUB_ADMIN_EMAIL" \
+      NEXUSHUB_ADMIN_USERNAME="$NEXUSHUB_ADMIN_USERNAME" \
+      NEXUSHUB_ADMIN_PASSWORD="$NEXUSHUB_ADMIN_PASSWORD" \
+      "$NEXUSHUB_BIN_DIR/nexushub-seed"
 
 # --- Start the service ----------------------------------------------------
 log "enabling + starting nexushub-api"
@@ -306,18 +346,39 @@ done
 curl -fsS "$HEALTH_URL" >/dev/null \
   || die "health check failed after 30s — inspect journalctl -u nexushub-api"
 
+# UI root check. Not fatal — operators running an API-only build
+# (no embedded frontend) still want to finish the install. A 404
+# here is a clear "frontend missing" signal but not a stop.
+UI_URL="http://127.0.0.1:${NEXUSHUB_PORT}/"
+if curl -fsSI "$UI_URL" 2>/dev/null | head -1 | grep -q '200'; then
+  UI_OK=1
+else
+  UI_OK=0
+  warn "UI root at $UI_URL did not return 200 — running API-only?"
+fi
+
 # --- Success summary ------------------------------------------------------
 SERVER_IP=$(hostname -I 2>/dev/null | awk '{print $1}')
 [[ -n "$SERVER_IP" ]] || SERVER_IP="$(hostname)"
 
-cat <<EOF
+printf '\n\033[1;32m✓ NexusHub installed successfully.\033[0m\n\n'
 
-\033[1;32m✓ NexusHub installed successfully.\033[0m
-
+if (( UI_OK == 1 )); then
+  cat <<EOF
 Web / API:
   http://${SERVER_IP}:${NEXUSHUB_PORT}
   (login as ${NEXUSHUB_ADMIN_USERNAME} / ${NEXUSHUB_ADMIN_EMAIL})
 
+EOF
+else
+  cat <<EOF
+API (UI not bundled in this build):
+  http://${SERVER_IP}:${NEXUSHUB_PORT}/api/v1/health
+
+EOF
+fi
+
+cat <<EOF
 Service:
   systemctl status nexushub-api
 
@@ -326,6 +387,10 @@ Logs:
 
 Config:
   ${ENV_FILE}  (mode 0600, root:${NEXUSHUB_USER})
+
+Runtime:
+  ${NEXUSHUB_RUNTIME_DIR}/migrations  (read by nexushub-migrate)
+  ${NEXUSHUB_BPF_PIN_DIR}                (eBPF map pin directory)
 
 Next:
   Open the dashboard, rotate the admin password from the profile

@@ -1,36 +1,98 @@
-services:
-  app:
-    build:
-      context: ..
-      dockerfile: docker/Dockerfile
-    ports:
-      - "8080:8080"
-    environment:
-      - DATABASE_URL=postgres://nexushub:nexushub@postgres:5432/nexushub?sslmode=disable
-    depends_on:
-      postgres:
-        condition: service_healthy
-    cap_add:
-      - NET_ADMIN
-    cap_drop:
-      - ALL
-    restart: unless-stopped
+# Single-host compose: API + frontend (embedded), migrate + seed
+# one-shots, Postgres. Designed for evaluation and small fleets.
+# For TLS + multi-replica, see docker-compose.prod.yml.
+#
+# Start:   docker compose -f docker/docker-compose.yml up -d
+# Logs:    docker compose -f docker/docker-compose.yml logs -f
+# Stop:    docker compose -f docker/docker-compose.yml down
 
+services:
   postgres:
     image: postgres:16-bookworm
     environment:
       POSTGRES_USER: nexushub
-      POSTGRES_PASSWORD: nexushub
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-nexushub}
       POSTGRES_DB: nexushub
     volumes:
       - pgdata:/var/lib/postgresql/data
-    ports:
-      - "5432:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U nexushub"]
       interval: 5s
       timeout: 3s
-      retries: 5
+      retries: 10
+    restart: unless-stopped
+
+  # One-shot migration. The image's default entrypoint is the API
+  # binary, so we override entrypoint here so `command:` lands on
+  # the right executable. depends_on with service_completed_successfully
+  # makes downstream services wait until migrate exits 0.
+  migrate:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    image: ${NEXUSHUB_IMAGE:-nexushub:dev}
+    working_dir: /app
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgres://nexushub:${POSTGRES_PASSWORD:-nexushub}@postgres:5432/nexushub?sslmode=disable
+    entrypoint: ["/app/nexushub-migrate"]
+    command: ["up"]
+    restart: "no"
+
+  # One-shot first-admin seed. Idempotent: a second run with the
+  # same admin email returns success without creating duplicates.
+  # Admin password lives in this service's env only — never
+  # persisted to disk.
+  seed:
+    image: ${NEXUSHUB_IMAGE:-nexushub:dev}
+    working_dir: /app
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    environment:
+      DATABASE_URL: postgres://nexushub:${POSTGRES_PASSWORD:-nexushub}@postgres:5432/nexushub?sslmode=disable
+      NEXUSHUB_ADMIN_EMAIL: ${NEXUSHUB_ADMIN_EMAIL:-admin@example.com}
+      NEXUSHUB_ADMIN_USERNAME: ${NEXUSHUB_ADMIN_USERNAME:-admin}
+      NEXUSHUB_ADMIN_PASSWORD: ${NEXUSHUB_ADMIN_PASSWORD:-change-me}
+      NEXUSHUB_SEED_WG: "0"
+    entrypoint: ["/app/nexushub-seed"]
+    command: []
+    restart: "no"
+
+  app:
+    image: ${NEXUSHUB_IMAGE:-nexushub:dev}
+    ports:
+      - "${PORT:-8080}:8080"
+    environment:
+      DATABASE_URL: postgres://nexushub:${POSTGRES_PASSWORD:-nexushub}@postgres:5432/nexushub?sslmode=disable
+      PORT: "8080"
+      GIN_MODE: ${GIN_MODE:-release}
+      JWT_SECRET: ${JWT_SECRET}
+      PEER_KEY_ENCRYPTION_KEY: ${PEER_KEY_ENCRYPTION_KEY}
+      WG_ENDPOINT: ${WG_ENDPOINT:-127.0.0.1:51820}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+      seed:
+        condition: service_completed_successfully
+    # NET_ADMIN + BPF + NET_RAW match the systemd unit's capability
+    # set. Drop ALL otherwise — distroless ships nothing setuid.
+    # Containers without these caps run with eBPF degraded (the
+    # capability probe distinguishes EPERM from kernel-feature
+    # absence and logs the right reason).
+    cap_add:
+      - NET_ADMIN
+      - BPF
+      - NET_RAW
+    cap_drop:
+      - ALL
+    restart: unless-stopped
 
 volumes:
   pgdata:

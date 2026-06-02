@@ -27,6 +27,13 @@ before:
     - go -C cli mod tidy
     - go -C backend mod tidy
     - go -C ebpf mod tidy
+    # Build the React SPA and copy the bundle into the backend's
+    # embed path so `go build ./cmd/api` (in the build stages
+    # below) baked it into the binary. Goreleaser runs hooks with
+    # the repo root as CWD.
+    - npm --prefix frontend ci
+    - npm --prefix frontend run build
+    - sh -c "rm -rf backend/internal/uifs/dist && mkdir -p backend/internal/uifs/dist && cp -a frontend/dist/. backend/internal/uifs/dist/"
 
 builds:
   # CLI binary — operator-side management tool.
