@@ -8,7 +8,69 @@ them are expected; the public API contract freezes at `v2.0.0`.
 
 ## [Unreleased]
 
-_Nothing yet — every blocker for `v2.0.0-preview.1` shipped below._
+### Fixed
+
+- **Bare-metal installer publishes the asset it downloads (#79).**
+  `scripts/install.sh` constructs
+  `nexushub-api_<VERSION>_linux_<ARCH>.tar.gz` and `curl`s it from
+  the GitHub release. The release-publishing pipeline only built
+  the `nexushub` CLI, so every install hit a 404. `.goreleaser.yaml`
+  now also builds `nexushub-api` + `nexushub-migrate` +
+  `nexushub-seed` for `linux/{amd64,arm64}` and packages them into
+  the archive the installer expects, alongside the systemd unit +
+  env template + SQL migrations. The CLI archive shape is
+  unchanged.
+
+### Changed
+
+- **`scripts/install.sh` rewritten as a setup wizard.** Detects
+  TTY: interactive runs prompt for WG endpoint host/port, web port,
+  PostgreSQL password, admin email/username/password (hidden input
+  with double-confirm where it matters); non-interactive runs read
+  every value from env vars (`NEXUSHUB_DB_PASSWORD`,
+  `NEXUSHUB_WG_ENDPOINT_HOST`, ...) and exit non-zero with a clear
+  missing-var error when something's absent.
+- **Auto-generates the API secrets.** `JWT_SECRET` =
+  `openssl rand -base64 48`, `PEER_KEY_ENCRYPTION_KEY` =
+  `openssl rand -base64 32`. Operators no longer see `CHANGE_ME` in
+  `/etc/nexushub/env` after a fresh install.
+- **Applies the PostgreSQL password via stdin-piped `ALTER USER`** so
+  the password never appears in `ps`. Existing roles are
+  `ALTER`ed; no `DROP ROLE`.
+- **Runs migrations + seed + service start automatically.**
+  `nexushub-migrate up`, then `nexushub-seed`, then
+  `systemctl restart nexushub-api`, then polls
+  `/api/v1/health` for up to 30 s. Admin password passes through
+  the seeder's process env only — never written to
+  `/etc/nexushub/env`.
+- **Tarball sha256 verification** against
+  `nexushub_<VERSION>_checksums.txt` when that asset is present;
+  warns + continues on older releases that predate the upload.
+- **Existing `/etc/nexushub/env` preserved** across reinstalls
+  unless `NEXUSHUB_REGENERATE_ENV=1` is set.
+- **`deploy/systemd/env.example`** reframed as the manual-install
+  template; seed-only `NEXUSHUB_ADMIN_*` lines added as
+  commented-out reference with a note that the installer doesn't
+  persist them.
+
+### Operator notes
+
+Operators who tried the bare-metal install on `v2.0.0-preview.1`
+should re-run the one-liner once `v2.0.0-preview.2` is tagged:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/tomeksdev/NexusHub/main/scripts/install.sh \
+  | sudo NEXUSHUB_VERSION=v2.0.0-preview.2 bash
+```
+
+The wizard preserves an existing `/etc/nexushub/env` by default,
+so this is a binary upgrade with the same secrets. Pass
+`NEXUSHUB_REGENERATE_ENV=1` to rotate the auto-generated secrets
+(requires re-seeding peer private keys — only do this if you have
+to).
+
+Docker users are unaffected: the container image already shipped
+all three binaries and the GHCR publish path works.
 
 ## [v2.0.0-preview.1] — 2026-05-18
 
