@@ -1,6 +1,5 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Link } from "react-router-dom";
 
 import { api, type PageEnvelope } from "../lib/api";
 import { RuleEditorModal } from "./RuleEditorModal";
@@ -330,11 +329,8 @@ export function RulesPage() {
               : loader?.missing_features.length
                 ? `Kernel features missing: ${loader.missing_features.join(", ")}. The loader needs Linux ≥ 5.17. `
                 : "The loader returned an error at startup. "}
-            See{" "}
-            <Link to="/support" className="text-accent hover:underline">
-              Support → Enforcement status
-            </Link>{" "}
-            for the raw error and per-shape fix.
+            Open <strong>Support</strong> from the sidebar to see the raw error
+            and the per-shape fix under <em>Enforcement status</em>.
           </p>
           <p className="text-faint text-xs">
             Rules below can still be edited and toggled — they remain staged so

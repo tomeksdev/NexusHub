@@ -127,7 +127,7 @@ type InterfaceHandler struct {
 	// system-rule regeneration path can stage rather than enable
 	// freshly-generated cross-location denies when the kernel
 	// loader is degraded. Nil ⇒ assume healthy (preserves the
-	// pre-#86 default-on behaviour for deployments that don't
+	// pre-#86 default-on behavior for deployments that don't
 	// wire diag through this handler).
 	EBPFInv EBPFInventory
 }
