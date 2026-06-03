@@ -6,6 +6,13 @@ All notable changes to NexusHub are documented here. The format follows
 tags (`-preview.N`) are mutable in the sense that breaking changes between
 them are expected; the public API contract freezes at `v2.0.0`.
 
+## [2.0.1-preview.3](https://github.com/tomeksdev/NexusHub/compare/v2.0.0-preview.3...v2.0.1-preview.3) (2026-06-03)
+
+
+### Bug Fixes
+
+* preview.3 WireGuard bare-metal runtime inconsistencies ([#85](https://github.com/tomeksdev/NexusHub/issues/85)) ([d181d68](https://github.com/tomeksdev/NexusHub/commit/d181d684ba8d9dab2e012def16fd72b3831dc4fb))
+
 ## [Unreleased]
 
 ### Fixed
