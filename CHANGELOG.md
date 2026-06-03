@@ -8,6 +8,75 @@ them are expected; the public API contract freezes at `v2.0.0`.
 
 ## [Unreleased]
 
+### Fixed
+
+- **WireGuard `listen_port` reaches the live kernel device on
+  privileged ports.** Operators who picked port 443 (a common
+  choice — UDP/443 is rarely blocked by corporate egress
+  filters) saw the DB and the generated peer `.conf` agree on
+  `443`, but `wg show wg0 listen-port` returned a random
+  ephemeral port. Root cause: every deployment shape granted
+  `CAP_NET_ADMIN + CAP_BPF + CAP_NET_RAW` but not
+  `CAP_NET_BIND_SERVICE`. The WG kernel module's UDP bind for
+  sub-1024 ports goes through `inet_csk_get_port` which checks
+  that capability, so the kernel silently fell back to an
+  ephemeral port while `wgctrl`'s netlink call itself returned
+  success. Added `CAP_NET_BIND_SERVICE` to
+  `deploy/systemd/nexushub-api.service`,
+  `docker/docker-compose.yml`, `docker/docker-compose.prod.yml`,
+  and `deploy/helm/nexushub/values.yaml`'s
+  `dataPlane.capabilities`. The create + update handlers now
+  also retry once with a port-only `ConfigureDevice` on drift
+  and, when drift persists, push an actionable hint into the
+  kernel-warnings ring (visible on the Support page) naming
+  the most common cause and the per-shape fix. (#83 P0)
+- **Dashboard "Peers" count reads the DB-of-record.** Operator
+  creates a peer; the Peers page shows `Peers (1)` from the DB
+  but the dashboard shows `Peers: 0` because it derived the
+  count from the live wgctrl peer walk. Any install where
+  kernel apply hadn't completed yet — the same listen-port gap
+  above, eBPF degraded, Docker without `NET_ADMIN`, a
+  reconcile-after-restart window — saw two pages disagree.
+  `backend/internal/handler/dashboard.go` now derives the
+  top-level Peers count and the per-location `peers_total`
+  from `PeerRepo.ListByInterface(...)`. The kernel walk only
+  contributes `peers_online` (handshake within the existing
+  3-minute window) and rx/tx for the top-peers list — labels
+  changed accordingly. Same fix routes through every peer /
+  interface mutation: the `PeersPage` delete, the
+  `UserDetailPage` delete, the `InterfacesPage` delete + edit,
+  and the `InterfaceCreateModal` now all invalidate the
+  `["dashboard"]` query key so the cards refresh without a
+  hard reload. (#83 P1)
+- **Exported peer `.conf` `Address` line carries a CIDR mask.**
+  `renderWgQuickConfig` wrote `Address = 10.20.25.3`; portable
+  files need `Address = 10.20.25.3/32`. The wg-quick reference
+  clients normalised the bare form, but Mikrotik, OpenWrt's
+  `wg setconf`, and automated config-diff tools require the
+  mask. Family-derived (`/32` for IPv4, `/128` for IPv6) via
+  `netip.PrefixFrom(addr, addr.BitLen())`. Render tests cover
+  both families. (#83 P2)
+
+### Operator notes for the preview.3 → preview.4 upgrade
+
+- **Bare-metal**: re-run `scripts/install.sh` so the new
+  systemd unit's `CAP_NET_BIND_SERVICE` grant lands in
+  `/etc/systemd/system/nexushub-api.service`. The installer
+  reloads systemd + restarts the service. Operators who only
+  swap the binary in place will keep seeing the random-port
+  drift.
+- **Docker Compose**: redeploy from the refreshed
+  `docker/docker-compose.yml` (or `docker-compose.prod.yml`) —
+  `cap_add` now lists `NET_BIND_SERVICE`. `docker compose down
+  && docker compose up -d` is enough.
+- **Helm**: bump the chart, no values change needed for the
+  control-plane-only shape. Operators running with
+  `dataPlane.enabled=true` may need to remove + recreate the
+  pod if the cluster's PodSecurityPolicy / OPA stack pins the
+  capability list.
+
+## [v2.0.0-preview.3] — 2026-06-02
+
 ### Added
 
 - **`backend/internal/uifs` — embedded SPA bundle.** `//go:embed
@@ -355,6 +424,7 @@ land along with the binary update:
 
 DB rows otherwise survive intact.
 
-[Unreleased]: https://github.com/tomeksdev/NexusHub/compare/v2.0.0-preview.2...HEAD
+[Unreleased]: https://github.com/tomeksdev/NexusHub/compare/v2.0.0-preview.3...HEAD
+[v2.0.0-preview.3]: https://github.com/tomeksdev/NexusHub/releases/tag/v2.0.0-preview.3
 [v2.0.0-preview.2]: https://github.com/tomeksdev/NexusHub/releases/tag/v2.0.0-preview.2
 [v2.0.0-preview.1]: https://github.com/tomeksdev/NexusHub/releases/tag/v2.0.0-preview.1

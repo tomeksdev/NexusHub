@@ -127,10 +127,16 @@ dataPlane:
   enabled: false
   # When enabled, the pod runs with hostNetwork=true and the caps
   # below in its CapabilityBoundingSet + AmbientCapabilities.
+  # NET_BIND_SERVICE lets the WireGuard kernel module bind its
+  # listen-port UDP socket below 1024 (operators commonly pick 443
+  # to punch through corporate egress filters); without it the
+  # kernel silently falls back to an ephemeral port while the DB
+  # still records the requested value. (#83 P0)
   capabilities:
     - NET_ADMIN
     - BPF
     - NET_RAW
+    - NET_BIND_SERVICE
 
 # ---- Migrations -----------------------------------------------------------
 

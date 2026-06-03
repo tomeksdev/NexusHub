@@ -843,7 +843,13 @@ func renderWgQuickConfig(
 	var sb strings.Builder
 	sb.WriteString("[Interface]\n")
 	fmt.Fprintf(&sb, "PrivateKey = %s\n", peerPrivateB64)
-	fmt.Fprintf(&sb, "Address = %s\n", p.AssignedIP.String())
+	// Address must be written as a CIDR — bare `Address = 10.20.25.3`
+	// imports fine into most clients (they normalise to /32 on display)
+	// but a portable .conf should be explicit, and some external tooling
+	// (Mikrotik, OpenWrt's `wg setconf`) requires the mask. Family-derived
+	// mask, not a hardcoded 32: IPv6 assignments need /128. (#83 P2)
+	fmt.Fprintf(&sb, "Address = %s\n",
+		netip.PrefixFrom(p.AssignedIP, p.AssignedIP.BitLen()))
 
 	dns := p.DNS
 	if len(dns) == 0 {
