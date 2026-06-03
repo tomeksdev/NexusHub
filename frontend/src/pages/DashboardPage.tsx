@@ -103,7 +103,9 @@ export function DashboardPage() {
                   <th className="py-2 font-medium">Name</th>
                   <th className="py-2 font-medium">Port</th>
                   <th className="py-2 font-medium">State</th>
-                  <th className="py-2 font-medium text-right">Online / Total</th>
+                  <th className="py-2 font-medium text-right">
+                    Online / Total
+                  </th>
                 </tr>
               </thead>
               <tbody>

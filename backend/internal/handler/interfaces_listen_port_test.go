@@ -18,10 +18,10 @@ import (
 // port when the process lacks CAP_NET_BIND_SERVICE, even though
 // ConfigureDevice itself returns no error.
 type stubbornPortClient struct {
-	mu       sync.Mutex
-	fixed    int // what Device() reports for ListenPort
-	yields   bool
-	configs  []wg.Config // every config payload ConfigureDevice saw
+	mu      sync.Mutex
+	fixed   int // what Device() reports for ListenPort
+	yields  bool
+	configs []wg.Config // every config payload ConfigureDevice saw
 }
 
 func (c *stubbornPortClient) Device(name string) (*wg.Device, error) {
