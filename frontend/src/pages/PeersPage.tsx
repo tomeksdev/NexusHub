@@ -119,7 +119,11 @@ export function PeersPage() {
   const deleteMut = useMutation({
     mutationFn: (id: string) =>
       api(`/api/v1/peers/${id}`, { method: "DELETE" }),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["peers"] }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["peers"] });
+      qc.invalidateQueries({ queryKey: ["peers-by-owner"] });
+      qc.invalidateQueries({ queryKey: ["dashboard"] });
+    },
   });
 
   function onDelete(p: Peer) {

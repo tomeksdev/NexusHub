@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 
 	"github.com/tomeksdev/NexusHub/backend/internal/apierror"
 	"github.com/tomeksdev/NexusHub/backend/internal/repository"
@@ -80,29 +81,53 @@ func (h *DashboardHandler) Get(c *gin.Context) {
 
 	resp := dashboardResponse{GeneratedAt: now}
 
-	// ---- counts: cheap COUNTs against the DB ------------------------
+	// ---- interfaces + per-interface DB peer rows --------------------
+	// We hoist the per-interface peer fetch here so the dashboard's
+	// "Peers" totals (#83 P1) come from the DB-of-record, not the
+	// live kernel walk. Live counts can read as 0 when the kernel
+	// failed to apply (CAP_NET_BIND_SERVICE missing, eBPF degraded,
+	// reconcile gap) — yet the /peers page reads N from the same DB
+	// and the operator gets a contradiction. By making "Peers" mean
+	// "DB peer rows", the dashboard agrees with /peers. The kernel
+	// walk below only contributes PeersOnline (handshake-based) and
+	// rx/tx for the top-peers list.
+	type dbPeerRow struct {
+		ifaceName   string
+		ownerUserID *uuid.UUID
+	}
+	dbPeersByPubKey := map[string]dbPeerRow{}
 	if h.Interfaces != nil {
 		ifaces, err := h.Interfaces.List(ctx)
 		if err != nil {
 			slog.WarnContext(ctx, "dashboard: list interfaces", "err", err)
 		} else {
 			resp.Counts.Locations = len(ifaces)
-			// Pre-seed the location panel so the frontend doesn't
-			// have to merge two payloads to render the table.
 			for _, iface := range ifaces {
-				resp.Locations = append(resp.Locations, dashboardLoc{
-					Name: iface.Name, ListenPort: iface.ListenPort,
-				})
+				loc := dashboardLoc{Name: iface.Name, ListenPort: iface.ListenPort}
+				if h.Peers != nil {
+					rows, perr := h.Peers.ListByInterface(ctx, iface.ID)
+					if perr != nil {
+						slog.WarnContext(ctx, "dashboard: list peers",
+							"iface", iface.Name, "err", perr)
+					} else {
+						loc.PeersTotal = len(rows)
+						resp.Counts.Peers += len(rows)
+						for _, p := range rows {
+							dbPeersByPubKey[p.PublicKey] = dbPeerRow{
+								ifaceName:   iface.Name,
+								ownerUserID: p.OwnerUserID,
+							}
+						}
+					}
+				}
+				resp.Locations = append(resp.Locations, loc)
 			}
 		}
 	}
 
-	// User and peer counts via tiny dedicated queries — cheaper than
-	// ListPage's full row scan.
+	// User count via tiny dedicated query — ListPage(limit=1) returns
+	// the total alongside the row, cheaper than a separate COUNT.
 	if h.Users != nil {
-		// ListPage with limit=1 returns total alongside the row, which
-		// is the cheapest way to get the count without a new repo
-		// method.
 		_, total, err := h.Users.ListPage(ctx, 1, 0, "email", false)
 		if err != nil {
 			slog.WarnContext(ctx, "dashboard: count users", "err", err)
@@ -112,6 +137,9 @@ func (h *DashboardHandler) Get(c *gin.Context) {
 	}
 
 	// ---- live peer state: walk the kernel ---------------------------
+	// Used for PeersOnline (handshake within onlineWindow) and the
+	// top-peers RX/TX list. NOT used for total counts — see note
+	// above.
 	type peerRow struct {
 		iface         string
 		pub           string
@@ -127,7 +155,6 @@ func (h *DashboardHandler) Get(c *gin.Context) {
 				continue
 			}
 			loc.Live = true
-			loc.PeersTotal = len(dev.Peers)
 			for _, p := range dev.Peers {
 				row := peerRow{
 					iface:         dev.Name,
@@ -145,7 +172,6 @@ func (h *DashboardHandler) Get(c *gin.Context) {
 			}
 		}
 	}
-	resp.Counts.Peers = len(live)
 
 	// ---- top peers by RX+TX -----------------------------------------
 	sort.Slice(live, func(a, b int) bool {
@@ -155,14 +181,13 @@ func (h *DashboardHandler) Get(c *gin.Context) {
 		live = live[:topPeerLimit]
 	}
 
-	// Owner lookup keyed by peer public key. Username is the
-	// operator-friendly default, email gets carried through for the
-	// hover tooltip on the frontend.
+	// Owner lookup keyed by peer public key. Built from the DB-side
+	// dbPeersByPubKey map we populated up top — no second pass over
+	// the per-interface peer rows.
 	ownerByPubKey := map[string]dashboardOwner{}
-	if h.Peers != nil && h.Users != nil && len(live) > 0 {
+	if h.Users != nil && len(live) > 0 && len(dbPeersByPubKey) > 0 {
 		users, _, err := h.Users.ListPage(ctx, 200, 0, "email", false)
-		if err == nil && h.Interfaces != nil {
-			ifaces, _ := h.Interfaces.List(ctx)
+		if err == nil {
 			ownersByID := map[string]dashboardOwner{}
 			for _, u := range users {
 				ownersByID[u.ID.String()] = dashboardOwner{
@@ -170,13 +195,10 @@ func (h *DashboardHandler) Get(c *gin.Context) {
 					email:    u.Email,
 				}
 			}
-			for _, iface := range ifaces {
-				peers, _ := h.Peers.ListByInterface(ctx, iface.ID)
-				for _, p := range peers {
-					if p.OwnerUserID != nil {
-						if o, ok := ownersByID[p.OwnerUserID.String()]; ok {
-							ownerByPubKey[p.PublicKey] = o
-						}
+			for pubkey, row := range dbPeersByPubKey {
+				if row.ownerUserID != nil {
+					if o, ok := ownersByID[row.ownerUserID.String()]; ok {
+						ownerByPubKey[pubkey] = o
 					}
 				}
 			}

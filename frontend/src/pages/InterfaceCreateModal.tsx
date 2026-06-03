@@ -62,6 +62,7 @@ export function InterfaceCreateModal({ onClose, onCreated }: Props) {
     onSuccess: (iface) => {
       qc.invalidateQueries({ queryKey: ["interfaces"] });
       qc.invalidateQueries({ queryKey: ["wg-status"] });
+      qc.invalidateQueries({ queryKey: ["dashboard"] });
       onCreated(iface);
     },
   });

@@ -105,8 +105,11 @@ export function UserDetailPage({ userID, onBack }: Props) {
   const deleteMut = useMutation({
     mutationFn: (id: string) =>
       api(`/api/v1/peers/${id}`, { method: "DELETE" }),
-    onSuccess: () =>
-      qc.invalidateQueries({ queryKey: ["peers-by-owner", userID] }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["peers-by-owner", userID] });
+      qc.invalidateQueries({ queryKey: ["peers"] });
+      qc.invalidateQueries({ queryKey: ["dashboard"] });
+    },
   });
 
   const peers = peersQ.data?.items ?? [];

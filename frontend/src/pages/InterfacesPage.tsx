@@ -59,6 +59,7 @@ export function InterfacesPage() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["interfaces"] });
       qc.invalidateQueries({ queryKey: ["wg-status"] });
+      qc.invalidateQueries({ queryKey: ["dashboard"] });
     },
   });
 
@@ -224,6 +225,7 @@ export function InterfacesPage() {
             setEditTarget(null);
             qc.invalidateQueries({ queryKey: ["interfaces"] });
             qc.invalidateQueries({ queryKey: ["wg-status"] });
+            qc.invalidateQueries({ queryKey: ["dashboard"] });
           }}
         />
       )}
