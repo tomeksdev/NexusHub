@@ -26,9 +26,19 @@ interface EBPFAttachment {
   prog_id: number;
 }
 
+interface EBPFLoaderStatus {
+  loaded: boolean;
+  error?: string;
+  capabilities_ok: boolean;
+  missing_features: string[];
+  permission_denied: boolean;
+  last_attempt_at: string;
+}
+
 interface EBPFStateResp {
   programs: EBPFAttachment[];
   pin_path?: string;
+  loader: EBPFLoaderStatus;
 }
 
 export function SupportPage() {
@@ -92,6 +102,74 @@ export function SupportPage() {
           <dd className="font-mono text-faint">{data?.commit ?? "—"}</dd>
         </dl>
       </section>
+
+      {ebpf?.loader && (
+        <section className="panel">
+          <div className="panel-header">
+            <div>
+              <span className="panel-title">Enforcement status</span>
+              <p className="text-faint text-xs mt-1">
+                Whether the eBPF rule engine actually loaded at API startup.
+                When this reads "OFF", no rule enforces — regardless of how it's
+                labelled on the Rules page.
+              </p>
+            </div>
+            {ebpf.loader.loaded ? (
+              <span className="status-badge ok">
+                <span className="dot" />
+                ENFORCING
+              </span>
+            ) : (
+              <span className="status-badge critical">
+                <span className="dot" />
+                OFF
+              </span>
+            )}
+          </div>
+          {!ebpf.loader.loaded && (
+            <div className="space-y-3 text-sm">
+              <div className="text-danger">
+                eBPF rule engine could not load. No rule on the Rules page is
+                enforcing traffic, even those marked
+                <code className="font-mono"> ACTIVE</code>.
+              </div>
+              {ebpf.loader.permission_denied && (
+                <div className="text-muted">
+                  <strong>Permission denied</strong> by capability / seccomp.
+                  The API process needs{" "}
+                  <code className="font-mono">CAP_BPF</code> +{" "}
+                  <code className="font-mono">CAP_NET_ADMIN</code>. Bare-metal:
+                  the systemd unit already grants these; re-run{" "}
+                  <code className="font-mono">scripts/install.sh</code>
+                  on a stale unit. Docker:{" "}
+                  <code className="font-mono">cap_add: [BPF, NET_ADMIN]</code>.
+                </div>
+              )}
+              {ebpf.loader.missing_features.length > 0 && (
+                <div className="text-muted">
+                  <strong>Kernel features missing:</strong>{" "}
+                  {ebpf.loader.missing_features.join(", ")}. The loader requires
+                  Linux ≥ 5.17 for <code className="font-mono">bpf_loop</code>.
+                </div>
+              )}
+              {ebpf.loader.error && (
+                <details>
+                  <summary className="text-faint cursor-pointer">
+                    Loader error (raw)
+                  </summary>
+                  <pre className="mt-2 text-xs text-muted font-mono whitespace-pre-wrap">
+                    {ebpf.loader.error}
+                  </pre>
+                </details>
+              )}
+              <div className="text-faint text-xs">
+                Last load attempt:{" "}
+                {new Date(ebpf.loader.last_attempt_at).toLocaleString()}
+              </div>
+            </div>
+          )}
+        </section>
+      )}
 
       {ebpf && (
         <section className="panel">
