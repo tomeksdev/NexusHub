@@ -884,22 +884,37 @@ func renderWgQuickConfig(
 	}
 	fmt.Fprintf(&sb, "AllowedIPs = %s\n", strings.Join(allowed, ", "))
 
+	// Endpoint layering (#86 P1):
+	//   1. peer.Endpoint   — verbatim. Per-peer override is rare;
+	//      we trust the operator typed the full host:port deliberately.
+	//   2. iface.Endpoint  — verbatim. The per-location override
+	//      exists exactly for NAT / port-forward setups where the
+	//      external port differs from the kernel listen_port.
+	//   3. defaultEndpoint — treat as HOST ONLY. The port is always
+	//      iface.ListenPort, because that is what the kernel binds
+	//      and what the client must reach. Previously we used the
+	//      env's WG_ENDPOINT verbatim; on a host with two locations
+	//      (wg-a:443, wg-b:444) every .conf shipped Endpoint=host:443
+	//      even for wg-b peers. Strip any port present in
+	//      defaultEndpoint via endpointHost (which preserves IPv6
+	//      literals), then combine with the location's own port.
 	endpoint := ""
-	if p.Endpoint != nil && *p.Endpoint != "" {
+	switch {
+	case p.Endpoint != nil && *p.Endpoint != "":
 		endpoint = *p.Endpoint
-	} else if iface.Endpoint != nil && *iface.Endpoint != "" {
+	case iface.Endpoint != nil && *iface.Endpoint != "":
 		endpoint = *iface.Endpoint
-	} else {
-		endpoint = defaultEndpoint
+	case defaultEndpoint != "":
+		host := endpointHost(defaultEndpoint)
+		if host != "" && iface.ListenPort != 0 {
+			endpoint = net.JoinHostPort(host, fmt.Sprintf("%d", iface.ListenPort))
+		}
 	}
 	if endpoint != "" {
-		// WireGuard requires Endpoint to include an explicit UDP
-		// port. Operators sometimes save the location's endpoint
-		// as bare "vpn.example.com" — without a port the exported
-		// .conf produces "Endpoint = vpn.example.com" which
-		// silently fails to parse. Append the location's listen
-		// port when one is missing. SplitHostPort doubles as the
-		// validity check; if it fails, the string lacks a port.
+		// Bare-hostname fallback: operator may have saved the
+		// per-interface override as "vpn.example.com" without a port.
+		// Append the location's listen port so the exported .conf
+		// parses on the client side.
 		if _, _, err := net.SplitHostPort(endpoint); err != nil {
 			endpoint = net.JoinHostPort(endpoint, fmt.Sprintf("%d", iface.ListenPort))
 		}
