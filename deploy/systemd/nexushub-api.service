@@ -40,10 +40,15 @@ ExecStart=/usr/local/bin/nexushub-api
 
 # CAP_NET_ADMIN + CAP_BPF are the minimum for wgctrl + eBPF rule
 # loading. CAP_NET_RAW is there so the API can open the tun device
-# on older kernels that predate CAP_NET_ADMIN-only mode. Everything
-# else dropped — no file/process/setuid privileges.
-AmbientCapabilities=CAP_NET_ADMIN CAP_BPF CAP_NET_RAW
-CapabilityBoundingSet=CAP_NET_ADMIN CAP_BPF CAP_NET_RAW
+# on older kernels that predate CAP_NET_ADMIN-only mode.
+# CAP_NET_BIND_SERVICE lets the WireGuard kernel module bind its
+# listen-port UDP socket to ports below 1024 — operators commonly
+# pick 443 (rarely firewalled by corporate egress filters), and
+# without this cap the kernel silently falls back to an ephemeral
+# port while the DB still records the requested 443. (#83 P0)
+# Everything else dropped — no file/process/setuid privileges.
+AmbientCapabilities=CAP_NET_ADMIN CAP_BPF CAP_NET_RAW CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_BPF CAP_NET_RAW CAP_NET_BIND_SERVICE
 NoNewPrivileges=yes
 
 # Filesystem hardening. The API writes to /var/lib/nexushub (state)

@@ -82,7 +82,12 @@ services:
       seed:
         condition: service_completed_successfully
     # NET_ADMIN + BPF + NET_RAW match the systemd unit's capability
-    # set. Drop ALL otherwise — distroless ships nothing setuid.
+    # set. NET_BIND_SERVICE lets the WireGuard kernel module bind
+    # its listen-port UDP socket to ports below 1024 (operators
+    # commonly pick 443 to punch through corporate egress filters);
+    # without it the kernel falls back to a random ephemeral port
+    # while the DB still records the requested value. (#83 P0)
+    # Drop ALL otherwise — distroless ships nothing setuid.
     # Containers without these caps run with eBPF degraded (the
     # capability probe distinguishes EPERM from kernel-feature
     # absence and logs the right reason).
@@ -90,6 +95,7 @@ services:
       - NET_ADMIN
       - BPF
       - NET_RAW
+      - NET_BIND_SERVICE
     cap_drop:
       - ALL
     restart: unless-stopped

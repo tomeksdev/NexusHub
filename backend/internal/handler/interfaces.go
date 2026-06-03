@@ -194,6 +194,52 @@ func (h *InterfaceHandler) recordKernelWarning(origin, iface, msg string) {
 	})
 }
 
+// ensureKernelListenPort verifies that the live WG device's listen
+// port matches the requested one, retrying once with a port-only
+// ConfigureDevice if the first write didn't take. On stubborn drift
+// it pushes an actionable hint into the kernel-warnings ring naming
+// the most common cause — missing CAP_NET_BIND_SERVICE for ports
+// below 1024.
+//
+// We don't fail the request: the DB write already succeeded and is
+// the authoritative source. The startup reconciler retries on
+// restart, and the Support page in the UI shows the warning so the
+// operator can grant the missing capability and re-run.
+func ensureKernelListenPort(ctx context.Context, h *InterfaceHandler, name string, want int, origin string) {
+	if h == nil || h.Client == nil || want == 0 {
+		return
+	}
+	live, derr := h.Client.Device(name)
+	if derr != nil || live.ListenPort == 0 || live.ListenPort == want {
+		return
+	}
+	slog.WarnContext(ctx, "kernel listen-port drift, retrying port-only",
+		"iface", name, "requested", want, "actual", live.ListenPort)
+	port := want
+	if err := h.Client.ConfigureDevice(name, wg.Config{ListenPort: &port}); err != nil {
+		slog.WarnContext(ctx, "kernel listen-port retry failed",
+			"iface", name, "err", err)
+	}
+	live2, derr := h.Client.Device(name)
+	if derr == nil && live2.ListenPort == want {
+		return
+	}
+	got := 0
+	if derr == nil {
+		got = live2.ListenPort
+	}
+	msg := fmt.Sprintf(
+		"kernel chose listen port %d, requested %d. "+
+			"Most common cause for ports <1024: process lacks CAP_NET_BIND_SERVICE. "+
+			"Bare-metal: re-run scripts/install.sh to refresh deploy/systemd/nexushub-api.service. "+
+			"Docker: NET_BIND_SERVICE is in docker-compose.yml cap_add from preview.4. "+
+			"Helm: set dataPlane.capabilities to include NET_BIND_SERVICE.",
+		got, want)
+	slog.WarnContext(ctx, "kernel listen-port drift persisted after retry",
+		"iface", name, "requested", want, "actual", got)
+	h.recordKernelWarning(origin, name, msg)
+}
+
 type interfaceResponse struct {
 	ID         uuid.UUID `json:"id"`
 	Name       string    `json:"name"`
@@ -333,19 +379,17 @@ func (h *InterfaceHandler) Create(c *gin.Context) {
 			slog.WarnContext(c, "kernel configure interface", "err", err, "iface", out.Name)
 			h.recordKernelWarning("wg.create.configure", out.Name, err.Error())
 		}
-		// Read-back: confirm the kernel actually accepted the port we
-		// asked for. wgctrl can pick a different port silently when
-		// the requested one is in use by something netlink doesn't
-		// see (e.g. a non-WG UDP socket). Surfacing the drift in the
-		// API response means the UI can warn instead of lying.
-		if live, derr := h.Client.Device(out.Name); derr == nil &&
-			live.ListenPort != 0 && live.ListenPort != out.ListenPort {
-			slog.WarnContext(c, "kernel listen-port drift after create",
-				"iface", out.Name,
-				"requested", out.ListenPort, "actual", live.ListenPort)
-			h.recordKernelWarning("wg.create.port_drift", out.Name,
-				"kernel chose a different listen port than requested")
-		}
+		// Read-back: confirm the kernel accepted the port we asked
+		// for. The two known fall-back paths are (a) ports <1024 when
+		// the process lacks CAP_NET_BIND_SERVICE, which the kernel
+		// silently turns into an ephemeral bind, and (b) something
+		// else (rare) already holding the UDP socket. On drift we
+		// retry once with a port-only payload — if the combined
+		// PrivateKey+ListenPort write had an issue we get a clean
+		// second attempt. If it still doesn't take, push to the
+		// kernel-warnings ring so the UI's Support page shows the
+		// operator what to fix.
+		ensureKernelListenPort(c, h, out.Name, out.ListenPort, "wg.create.port_drift")
 	}
 	// Round-5 fix: a Location created at runtime needs the TC eBPF
 	// program attached before it can enforce any rule. Without
@@ -586,7 +630,14 @@ func (h *InterfaceHandler) Update(c *gin.Context) {
 			ListenPort: &port,
 		}); err != nil {
 			slog.WarnContext(ctx, "kernel apply listen port", "err", err, "iface", out.Name)
+			h.recordKernelWarning("wg.update.configure", out.Name, err.Error())
 		}
+		// Same read-back + retry-once dance as the Create path. An
+		// edit that asks for a privileged port (e.g. moving from
+		// 51820 to 443) needs to land on the kernel — otherwise the
+		// regenerated peer .conf points at a port WG isn't listening
+		// on and every existing client breaks at the next renew.
+		ensureKernelListenPort(ctx, h, out.Name, out.ListenPort, "wg.update.port_drift")
 	}
 
 	// Address changed → system rules reference the old CIDR; regenerate.

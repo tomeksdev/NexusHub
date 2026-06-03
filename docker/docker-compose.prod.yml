@@ -60,11 +60,16 @@ services:
         condition: service_completed_successfully
       seed:
         condition: service_completed_successfully
-    # NET_ADMIN for wgctrl; CAP_BPF for eBPF map ops. Everything
-    # else dropped — matches the systemd unit's capability set.
+    # NET_ADMIN for wgctrl; CAP_BPF for eBPF map ops.
+    # NET_BIND_SERVICE lets the WireGuard kernel module bind its
+    # listen-port UDP socket below 1024 (operators commonly pick
+    # 443 to punch through corporate egress filters); without it
+    # the kernel silently falls back to an ephemeral port. (#83 P0)
+    # Everything else dropped — matches the systemd unit's set.
     cap_add:
       - NET_ADMIN
       - BPF
+      - NET_BIND_SERVICE
     cap_drop:
       - ALL
     restart: unless-stopped
