@@ -14,7 +14,7 @@
   "dependencies": {
     "@refinedev/core": "^5.0.12",
     "@refinedev/react-hook-form": "^5.0.4",
-    "@tanstack/react-query": "^5.100.11",
+    "@tanstack/react-query": "^5.101.0",
     "@tanstack/react-table": "^8.21.3",
     "lucide-react": "^1.17.0",
     "qrcode.react": "^4.2.0",
