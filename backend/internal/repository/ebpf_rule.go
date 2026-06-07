@@ -488,11 +488,13 @@ const SystemRulePriority = 10
 //     direction=both as a symmetric src/dst match — a single rule
 //     covers A→B and B→A.
 //
-// New pairs default to is_active=true so the cross-location default-deny
-// baseline is on from the moment the second location lands; pairs that
-// existed before keep their previous is_active value so an operator
-// who turned a specific pair off doesn't have it flipped back on by an
-// unrelated lifecycle event.
+// defaultActive controls is_active for freshly-inserted pairs. The
+// caller passes true on a healthy host (default-deny baseline on) and
+// false when the eBPF rule loader is degraded — staging the rows so
+// the audit trail is correct without falsely claiming enforcement.
+// Pairs that existed before always keep their previous is_active
+// value so an operator's per-pair override survives an unrelated
+// lifecycle event regardless of loader state. (#86)
 //
 // Name format is "system:deny:<a.Name>↔<b.Name>" with the lexically
 // smaller name first so the pair is canonical and we never accidentally
@@ -500,7 +502,7 @@ const SystemRulePriority = 10
 //
 // Called from the interface handler after Create / Update (address) /
 // Delete so the baseline always matches the current location set.
-func (r *RuleRepo) RegenerateSystemDenies(ctx context.Context, locations []SystemRuleLocation) error {
+func (r *RuleRepo) RegenerateSystemDenies(ctx context.Context, locations []SystemRuleLocation, defaultActive bool) error {
 	tx, err := r.pool.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("begin system-rule tx: %w", err)
@@ -561,9 +563,10 @@ func (r *RuleRepo) RegenerateSystemDenies(ctx context.Context, locations []Syste
 			}
 			name := fmt.Sprintf("system:deny:%s↔%s", a.Name, b.Name)
 			desc := fmt.Sprintf("Auto-generated default-deny between %s and %s (both directions). Toggle is_active to suspend.", a.Name, b.Name)
-			// Default-on for new pairs; preserve the prior state for
-			// pairs that survived the wipe.
-			active := true
+			// New pairs use defaultActive (true on a healthy loader,
+			// false when degraded); pairs that survived the wipe keep
+			// their prior operator-set state regardless.
+			active := defaultActive
 			if prev, ok := prevActive[name]; ok {
 				active = prev
 			}

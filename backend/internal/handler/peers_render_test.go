@@ -50,3 +50,109 @@ func TestRenderWgQuickConfigAddressCIDRv6(t *testing.T) {
 		t.Errorf("missing %q in:\n%s", want, got)
 	}
 }
+
+// #86 P1: the exported .conf's [Peer] Endpoint must carry the
+// listen port of the peer's own interface. Previously the env-side
+// WG_ENDPOINT (host:default-port) flowed through verbatim, so an
+// operator with wg-a on 443 and wg-b on 444 saw every .conf say
+// host:443. The renderer must use defaultEndpoint as host-only when
+// it falls back to it.
+func TestRenderWgQuickConfigEndpoint(t *testing.T) {
+	peerOverride := "peer.example.net:9999"
+	ifaceOverride := "iface.example.net:7777"
+
+	cases := []struct {
+		name            string
+		peerEndpoint    *string
+		ifaceEndpoint   *string
+		ifaceListenPort int
+		defaultEndpoint string
+		want            string
+	}{
+		{
+			name:            "default endpoint with port, iface port differs",
+			ifaceListenPort: 444,
+			defaultEndpoint: "vpn.example.com:443",
+			want:            "Endpoint = vpn.example.com:444",
+		},
+		{
+			name:            "default endpoint with port, iface port matches",
+			ifaceListenPort: 443,
+			defaultEndpoint: "vpn.example.com:443",
+			want:            "Endpoint = vpn.example.com:443",
+		},
+		{
+			name:            "default endpoint bare host (no port)",
+			ifaceListenPort: 444,
+			defaultEndpoint: "vpn.example.com",
+			want:            "Endpoint = vpn.example.com:444",
+		},
+		{
+			name:            "default endpoint IPv4 literal with port",
+			ifaceListenPort: 51820,
+			defaultEndpoint: "192.0.2.1:443",
+			want:            "Endpoint = 192.0.2.1:51820",
+		},
+		{
+			name:            "default endpoint IPv6 literal with port",
+			ifaceListenPort: 444,
+			defaultEndpoint: "[2001:db8::1]:443",
+			want:            "Endpoint = [2001:db8::1]:444",
+		},
+		{
+			name:            "iface override beats default",
+			ifaceEndpoint:   &ifaceOverride,
+			ifaceListenPort: 444,
+			defaultEndpoint: "vpn.example.com:443",
+			want:            "Endpoint = iface.example.net:7777",
+		},
+		{
+			name:            "peer override beats iface and default",
+			peerEndpoint:    &peerOverride,
+			ifaceEndpoint:   &ifaceOverride,
+			ifaceListenPort: 444,
+			defaultEndpoint: "vpn.example.com:443",
+			want:            "Endpoint = peer.example.net:9999",
+		},
+		{
+			name:            "iface override without port gets iface listen_port appended",
+			ifaceEndpoint:   strPtr("nat.example.net"),
+			ifaceListenPort: 4242,
+			defaultEndpoint: "ignored.example.com:443",
+			want:            "Endpoint = nat.example.net:4242",
+		},
+		{
+			name:            "no default and no overrides emits no Endpoint line",
+			ifaceListenPort: 444,
+			defaultEndpoint: "",
+			want:            "",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			peer := &repository.Peer{
+				AssignedIP: netip.MustParseAddr("10.20.30.1"),
+				Endpoint:   tc.peerEndpoint,
+			}
+			iface := &repository.Interface{
+				PublicKey:  "TEST_IFACE_PUBKEY",
+				Address:    netip.MustParsePrefix("10.20.30.254/24"),
+				ListenPort: tc.ifaceListenPort,
+				Endpoint:   tc.ifaceEndpoint,
+			}
+			got := renderWgQuickConfig(peer, iface, "TEST_PEER_PRIV", "",
+				tc.defaultEndpoint, nil)
+			if tc.want == "" {
+				if strings.Contains(got, "\nEndpoint = ") {
+					t.Errorf("expected no Endpoint line, got:\n%s", got)
+				}
+				return
+			}
+			if !strings.Contains(got, tc.want) {
+				t.Errorf("missing %q in:\n%s", tc.want, got)
+			}
+		})
+	}
+}
+
+func strPtr(s string) *string { return &s }

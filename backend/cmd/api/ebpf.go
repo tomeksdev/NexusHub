@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"time"
 
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/link"
@@ -53,6 +54,14 @@ type ebpfStack struct {
 	logger   *slog.Logger
 	warns    *diag.KernelWarnings
 
+	// status captures the loader's last init result so the diag
+	// handler can surface "why isn't the kernel doing anything"
+	// without re-probing. Populated by startEBPF on every early
+	// return; the zero value (Loaded=false, no error) means
+	// startEBPF hasn't run, which is itself a useful state for
+	// tests / dev shells.
+	status diag.EBPFLoaderStatus
+
 	// mu guards tcLinks + xdpLinks. Handlers run on gin's worker
 	// pool so concurrent AttachTC calls for two different Locations
 	// must be safe.
@@ -90,6 +99,10 @@ func startEBPF(
 		warns:    warns,
 		tcLinks:  map[string]link.Link{},
 		xdpLinks: map[string]link.Link{},
+		status: diag.EBPFLoaderStatus{
+			LastAttemptAt:   time.Now().UTC(),
+			MissingFeatures: []string{},
+		},
 	}
 
 	caps := userspace.Probe()
@@ -97,22 +110,30 @@ func startEBPF(
 	for _, e := range caps.ProbeErrs {
 		logger.Warn("ebpf probe diagnostic", "err", e)
 	}
+	st.status.PermissionDenied = caps.PermissionDenied
+	if missing := caps.MissingFeatures(); len(missing) > 0 {
+		st.status.MissingFeatures = missing
+	}
 	if err := caps.MissingRequired(); err != nil {
 		logger.Warn("ebpf disabled — required kernel features missing", "err", err)
+		st.status.Error = err.Error()
 		return st
 	}
+	st.status.CapabilitiesOK = true
 
 	// memlock raise is required for older kernels (< 5.11 without
 	// the BPF token / unprivileged_bpf_disabled tightening); a no-op
 	// on modern hosts.
 	if err := rlimit.RemoveMemlock(); err != nil {
 		logger.Warn("ebpf disabled — could not raise memlock", "err", err)
+		st.status.Error = "memlock raise failed: " + err.Error()
 		return st
 	}
 
 	spec, err := userspace.LoadRules()
 	if err != nil {
 		logger.Warn("ebpf disabled — bpf2go spec load failed", "err", err)
+		st.status.Error = "bpf2go spec load failed: " + err.Error()
 		return st
 	}
 
@@ -131,6 +152,7 @@ func startEBPF(
 		// incompatible signature. The log here is the only signal —
 		// move on without kernel sync.
 		logger.Warn("ebpf disabled — loader init failed", "err", err, "pin_path", pinPath)
+		st.status.Error = "loader init failed: " + err.Error()
 		return st
 	}
 	st.loader = loader
@@ -155,11 +177,13 @@ func startEBPF(
 	syncer, err := ebpfkernel.NewKernelSyncer(loader, logger)
 	if err != nil {
 		logger.Warn("ebpf syncer init failed — running DB-only", "err", err)
+		st.status.Error = "syncer init failed: " + err.Error()
 		_ = loader.Close()
 		st.loader = nil
 		return st
 	}
 	st.syncer = syncer
+	st.status.Loaded = true
 
 	metrics.Registry.MustRegister(ebpfkernel.NewMetricsCollector(loader, logger))
 
@@ -168,6 +192,27 @@ func startEBPF(
 	}
 
 	return st
+}
+
+// LoaderStatus returns the current operator-facing snapshot of
+// whether the kernel datapath actually loaded at startup. The
+// EBPFInventory interface in handler/diag.go is the consumer; this
+// method keeps the inventory shape symmetric with AttachedPrograms
+// and PinPath, both of which already read static post-init state.
+//
+// Snapshots a copy; the slice is duplicated so the caller can't
+// mutate our stored MissingFeatures.
+func (s *ebpfStack) LoaderStatus() diag.EBPFLoaderStatus {
+	if s == nil {
+		return diag.EBPFLoaderStatus{MissingFeatures: []string{}}
+	}
+	out := s.status
+	if out.MissingFeatures == nil {
+		out.MissingFeatures = []string{}
+	} else {
+		out.MissingFeatures = append([]string(nil), out.MissingFeatures...)
+	}
+	return out
 }
 
 // attachXDP is the boot-time helper. AttachXDP (exported below) is

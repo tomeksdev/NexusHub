@@ -4,6 +4,22 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, type PageEnvelope } from "../lib/api";
 import { RuleEditorModal } from "./RuleEditorModal";
 
+// EBPFLoaderStatus mirrors the backend diag payload. Repeated here
+// rather than imported from SupportPage so RulesPage stays
+// self-contained. (#86)
+interface EBPFLoaderStatus {
+  loaded: boolean;
+  error?: string;
+  capabilities_ok: boolean;
+  missing_features: string[];
+  permission_denied: boolean;
+  last_attempt_at: string;
+}
+
+interface EBPFStateRespMinimal {
+  loader: EBPFLoaderStatus;
+}
+
 export interface Rule {
   id: string;
   name: string;
@@ -94,7 +110,18 @@ function formatBytes(n: number): string {
 //   - OFF    : DB-disabled → kernel intentionally empty
 //   - ERROR  : DB-active but kernel doesn't have the rule (sync
 //              failed silently or the API is running with NoopSyncer)
-function KernelBadge({ active, loaded }: { active: boolean; loaded: boolean }) {
+// When loaderDegraded=true, the "not loaded" tooltip surfaces the
+// loader error so the operator doesn't have to read journalctl
+// to know why every rule says NOT LOADED. (#86)
+function KernelBadge({
+  active,
+  loaded,
+  loaderError,
+}: {
+  active: boolean;
+  loaded: boolean;
+  loaderError?: string;
+}) {
   if (!active) {
     return (
       <span className="status-badge muted" title="Rule disabled in DB.">
@@ -114,11 +141,11 @@ function KernelBadge({ active, loaded }: { active: boolean; loaded: boolean }) {
       </span>
     );
   }
+  const tip = loaderError
+    ? `Rule is enabled in the DB but the eBPF rule engine could not load: ${loaderError} — see the Support page.`
+    : "Rule is enabled in the DB but the kernel hasn't loaded it. Check the eBPF stack on the Support page.";
   return (
-    <span
-      className="status-badge critical"
-      title="Rule is enabled in the DB but the kernel hasn't loaded it. Check the eBPF stack on the Support page."
-    >
+    <span className="status-badge critical" title={tip}>
       <span className="dot" />
       not loaded
     </span>
@@ -168,6 +195,18 @@ export function RulesPage() {
   const [editing, setEditing] = useState<Rule | null>(null);
   const [creating, setCreating] = useState(false);
   const [ownerFilter, setOwnerFilter] = useState<OwnerFilter>("all");
+
+  // Poll the loader status so the page can banner "enforcement is
+  // OFF" when the kernel didn't accept the program. 30 s cadence —
+  // the state changes at startup, not at request rate. (#86)
+  const loaderQ = useQuery({
+    queryKey: ["ebpf-state"],
+    queryFn: () => api<EBPFStateRespMinimal>("/api/v1/diag/ebpf"),
+    retry: false,
+    refetchInterval: 30_000,
+  });
+  const loader = loaderQ.data?.loader;
+  const enforcementOff = loader !== undefined && !loader.loaded;
 
   const { data, isLoading, isError, error } = useQuery({
     queryKey: ["rules"],
@@ -271,6 +310,37 @@ export function RulesPage() {
           </button>
         </div>
       </div>
+
+      {enforcementOff && (
+        <div className="panel border border-danger/60 bg-danger/5 space-y-2">
+          <div className="flex items-center gap-2">
+            <span className="status-badge critical">
+              <span className="dot" />
+              ENFORCEMENT OFF
+            </span>
+            <span className="text-danger font-medium">
+              eBPF rule engine could not load — no rule below is enforcing
+              traffic.
+            </span>
+          </div>
+          <p className="text-sm text-muted">
+            {loader?.permission_denied
+              ? "Probe failed with EPERM. The API process is missing CAP_BPF or CAP_NET_ADMIN. "
+              : loader?.missing_features.length
+                ? `Kernel features missing: ${loader.missing_features.join(", ")}. The loader needs Linux ≥ 5.17. `
+                : "The loader returned an error at startup. "}
+            Open <strong>Support</strong> from the sidebar to see the raw error
+            and the per-shape fix under <em>Enforcement status</em>.
+          </p>
+          <p className="text-faint text-xs">
+            Rules below can still be edited and toggled — they remain staged so
+            they enforce automatically once the loader recovers. New
+            auto-generated cross-location denies land with{" "}
+            <code className="font-mono">Active</code> off while the loader is
+            degraded.
+          </p>
+        </div>
+      )}
 
       <div className="flex items-center gap-2 text-sm flex-wrap">
         <FilterPill
@@ -400,6 +470,7 @@ export function RulesPage() {
                     <KernelBadge
                       active={r.is_active}
                       loaded={!!r.kernel_loaded}
+                      loaderError={enforcementOff ? loader?.error : undefined}
                     />
                   </td>
                   <td>

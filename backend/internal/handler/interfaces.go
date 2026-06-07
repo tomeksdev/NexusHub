@@ -123,6 +123,13 @@ type InterfaceHandler struct {
 	// cycle. Optional — nil is acceptable for tests that don't
 	// exercise the kernel path.
 	Sync ebpf.Syncer
+	// EBPFInv exposes the loader's startup status so the
+	// system-rule regeneration path can stage rather than enable
+	// freshly-generated cross-location denies when the kernel
+	// loader is degraded. Nil ⇒ assume healthy (preserves the
+	// pre-#86 default-on behavior for deployments that don't
+	// wire diag through this handler).
+	EBPFInv EBPFInventory
 }
 
 // regenerateSystemRules rebuilds the auto-generated cross-location deny
@@ -151,7 +158,20 @@ func (h *InterfaceHandler) regenerateSystemRules(ctx context.Context) {
 			CIDR: ifaces[i].Address.Masked(),
 		})
 	}
-	if err := h.Rules.RegenerateSystemDenies(ctx, locs); err != nil {
+	// On a healthy loader, default the cross-location deny baseline
+	// to is_active=true so two-location installs enforce immediately.
+	// When the loader is degraded (the eBPF program failed to load),
+	// stage the freshly-generated pairs as is_active=false instead —
+	// claiming "Active" while the kernel does nothing was the #86
+	// confusion. Per-pair operator overrides survive either way.
+	defaultActive := true
+	if h.EBPFInv != nil && !h.EBPFInv.LoaderStatus().Loaded {
+		defaultActive = false
+		slog.InfoContext(ctx,
+			"system rules: loader degraded — new pairs staged as is_active=false",
+			"loader_error", h.EBPFInv.LoaderStatus().Error)
+	}
+	if err := h.Rules.RegenerateSystemDenies(ctx, locs, defaultActive); err != nil {
 		slog.WarnContext(ctx, "system rules: regenerate", "err", err)
 		return
 	}
