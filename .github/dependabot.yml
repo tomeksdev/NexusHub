@@ -33,6 +33,18 @@ updates:
     labels:
       - dependencies
       - frontend
+    groups:
+      # react + react-dom must move in lockstep — a split bump
+      # produces a runtime version mismatch and crashes the SPA
+      # at startup with React error #527 (see #95). Group their
+      # type packages too so the whole React surface lands as a
+      # single PR.
+      react:
+        patterns:
+          - react
+          - react-dom
+          - "@types/react"
+          - "@types/react-dom"
 
   # Docker base images
   - package-ecosystem: docker
