@@ -26,17 +26,20 @@ interface EBPFAttachment {
   prog_id: number;
 }
 
+// Array fields are typed as nullable because Go marshals a nil slice
+// as JSON `null` — if the backend ever regresses on its empty-slice
+// guarantee the page must still render. (#102)
 interface EBPFLoaderStatus {
   loaded: boolean;
-  error?: string;
+  error?: string | null;
   capabilities_ok: boolean;
-  missing_features: string[];
+  missing_features: string[] | null;
   permission_denied: boolean;
   last_attempt_at: string;
 }
 
 interface EBPFStateResp {
-  programs: EBPFAttachment[];
+  programs: EBPFAttachment[] | null;
   pin_path?: string;
   loader: EBPFLoaderStatus;
 }
@@ -145,11 +148,12 @@ export function SupportPage() {
                   <code className="font-mono">cap_add: [BPF, NET_ADMIN]</code>.
                 </div>
               )}
-              {ebpf.loader.missing_features.length > 0 && (
+              {(ebpf.loader.missing_features ?? []).length > 0 && (
                 <div className="text-muted">
                   <strong>Kernel features missing:</strong>{" "}
-                  {ebpf.loader.missing_features.join(", ")}. The loader requires
-                  Linux ≥ 5.17 for <code className="font-mono">bpf_loop</code>.
+                  {(ebpf.loader.missing_features ?? []).join(", ")}. The loader
+                  requires Linux ≥ 5.17 for{" "}
+                  <code className="font-mono">bpf_loop</code>.
                 </div>
               )}
               {ebpf.loader.error && (
@@ -171,61 +175,66 @@ export function SupportPage() {
         </section>
       )}
 
-      {ebpf && (
-        <section className="panel">
-          <div className="panel-header">
-            <div>
-              <span className="panel-title">eBPF data plane</span>
-              <p className="text-faint text-xs mt-1">
-                Programs the API has attached. Cross-check with
-                <code className="font-mono"> bpftool prog show</code> on the
-                host.
-              </p>
-            </div>
-            <span className="text-faint text-xs">
-              {ebpf.programs.length} attached
-            </span>
-          </div>
-          {ebpf.programs.length === 0 ? (
-            <p className="text-muted text-sm">
-              No eBPF programs attached. Locations created at runtime should
-              auto-attach; if you see this with active rules, the kernel side is
-              silent and rules can't enforce.
-            </p>
-          ) : (
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="text-muted text-left">
-                  <th className="py-2 font-medium">Interface</th>
-                  <th className="py-2 font-medium">Hook</th>
-                  <th className="py-2 font-medium">Program</th>
-                  <th className="py-2 font-medium text-right">Prog ID</th>
-                </tr>
-              </thead>
-              <tbody>
-                {ebpf.programs.map((p, i) => (
-                  <tr
-                    key={`${p.iface}-${p.hook}-${i}`}
-                    className="border-t border-[var(--color-line)]"
-                  >
-                    <td className="py-2 font-mono">{p.iface}</td>
-                    <td className="py-2 text-muted">{p.hook}</td>
-                    <td className="py-2 text-muted">{p.program}</td>
-                    <td className="py-2 text-right font-mono">
-                      {p.prog_id || "—"}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          )}
-          {ebpf.pin_path && (
-            <p className="text-faint text-xs mt-3">
-              Maps pinned at <code className="font-mono">{ebpf.pin_path}</code>
-            </p>
-          )}
-        </section>
-      )}
+      {ebpf &&
+        (() => {
+          const programs = ebpf.programs ?? [];
+          return (
+            <section className="panel">
+              <div className="panel-header">
+                <div>
+                  <span className="panel-title">eBPF data plane</span>
+                  <p className="text-faint text-xs mt-1">
+                    Programs the API has attached. Cross-check with
+                    <code className="font-mono"> bpftool prog show</code> on the
+                    host.
+                  </p>
+                </div>
+                <span className="text-faint text-xs">
+                  {programs.length} attached
+                </span>
+              </div>
+              {programs.length === 0 ? (
+                <p className="text-muted text-sm">
+                  No eBPF programs attached. Locations created at runtime should
+                  auto-attach; if you see this with active rules, the kernel
+                  side is silent and rules can't enforce.
+                </p>
+              ) : (
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="text-muted text-left">
+                      <th className="py-2 font-medium">Interface</th>
+                      <th className="py-2 font-medium">Hook</th>
+                      <th className="py-2 font-medium">Program</th>
+                      <th className="py-2 font-medium text-right">Prog ID</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {programs.map((p, i) => (
+                      <tr
+                        key={`${p.iface}-${p.hook}-${i}`}
+                        className="border-t border-[var(--color-line)]"
+                      >
+                        <td className="py-2 font-mono">{p.iface}</td>
+                        <td className="py-2 text-muted">{p.hook}</td>
+                        <td className="py-2 text-muted">{p.program}</td>
+                        <td className="py-2 text-right font-mono">
+                          {p.prog_id || "—"}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+              {ebpf.pin_path && (
+                <p className="text-faint text-xs mt-3">
+                  Maps pinned at{" "}
+                  <code className="font-mono">{ebpf.pin_path}</code>
+                </p>
+              )}
+            </section>
+          );
+        })()}
 
       {warnings.length > 0 && (
         <section className="panel">

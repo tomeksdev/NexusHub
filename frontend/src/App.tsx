@@ -13,6 +13,7 @@ import {
   Users,
 } from "lucide-react";
 
+import { PageErrorBoundary } from "./components/ErrorBoundary";
 import { Logo } from "./components/Logo";
 import { useAuth } from "./lib/auth";
 import { AuditPage } from "./pages/AuditPage";
@@ -186,7 +187,9 @@ function App() {
       </aside>
 
       <main id="main-content" tabIndex={-1} className="main-content">
-        {renderPage(page, isAdmin, selectedUserID, setSelectedUserID)}
+        <PageErrorBoundary key={page}>
+          {renderPage(page, isAdmin, selectedUserID, setSelectedUserID)}
+        </PageErrorBoundary>
       </main>
     </div>
   );
