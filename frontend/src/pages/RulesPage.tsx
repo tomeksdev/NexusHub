@@ -7,11 +7,15 @@ import { RuleEditorModal } from "./RuleEditorModal";
 // EBPFLoaderStatus mirrors the backend diag payload. Repeated here
 // rather than imported from SupportPage so RulesPage stays
 // self-contained. (#86)
+//
+// Array fields are typed as nullable because Go marshals a nil slice
+// as JSON `null` — if the backend ever regresses on its empty-slice
+// guarantee the page should still render, not crash. (#102)
 interface EBPFLoaderStatus {
   loaded: boolean;
-  error?: string;
+  error?: string | null;
   capabilities_ok: boolean;
-  missing_features: string[];
+  missing_features: string[] | null;
   permission_denied: boolean;
   last_attempt_at: string;
 }
@@ -324,11 +328,16 @@ export function RulesPage() {
             </span>
           </div>
           <p className="text-sm text-muted">
-            {loader?.permission_denied
-              ? "Probe failed with EPERM. The API process is missing CAP_BPF or CAP_NET_ADMIN. "
-              : loader?.missing_features.length
-                ? `Kernel features missing: ${loader.missing_features.join(", ")}. The loader needs Linux ≥ 5.17. `
-                : "The loader returned an error at startup. "}
+            {(() => {
+              const missing = loader?.missing_features ?? [];
+              if (loader?.permission_denied) {
+                return "Probe failed with EPERM. The API process is missing CAP_BPF or CAP_NET_ADMIN. ";
+              }
+              if (missing.length > 0) {
+                return `Kernel features missing: ${missing.join(", ")}. The loader needs Linux ≥ 5.17. `;
+              }
+              return "The loader returned an error at startup. ";
+            })()}
             Open <strong>Support</strong> from the sidebar to see the raw error
             and the per-shape fix under <em>Enforcement status</em>.
           </p>
@@ -470,7 +479,11 @@ export function RulesPage() {
                     <KernelBadge
                       active={r.is_active}
                       loaded={!!r.kernel_loaded}
-                      loaderError={enforcementOff ? loader?.error : undefined}
+                      loaderError={
+                        enforcementOff
+                          ? (loader?.error ?? undefined)
+                          : undefined
+                      }
                     />
                   </td>
                   <td>
