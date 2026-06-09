@@ -155,10 +155,14 @@ protocol_matches(__u8 want, __u8 got)
 }
 
 /* v4_in_cidr — does addr (4 on-wire bytes) fall under cidr/prefix_len?
- * Both inputs are network byte order. The function compares full bytes
- * up to (prefix_len / 8), then masks the remaining bits in the next
- * byte. Bounds are constant so the verifier accepts the indexed
- * accesses without complaint. */
+ * Both inputs are network byte order.
+ *
+ * Implemented as a single straight-line unrolled loop so every byte
+ * access uses the literal loop index. A post-loop `addr[idx]` with a
+ * runtime-derived idx (even when masked) trips the unprivileged
+ * verifier on kernel 6.8.x with "invalid access to map value" when
+ * the verifier loses track of the bound. Keeping all byte accesses
+ * inside the unrolled body sidesteps that entirely. (#104) */
 static __always_inline int
 v4_in_cidr(const __u8 addr[4], const __u8 cidr[4], __u8 prefix_len)
 {
@@ -167,26 +171,35 @@ v4_in_cidr(const __u8 addr[4], const __u8 cidr[4], __u8 prefix_len)
     if (prefix_len > 32)
         prefix_len = 32;
 
-    __u8 full_bytes = prefix_len >> 3;
+    __u8 full_bytes   = prefix_len >> 3;
     __u8 partial_bits = prefix_len & 7;
+    __u8 partial_mask = partial_bits
+        ? (__u8)(0xFFu << (8 - partial_bits))
+        : 0;
+    __u8 mismatch = 0;
 
-    if (full_bytes >= 1 && addr[0] != cidr[0]) return 0;
-    if (full_bytes >= 2 && addr[1] != cidr[1]) return 0;
-    if (full_bytes >= 3 && addr[2] != cidr[2]) return 0;
-    if (full_bytes >= 4) return 1; /* exact /32 */
-
-    if (partial_bits == 0)
-        return 1;
-    __u8 idx = full_bytes & 3;
-    __u8 mask = (__u8)(0xFFu << (8 - partial_bits));
-    return (addr[idx] & mask) == (cidr[idx] & mask);
+    #pragma unroll
+    for (int i = 0; i < 4; i++) {
+        __u8 mask;
+        if (i < full_bytes) {
+            mask = 0xFF;
+        } else if (i == full_bytes && partial_bits) {
+            mask = partial_mask;
+        } else {
+            mask = 0;
+        }
+        mismatch |= (addr[i] ^ cidr[i]) & mask;
+    }
+    return mismatch == 0;
 }
 
-/* v6_in_cidr — same idea over 16 bytes. We aggregate the per-byte
- * diff into a single `mismatch` accumulator instead of returning
- * early; this makes the loop body branch-free, which lets clang
- * fully unroll it under -O2 and keeps the verifier happy with 16
- * straight-line bytewise compares. */
+/* v6_in_cidr — 16-byte variant of v4_in_cidr. The original post-loop
+ * partial-byte check used `addr[idx]` with a runtime idx; the
+ * unprivileged verifier on 6.8.x rejected that as an out-of-bounds
+ * map-value access ("value_size=68 off=79 size=1") because it lost
+ * track of the idx bound. Folding the partial-byte case INTO the
+ * unrolled loop keeps every memory access at a literal index, which
+ * the verifier accepts trivially. (#104) */
 static __always_inline int
 v6_in_cidr(const __u8 addr[16], const __u8 cidr[16], __u16 prefix_len)
 {
@@ -195,24 +208,26 @@ v6_in_cidr(const __u8 addr[16], const __u8 cidr[16], __u16 prefix_len)
     if (prefix_len > 128)
         prefix_len = 128;
 
-    __u8 full_bytes = prefix_len >> 3;
+    __u8 full_bytes   = prefix_len >> 3;
     __u8 partial_bits = prefix_len & 7;
+    __u8 partial_mask = partial_bits
+        ? (__u8)(0xFFu << (8 - partial_bits))
+        : 0;
     __u8 mismatch = 0;
 
     #pragma unroll
     for (int i = 0; i < 16; i++) {
-        __u8 mask_check = (i < full_bytes) ? 0xFFu : 0x00u;
-        mismatch |= (addr[i] ^ cidr[i]) & mask_check;
+        __u8 mask;
+        if (i < full_bytes) {
+            mask = 0xFF;
+        } else if (i == full_bytes && partial_bits) {
+            mask = partial_mask;
+        } else {
+            mask = 0;
+        }
+        mismatch |= (addr[i] ^ cidr[i]) & mask;
     }
-    if (mismatch)
-        return 0;
-    if (full_bytes >= 16)
-        return 1;
-    if (partial_bits == 0)
-        return 1;
-    __u8 idx = full_bytes & 0xF;
-    __u8 mask = (__u8)(0xFFu << (8 - partial_bits));
-    return (addr[idx] & mask) == (cidr[idx] & mask);
+    return mismatch == 0;
 }
 
 /* port_matches returns 1 if the observed port falls inside [from, to]
@@ -542,10 +557,21 @@ evaluate_rule_v6(__u32 idx, void *_ctx)
 static __always_inline int
 decide_v4(struct iphdr *iph, void *data_end, __u8 direction, __u32 bytes)
 {
+    /* Unprivileged BPF (CAP_BPF without CAP_SYS_ADMIN) rejects pointer
+     * arithmetic with a non-constant offset — `iph + ihl*4` triggers
+     *   "R3 has pointer with unsupported alu operation,
+     *    pointer arithmetic with it prohibited for !root"
+     * on kernel 6.8.x. (#104)
+     *
+     * Restricting to ihl == 5 (no IPv4 options, 20-byte header) lets
+     * us use a compile-time constant offset that the verifier accepts.
+     * IPv4 options are vanishingly rare on modern WireGuard traffic
+     * (record-route / source-route / timestamp are filtered by every
+     * mainstream provider), so skipping them is the documented trade. */
     __u32 ihl = iph->ihl & 0xF;
-    if (ihl < 5)
+    if (ihl != 5)
         return XDP_PASS;
-    void *l4 = (void *)iph + ihl * 4;
+    void *l4 = (void *)iph + 20;
 
     __u16 sport = 0, dport = 0;
     read_l4_ports(l4, data_end, iph->protocol, &sport, &dport);
@@ -617,7 +643,12 @@ int xdp_rules(struct xdp_md *ctx)
     if ((void *)(eth + 1) > data_end)
         return XDP_PASS;
 
-    __u32 bytes = (__u32)((long)data_end - (long)data);
+    /* Use the helper instead of `(long)data_end - (long)data`. The
+     * unprivileged verifier on 6.8.x tracks both casts as pointers
+     * and rejects the subtraction as "R7 pointer -= pointer
+     * prohibited" — even with intermediate (long) locals. The helper
+     * returns the full XDP buffer length and is verifier-safe. (#104) */
+    __u32 bytes = (__u32)bpf_xdp_get_buff_len(ctx);
 
     __u16 proto = bpf_ntohs(eth->h_proto);
 

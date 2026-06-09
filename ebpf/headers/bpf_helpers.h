@@ -77,6 +77,22 @@ static long (*bpf_loop)(__u32 nr_loops, void *callback_fn,
                         void *callback_ctx, __u64 flags) =
     (void *) BPF_FUNC_loop;
 
+/* bpf_xdp_get_buff_len (kernel 5.18+) — total length of the XDP buffer
+ * including any non-linear (multi-buffer) data. Required because the
+ * canonical `(long)data_end - (long)data` byte-count idiom is rejected
+ * by the unprivileged verifier on kernel ≥ 6.x as a pointer-pointer
+ * subtraction. The helper is verifier-safe; we cast the u64 return to
+ * u32 since we only count packets up to ~MTU. (#104)
+ *
+ * Fallback ID 188 is hard-coded because some Debian/Ubuntu kernel-
+ * headers packages still ship pre-5.18 enums even on modern kernels;
+ * the runtime numbering is stable across kernels regardless. */
+#ifndef BPF_FUNC_xdp_get_buff_len
+#define BPF_FUNC_xdp_get_buff_len 188
+#endif
+static __u64 (*bpf_xdp_get_buff_len)(struct xdp_md *xdp_md) =
+    (void *) BPF_FUNC_xdp_get_buff_len;
+
 /* Endian-swap builtins. On the BPF target, clang always emits the correct
  * code regardless of host endianness. */
 #define bpf_ntohs(x) __builtin_bswap16(x)

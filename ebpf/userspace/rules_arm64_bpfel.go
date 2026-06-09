@@ -8,31 +8,37 @@ import (
 	_ "embed"
 	"fmt"
 	"io"
+	"structs"
 
 	"github.com/cilium/ebpf"
 )
 
 type RulesRateKeyV4 struct {
+	_      structs.HostLayout
 	RuleId uint32
 	Addr   uint32
 }
 
 type RulesRateKeyV6 struct {
+	_      structs.HostLayout
 	RuleId uint32
 	Addr   [16]uint8
 }
 
 type RulesRateTokens struct {
+	_           structs.HostLayout
 	TokensX1000 uint64
 	LastSeenNs  uint64
 }
 
 type RulesRuleHits struct {
+	_       structs.HostLayout
 	Packets uint64
 	Bytes   uint64
 }
 
 type RulesRuleV4Record struct {
+	_            structs.HostLayout
 	Action       uint8
 	Protocol     uint8
 	Direction    uint8
@@ -57,6 +63,7 @@ type RulesRuleV4Record struct {
 }
 
 type RulesRuleV6Record struct {
+	_            structs.HostLayout
 	Action       uint8
 	Protocol     uint8
 	Direction    uint8
@@ -115,9 +122,10 @@ func LoadRulesObjects(obj interface{}, opts *ebpf.CollectionOptions) error {
 type RulesSpecs struct {
 	RulesProgramSpecs
 	RulesMapSpecs
+	RulesVariableSpecs
 }
 
-// RulesSpecs contains programs before they are loaded into the kernel.
+// RulesProgramSpecs contains programs before they are loaded into the kernel.
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type RulesProgramSpecs struct {
@@ -139,12 +147,19 @@ type RulesMapSpecs struct {
 	RuleTableV6 *ebpf.MapSpec `ebpf:"rule_table_v6"`
 }
 
+// RulesVariableSpecs contains global variables before they are loaded into the kernel.
+//
+// It can be passed ebpf.CollectionSpec.Assign.
+type RulesVariableSpecs struct {
+}
+
 // RulesObjects contains all objects after they have been loaded into the kernel.
 //
 // It can be passed to LoadRulesObjects or ebpf.CollectionSpec.LoadAndAssign.
 type RulesObjects struct {
 	RulesPrograms
 	RulesMaps
+	RulesVariables
 }
 
 func (o *RulesObjects) Close() error {
@@ -179,6 +194,12 @@ func (m *RulesMaps) Close() error {
 		m.RuleTableV4,
 		m.RuleTableV6,
 	)
+}
+
+// RulesVariables contains all global variables after they have been loaded into the kernel.
+//
+// It can be passed to LoadRulesObjects or ebpf.CollectionSpec.LoadAndAssign.
+type RulesVariables struct {
 }
 
 // RulesPrograms contains all programs after they have been loaded into the kernel.
