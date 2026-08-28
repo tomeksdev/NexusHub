@@ -13,7 +13,7 @@ COPY frontend/ ./
 RUN npm run build
 
 # Stage 2: Build Go backend
-FROM golang:1.26-bookworm AS go-builder
+FROM golang:1.27-bookworm AS go-builder
 WORKDIR /build
 # backend/go.mod has `replace github.com/tomeksdev/NexusHub/ebpf => ../ebpf`,
 # so go mod download needs ebpf/go.mod present too. Copy module manifests
